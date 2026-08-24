@@ -1,0 +1,10 @@
+{
+  "message_id": "fixture-workflow-completed-v1",
+  "plane": "control",
+  "message_type": "workflow.completed",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "producer": "fixture-result-collector",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": { "workflow_id": "fixture-workflow", "status": "completed", "result_message_id": "fixture-result" }
+}

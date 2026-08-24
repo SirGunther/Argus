@@ -1,0 +1,87 @@
+{
+  "$id": "argus.ai-work-completed.v1",
+  "type": "object",
+  "required": ["work_id", "workload", "session_id", "sequence", "attempt", "completed_at", "result"],
+  "properties": {
+    "work_id": { "type": "string", "minLength": 1 },
+    "workload": { "type": "string", "enum": ["transcription", "transcript-correction-formatting", "logged-item-extraction", "classification-enrichment"] },
+    "session_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "completed_at": { "type": "string", "minLength": 1 },
+    "result": {
+      "oneOf": [
+        { "$ref": "#/$defs/modelSuccess" },
+        { "$ref": "#/$defs/modelFailure" },
+        { "$ref": "#/$defs/legacyResult" }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "modelResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["protocol_version", "purpose", "text"],
+          "properties": {
+            "protocol_version": { "const": "1.0.0" },
+            "purpose": { "const": "logged-item-extraction" },
+            "text": { "type": "string", "minLength": 1, "maxLength": 512 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["protocol_version", "purpose", "suggested_classification", "confidence"],
+          "properties": {
+            "protocol_version": { "const": "1.0.0" },
+            "purpose": { "const": "classification-enrichment" },
+            "suggested_classification": { "type": "string", "enum": ["task", "note", "observation", "idea"] },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "requestFingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "modelSuccess": {
+      "type": "object",
+      "required": ["status", "work_id", "request_fingerprint", "response"],
+      "properties": {
+        "status": { "const": "succeeded" },
+        "work_id": { "type": "string", "minLength": 1 },
+        "request_fingerprint": { "$ref": "#/$defs/requestFingerprint" },
+        "response": { "$ref": "#/$defs/modelResponse" }
+      },
+      "additionalProperties": false
+    },
+    "modelFailure": {
+      "type": "object",
+      "required": ["status", "work_id", "request_fingerprint", "error"],
+      "properties": {
+        "status": { "const": "failed" },
+        "work_id": { "type": "string", "minLength": 1 },
+        "request_fingerprint": { "$ref": "#/$defs/requestFingerprint" },
+        "error": {
+          "type": "object",
+          "required": ["code", "category", "message", "retryable"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "category": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 },
+            "retryable": { "type": "boolean" },
+            "details": { "type": "object" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "legacyResult": {
+      "type": "object",
+      "properties": { "classification": { "type": "string", "minLength": 1 } },
+      "additionalProperties": false
+    }
+  }
+}

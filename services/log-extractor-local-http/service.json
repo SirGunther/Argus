@@ -1,0 +1,41 @@
+{
+  "service_name": "log-extractor-local-http",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs",
+    "includes": [
+      "model-boundary.mjs"
+    ],
+    "environment": {
+        "allow": ["ARGUS_MODEL_NAME"]
+    }
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [
+        "transcript.context-window"
+      ],
+      "emits": [
+        "logged-item.draft"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "ai.work-completed",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "ai.work-request",
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "bounded in-memory exact retry context; pending capacity 32; model-name configuration only",
+  "side_effects": []
+}

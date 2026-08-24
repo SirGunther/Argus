@@ -1,0 +1,11 @@
+{
+  "$id": "argus.workflow-completed.v1",
+  "type": "object",
+  "required": ["workflow_id", "status", "result_message_id"],
+  "properties": {
+    "workflow_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["completed"] },
+    "result_message_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

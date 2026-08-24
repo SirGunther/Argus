@@ -1,0 +1,94 @@
+{
+  "$id": "argus.context-window.v1",
+  "type": "object",
+  "required": ["window_id", "session_id", "reason", "segments", "source"],
+  "properties": {
+    "window_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "enum": ["pause", "size", "topic", "latency", "flush"] },
+    "triggered_reasons": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "enum": ["pause", "size", "topic", "latency", "flush"] }
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["segment_id", "sequence", "start_time", "end_time", "text"],
+        "properties": {
+          "segment_id": { "type": "string", "minLength": 1 },
+          "sequence": { "type": "integer", "minimum": 0 },
+          "start_time": { "type": "string", "minLength": 1 },
+          "end_time": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["first_segment_id", "last_segment_id", "start_time", "end_time"],
+      "properties": {
+        "first_segment_id": { "type": "string", "minLength": 1 },
+        "last_segment_id": { "type": "string", "minLength": 1 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "context_segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["segment_id", "sequence", "start_time", "end_time", "text", "relation"],
+        "properties": {
+          "segment_id": { "type": "string", "minLength": 1 },
+          "sequence": { "type": "integer", "minimum": 0 },
+          "start_time": { "type": "string", "minLength": 1 },
+          "end_time": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 },
+          "relation": { "type": "string", "enum": ["lookback", "forward"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "selection": {
+      "type": "object",
+      "required": ["policy_id", "policy_version", "trigger_observed_at_sequence", "source_segment_count", "source_char_count", "elapsed_ms"],
+      "properties": {
+        "policy_id": { "type": "string", "minLength": 1 },
+        "policy_version": { "type": "string", "minLength": 1 },
+        "trigger_observed_at_sequence": { "type": "integer", "minimum": 0 },
+        "source_segment_count": { "type": "integer", "minimum": 1 },
+        "source_char_count": { "type": "integer", "minimum": 1 },
+        "elapsed_ms": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "generation_directive": {
+      "type": "object",
+      "required": ["purpose", "policy_profile", "instruction_version", "context_scope"],
+      "properties": {
+        "purpose": { "const": "logged-item-extraction" },
+        "policy_profile": { "type": "string", "minLength": 1 },
+        "instruction_version": { "type": "string", "minLength": 1 },
+        "context_scope": {
+          "type": "object",
+          "required": ["source_range_only", "lookback_segment_count", "forward_segment_count", "max_context_chars"],
+          "properties": {
+            "source_range_only": { "type": "boolean" },
+            "lookback_segment_count": { "type": "integer", "minimum": 0 },
+            "forward_segment_count": { "type": "integer", "minimum": 0 },
+            "max_context_chars": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

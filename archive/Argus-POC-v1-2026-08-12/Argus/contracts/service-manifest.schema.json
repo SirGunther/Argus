@@ -1,0 +1,49 @@
+{
+  "$id": "argus.service-manifest.v1",
+  "type": "object",
+  "required": ["service_name", "version", "runtime", "ports", "state", "side_effects"],
+  "properties": {
+    "service_name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "runtime": {
+      "type": "object",
+      "required": ["command", "entrypoint"],
+      "properties": {
+        "command": { "type": "string", "enum": ["node"] },
+        "entrypoint": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "ports": {
+      "type": "object",
+      "required": ["domain", "control"],
+      "properties": {
+        "domain": {
+          "type": "object",
+          "required": ["accepts", "emits"],
+          "properties": {
+            "accepts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "emits": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        },
+        "control": {
+          "type": "object",
+          "required": ["accepts", "emits"],
+          "properties": {
+            "accepts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "emits": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "state": { "type": "string" },
+    "side_effects": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "additionalProperties": false
+}

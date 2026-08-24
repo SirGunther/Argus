@@ -1,0 +1,48 @@
+{
+  "$id": "argus.transcript-word-correction-proposed.v1",
+  "type": "object",
+  "required": ["proposal_id", "session_id", "target_word_id", "target_word_sequence", "expected_text", "proposed_text", "confidence", "basis", "context", "generator"],
+  "properties": {
+    "proposal_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "target_word_id": { "type": "string", "minLength": 1 },
+    "target_word_sequence": { "type": "integer", "minimum": 0 },
+    "expected_text": { "type": "string", "minLength": 1 },
+    "proposed_text": { "type": "string", "minLength": 1 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "basis": { "type": "string", "enum": ["acoustic-similarity", "contextual-meaning", "acoustic-and-contextual"] },
+    "alternatives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "confidence"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": ["first_word_id", "last_word_id"],
+      "properties": {
+        "first_word_id": { "type": "string", "minLength": 1 },
+        "last_word_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "generator": {
+      "type": "object",
+      "required": ["kind", "implementation", "policy_profile", "instruction_version"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["stt-provider", "contextual-language"] },
+        "implementation": { "type": "string", "minLength": 1 },
+        "policy_profile": { "type": "string", "minLength": 1 },
+        "instruction_version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

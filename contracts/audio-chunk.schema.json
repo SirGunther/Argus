@@ -1,0 +1,29 @@
+{
+  "$id": "argus.audio-chunk.v1",
+  "type": "object",
+  "required": ["chunk_id", "session_id", "sequence", "start_time", "end_time", "format", "sample_count", "byte_length", "audio_base64", "checksum"],
+  "properties": {
+    "chunk_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "start_time": { "type": "string", "minLength": 1 },
+    "end_time": { "type": "string", "minLength": 1 },
+    "format": {
+      "type": "object",
+      "required": ["encoding", "sample_rate_hz", "channels", "bits_per_sample", "byte_order"],
+      "properties": {
+        "encoding": { "const": "pcm-signed-integer" },
+        "sample_rate_hz": { "const": 16000 },
+        "channels": { "const": 1 },
+        "bits_per_sample": { "const": 16 },
+        "byte_order": { "const": "little-endian" }
+      },
+      "additionalProperties": false
+    },
+    "sample_count": { "type": "integer", "minimum": 1, "maximum": 9216 },
+    "byte_length": { "type": "integer", "minimum": 2, "maximum": 18432 },
+    "audio_base64": { "type": "string", "minLength": 4, "maxLength": 24576, "pattern": "^[A-Za-z0-9+/]+={0,2}$" },
+    "checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}

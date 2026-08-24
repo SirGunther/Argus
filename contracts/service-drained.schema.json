@@ -1,0 +1,10 @@
+{
+  "$id": "argus.service-drained.v1",
+  "type": "object",
+  "required": ["service", "pending_operations"],
+  "properties": {
+    "service": { "type": "string", "minLength": 1 },
+    "pending_operations": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

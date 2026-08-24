@@ -1,0 +1,8 @@
+{
+  "$id": "argus.logged-item-history-append.v1", "type": "object",
+  "required": ["history_entry_id", "session_id", "item", "requested_at"],
+  "properties": {
+    "history_entry_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 },
+    "item": { "$ref": "argus.logged-item-stored.v1" }, "requested_at": { "type": "string", "minLength": 1 }
+  }, "additionalProperties": false
+}

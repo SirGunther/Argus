@@ -1,0 +1,33 @@
+{
+  "service_name": "transcript-evidence-observer",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [
+        "transcript.segment-stored",
+        "transcript.history-appended"
+      ],
+      "emits": []
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed",
+        "operation.rejected"
+      ]
+    }
+  },
+  "state": "none; explicit terminal observer for non-result persistence evidence in the finite Phase 4D graph",
+  "side_effects": []
+}

@@ -1,0 +1,8 @@
+{
+  "$id": "argus.logged-item-proposal-resolved.v1", "type": "object",
+  "required": ["proposal_id", "item_id", "session_id", "decision", "resolved_at", "result_revision"],
+  "properties": {
+    "proposal_id": { "type": "string", "minLength": 1 }, "item_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 },
+    "decision": { "type": "string", "enum": ["accepted", "rejected"] }, "resolved_at": { "type": "string", "minLength": 1 }, "result_revision": { "type": "integer", "minimum": 0 }
+  }, "additionalProperties": false
+}

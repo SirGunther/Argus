@@ -1,0 +1,25 @@
+{
+  "message_id": "f06c8fc4-511d-440f-8f3d-4e9b90d5b101",
+  "idempotency_key": "fixture:ai.work-completed:model-protocol",
+  "plane": "control",
+  "message_type": "ai.work-completed",
+  "timestamp": "2026-08-19T17:00:01.000Z",
+  "producer": "fixture-model-lane",
+  "correlation_id": "fixture-model-session",
+  "schema_version": "1.4.0",
+  "payload": {
+    "work_id": "logged-item-extraction:fixture-model-session:window-1",
+    "workload": "logged-item-extraction",
+    "session_id": "fixture-model-session",
+    "sequence": 1,
+    "attempt": 1,
+    "completed_at": "2026-08-19T17:00:01.000Z",
+    "result": {
+      "status": "succeeded",
+      "work_id": "logged-item-extraction:fixture-model-session:window-1",
+      "request_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "response": { "protocol_version": "1.0.0", "purpose": "logged-item-extraction", "text": "Review the model boundary." }
+    }
+  },
+  "content_fingerprint": "sha256:e10613bf282273551a30834acc74b5ceb74a8fb76ec63798f8cd140cfc4561a1"
+}

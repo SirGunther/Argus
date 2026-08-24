@@ -1,0 +1,16 @@
+{
+  "name": "argus-atomic-architecture-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Executable proof of Argus process isolation, explicit contracts, and default-deny wiring.",
+  "scripts": {
+    "demo": "node runtime/orchestrator.mjs wiring/demo.concise.json",
+    "demo:alternate": "node runtime/orchestrator.mjs wiring/demo.passthrough.json",
+    "test": "node --test tests/service-contract.test.mjs tests/wiring.test.mjs tests/integration.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
+

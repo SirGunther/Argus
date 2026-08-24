@@ -1,0 +1,54 @@
+{
+  "service_name": "session-lifecycle-controller",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs",
+    "environment": {
+      "allow": [
+        "ARGUS_SESSION_ROOT"
+      ]
+    }
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "session-root"
+      ],
+      "write": [
+        "session-root"
+      ]
+    }
+  },
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": []
+    },
+    "control": {
+      "accepts": [
+        "session.record",
+        "session.stop",
+        "session.resume",
+        "session.close",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "session.recorded",
+        "session.stopped",
+        "session.resumed",
+        "session.closed",
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed",
+        "operation.rejected"
+      ]
+    }
+  },
+  "state": "durable session metadata, lifecycle state, finalization progress, and close evidence through the governed storage boundary",
+  "side_effects": [
+    "filesystem:session-metadata-and-finalization"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "message_id": "fixture-service-drained-v1",
+  "plane": "control",
+  "message_type": "service.drained",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "producer": "fixture-service",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": { "service": "fixture-service", "pending_operations": 0 }
+}

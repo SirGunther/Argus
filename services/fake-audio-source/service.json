@@ -1,0 +1,33 @@
+{
+  "service_name": "fake-audio-source",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": [
+        "audio.chunk"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.start",
+        "lifecycle.health-check",
+        "lifecycle.drain",
+        "transcript.context-policy"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "ephemeral per-session fixture and policy-gate readiness; no audio archive",
+  "side_effects": []
+}

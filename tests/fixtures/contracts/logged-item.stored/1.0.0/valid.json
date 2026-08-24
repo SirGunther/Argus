@@ -1,0 +1,17 @@
+{
+  "message_id": "fixture-logged-item-stored-v1",
+  "plane": "domain",
+  "message_type": "logged-item.stored",
+  "timestamp": "2026-08-12T00:00:02.000Z",
+  "producer": "fixture-item-store",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "item_id": "fixture-item",
+    "session_id": "fixture-session",
+    "stored_at": "2026-08-12T00:00:02.000Z",
+    "text": "Fixture logged item.",
+    "revision": 0,
+    "source": { "first_segment_id": "fixture-segment-1", "last_segment_id": "fixture-segment-1", "start_time": "00:00:00.000", "end_time": "00:00:01.000" }
+  }
+}

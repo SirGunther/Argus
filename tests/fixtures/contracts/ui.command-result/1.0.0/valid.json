@@ -1,0 +1,19 @@
+{
+  "message_id": "fixture-ui-command-result-v1",
+  "plane": "control",
+  "message_type": "ui.command-result",
+  "timestamp": "2026-08-19T00:00:00.000Z",
+  "producer": "fixture-ui-bridge",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "command_id": "command-fixture-1",
+    "session_id": "fixture-session",
+    "command": "transcript.edit",
+    "status": "accepted",
+    "owner": "transcript/active-state",
+    "resource_id": "fixture-segment-1",
+    "revision": 1,
+    "message": "Transcript revision accepted."
+  }
+}

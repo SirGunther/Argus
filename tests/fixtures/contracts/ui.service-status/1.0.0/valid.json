@@ -1,0 +1,16 @@
+{
+  "message_id": "fixture-ui-service-status-v1",
+  "plane": "control",
+  "message_type": "ui.service-status",
+  "timestamp": "2026-08-19T00:00:00.000Z",
+  "producer": "fixture-ui-projection",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "capability": "classification",
+    "status": "unavailable",
+    "message": "Optional classification is unavailable.",
+    "retryable": true,
+    "updated_at": "2026-08-19T00:00:00.000Z"
+  }
+}

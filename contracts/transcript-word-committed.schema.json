@@ -1,0 +1,37 @@
+{
+  "$id": "argus.transcript-word-committed.v1",
+  "type": "object",
+  "required": ["word_id", "session_id", "utterance_id", "sequence", "start_time", "end_time", "text", "confidence", "evidence"],
+  "properties": {
+    "word_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "utterance_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "start_time": { "type": "string", "minLength": 1 },
+    "end_time": { "type": "string", "minLength": 1 },
+    "text": { "type": "string", "minLength": 1 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "evidence": {
+      "type": "object",
+      "required": ["provider", "chunk_ids", "alternatives"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "chunk_ids": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text", "confidence"],
+            "properties": {
+              "text": { "type": "string", "minLength": 1 },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

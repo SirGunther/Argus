@@ -1,0 +1,66 @@
+{
+  "name": "transcript-to-log-passthrough",
+  "schema_version": 2,
+  "contracts": "../contracts/catalog.json",
+  "runtime_components": [
+    {
+      "id": "@session-controller",
+      "kind": "session-controller",
+      "ports": {
+        "domain": { "accepts": [], "emits": [] },
+        "control": { "accepts": [], "emits": ["lifecycle.start"] }
+      }
+    },
+    {
+      "id": "@supervisor",
+      "kind": "supervisor",
+      "ports": {
+        "domain": { "accepts": [], "emits": [] },
+        "control": { "accepts": ["service.failure"], "emits": [] }
+      }
+    },
+    {
+      "id": "@result-collector",
+      "kind": "result-collector",
+      "ports": {
+        "domain": { "accepts": ["logged-item.stored"], "emits": [] },
+        "control": { "accepts": [], "emits": ["workflow.completed"] }
+      }
+    },
+    {
+      "id": "@run-controller",
+      "kind": "run-controller",
+      "ports": {
+        "domain": { "accepts": [], "emits": [] },
+        "control": { "accepts": ["workflow.completed"], "emits": [] }
+      }
+    }
+  ],
+  "services": [
+    { "id": "transcript-source", "manifest": "../services/fake-transcript-source/service.json" },
+    { "id": "window-selector", "manifest": "../services/transcript-window-selector/service.json" },
+    { "id": "log-extractor", "manifest": "../services/log-extractor-passthrough/service.json" },
+    { "id": "logged-item-store", "manifest": "../services/logged-item-memory-store/service.json" }
+  ],
+  "domain_wires": [
+    { "from": "transcript-source", "contract": "transcript.segment", "to": "window-selector" },
+    { "from": "window-selector", "contract": "transcript.context-window", "to": "log-extractor" },
+    { "from": "log-extractor", "contract": "logged-item.draft", "to": "logged-item-store" },
+    { "from": "logged-item-store", "contract": "logged-item.stored", "to": "@result-collector" }
+  ],
+  "control_wires": [
+    { "from": "@session-controller", "contract": "lifecycle.start", "to": "transcript-source" },
+    { "from": "transcript-source", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "window-selector", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "log-extractor", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "logged-item-store", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "@result-collector", "contract": "workflow.completed", "to": "@run-controller" }
+  ],
+  "run": {
+    "session_controller": "@session-controller",
+    "run_controller": "@run-controller",
+    "session_id": "architecture-demo-session",
+    "completion_count": 1,
+    "timeout_ms": 5000
+  }
+}

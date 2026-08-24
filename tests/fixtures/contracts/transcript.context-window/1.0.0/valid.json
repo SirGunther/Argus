@@ -1,0 +1,16 @@
+{
+  "message_id": "fixture-context-window-v1",
+  "plane": "domain",
+  "message_type": "transcript.context-window",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "producer": "fixture-window-selector",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "window_id": "fixture-window",
+    "session_id": "fixture-session",
+    "reason": "pause",
+    "segments": [{ "segment_id": "fixture-segment-1", "sequence": 0, "start_time": "00:00:00.000", "end_time": "00:00:01.000", "text": "Fixture transcript text." }],
+    "source": { "first_segment_id": "fixture-segment-1", "last_segment_id": "fixture-segment-1", "start_time": "00:00:00.000", "end_time": "00:00:01.000" }
+  }
+}

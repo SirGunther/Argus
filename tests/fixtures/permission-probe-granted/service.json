@@ -1,0 +1,51 @@
+{
+  "service_name": "permission-probe-granted",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs",
+    "environment": {
+      "allow": [
+        "ARGUS_SESSION_ROOT"
+      ]
+    }
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "session-root"
+      ],
+      "write": [
+        "session-root"
+      ]
+    }
+  },
+  "resources": {
+    "max_heap_mb": 64
+  },
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": [
+        "transcript.segment"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.start",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "none; granted read and write authority over the configured session root only",
+  "side_effects": [
+    "filesystem:probe-session-root"
+  ]
+}

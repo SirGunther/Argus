@@ -1,0 +1,32 @@
+{
+  "service_name": "container-transcript-source",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "container",
+    "image": "registry.invalid/argus/transcript-source@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": [
+        "transcript.segment"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.start",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "none",
+  "side_effects": []
+}

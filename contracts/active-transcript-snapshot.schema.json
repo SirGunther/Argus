@@ -1,0 +1,1 @@
+{"$id":"argus.active-transcript-snapshot.v1","type":"object","required":["schema_version","session_id","saved_at","segments"],"properties":{"schema_version":{"const":"1.0.0"},"session_id":{"type":"string","minLength":1},"saved_at":{"type":"string","minLength":1},"segments":{"type":"array","items":{"type":"object"}}},"additionalProperties":false}

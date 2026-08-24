@@ -1,0 +1,18 @@
+{
+  "$id": "argus.ui-transcript-row.v1",
+  "type": "object",
+  "required": ["session_id", "segment_id", "revision", "sequence", "start_time", "end_time", "text", "provisional", "read_only", "review_flags"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "segment_id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 0 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "start_time": { "type": "string", "minLength": 1 },
+    "end_time": { "type": "string", "minLength": 1 },
+    "text": { "type": "string", "minLength": 1 },
+    "provisional": { "type": "boolean" },
+    "read_only": { "type": "boolean" },
+    "review_flags": { "type": "array", "items": { "type": "object", "required": ["reason", "candidates"], "properties": { "reason": { "type": "string", "minLength": 1 }, "candidates": { "type": "array", "items": { "type": "string", "minLength": 1 } } }, "additionalProperties": false } }
+  },
+  "additionalProperties": false
+}

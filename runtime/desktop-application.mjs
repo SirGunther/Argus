@@ -1,0 +1,335 @@
+import { randomUUID } from 'node:crypto';
+import { access, readdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { createUiContractBoundary } from '../ui/bridge-contracts.mjs';
+import { createPlatformCapabilities } from '../ui/platform-capabilities.mjs';
+import { InteractiveGraph } from './interactive-graph.mjs';
+import { SessionStorage } from './session-storage.mjs';
+
+const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL'];
+const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'storage-session', 'clipboard', 'folder-opening'];
+
+export class DesktopApplication {
+  constructor({ root, graphFile, sessionRoot, environment = process.env } = {}) {
+    this.root = path.resolve(root);
+    this.graphFile = path.resolve(graphFile);
+    this.sessionRoot = path.resolve(sessionRoot);
+    this.environment = environment;
+    for (const key of ALLOWED_ENVIRONMENT) if (environment[key] !== undefined) process.env[key] = String(environment[key]);
+    process.env.ARGUS_SESSION_ROOT = this.sessionRoot;
+    this.storage = new SessionStorage({ root: this.sessionRoot });
+    this.capabilities = createPlatformCapabilities({ environment: process.env });
+    this.boundary = undefined;
+    this.graph = undefined;
+    this.sessionId = process.env.ARGUS_SESSION_ID || `session-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`;
+    this.metadata = undefined;
+    this.transcript = [];
+    this.loggedItems = [];
+    this.projectionListeners = new Set();
+    this.commandResults = new Map();
+    this.capabilityState = new Map();
+    this.seenMessages = new Set();
+    this.audioInFlight = 0;
+    this.provisionedManifest = undefined;
+    this.started = false;
+    this.startError = undefined;
+  }
+
+  onProjection(listener) { this.projectionListeners.add(listener); return () => this.projectionListeners.delete(listener); }
+
+  async start() {
+    await this.loadProvisionedConfiguration();
+    this.boundary = await createUiContractBoundary(this.root);
+    await this.loadLatestSession();
+    await this.setInitialCapabilities();
+    this.graph = await InteractiveGraph.create(this.graphFile, {
+      onMessage: (message) => this.handleGraphMessage(message),
+      onStatus: (status) => this.handleGraphStatus(status)
+    });
+    try {
+      await this.graph.start();
+      this.setCapability('orchestration', 'available', 'Production Argus graph is supervised and ready.', false);
+    } catch (error) {
+      this.startError = error;
+      this.setCapability('orchestration', 'unavailable', `Production graph unavailable: ${error.message}`, true);
+      throw error;
+    }
+    this.started = true;
+  }
+
+  async loadProvisionedConfiguration() {
+    try {
+      const manifest = JSON.parse(await readFile(path.join(this.root, 'runtime-output', 'real-dependencies.json'), 'utf8'));
+      const whisper = manifest.whisper || {};
+      const model = manifest.local_model || {};
+      this.provisionedManifest = manifest;
+      const provisioned = {
+        ARGUS_WHISPER_BINARY: resolveProvisionedPath(this.root, whisper.binary, whisper.binary_relative),
+        ARGUS_WHISPER_MODEL: resolveProvisionedPath(this.root, whisper.model, whisper.model_relative),
+        ARGUS_MODEL_ENDPOINT: model.endpoint,
+        ARGUS_MODEL_NAME: model.model,
+        ARGUS_MODEL_PROTOCOL: model.protocol,
+        ARGUS_MODEL_TIMEOUT_MS: '120000'
+      };
+      for (const [key, value] of Object.entries(provisioned)) if (value && !process.env[key]) process.env[key] = String(value);
+    } catch {
+      // Missing provisioning is a visible unavailable capability, not a simulated fallback.
+    }
+  }
+
+  async shutdown() { await this.graph?.close(); }
+
+  async bootstrap() {
+    await this.loadLatestSession();
+    const projections = [this.ui('ui.session-status', this.sessionProjection()), ...this.transcript.map((row) => this.ui('ui.transcript-row', row)), ...this.loggedItems.map((row) => this.ui('ui.logged-item-row', row)), ...this.capabilityProjections()];
+    return { projections, new_session: !this.metadata };
+  }
+
+  capabilitySnapshot() { return this.capabilityProjections().map((message) => message.payload); }
+
+  reportCaptureFailure(message) {
+    this.setCapability('microphone', 'unavailable', `Physical microphone capture failed: ${message}`, true);
+    return { accepted: true };
+  }
+
+  async acceptAudioChunk(chunk) {
+    if (!this.graph || this.metadata?.state !== 'recording') throw new Error('Audio is accepted only while the governed session is recording');
+    if (this.audioInFlight >= 4) throw Object.assign(new Error('Audio backpressure capacity reached; capture must pause.'), { code: 'AUDIO_BACKPRESSURE', retryable: true });
+    this.audioInFlight += 1;
+    try {
+      await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.chunk', chunk.session_id, chunk, `${chunk.session_id}:audio.chunk:${chunk.sequence}`);
+      return { accepted: true, sequence: chunk.sequence };
+    } finally { this.audioInFlight -= 1; }
+  }
+
+  async acceptAudioFlush(payload = {}) {
+    if (!this.graph || this.metadata?.state !== 'recording') throw new Error('Audio flush is accepted only while the governed session is recording');
+    if (payload.session_id !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${payload.session_id}`), { code: 'SESSION_NOT_FOUND' });
+    await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', payload.session_id, {
+      session_id: payload.session_id,
+      requested_at: payload.requested_at || new Date().toISOString(),
+      ...(payload.reason === 'pause' ? { reason: 'pause' } : {})
+    }, `${payload.session_id}:audio.flush:${randomUUID()}`);
+    return { accepted: true, session_id: payload.session_id };
+  }
+
+  async handleCommand(rawPayload) {
+    let command;
+    try { command = this.boundary.assertCommand(rawPayload); }
+    catch (error) { return this.emitCommandResult(rawPayload, this.rejected(rawPayload, 'INVALID_COMMAND', error.message, 'ui/command')); }
+    const payload = command.payload;
+    const known = this.commandResults.get(payload.command_id);
+    if (known) return known;
+    try {
+      const result = await this.executeCommand(payload);
+      return this.emitCommandResult(payload, result);
+    } catch (error) {
+      return this.emitCommandResult(payload, this.rejected(payload, error.code || 'COMMAND_FAILED', error.message, ownerFor(payload.command), Boolean(error.retryable)));
+    }
+  }
+
+  async executeCommand(payload) {
+    if (payload.session_id !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${payload.session_id}`), { code: 'SESSION_NOT_FOUND' });
+    switch (payload.command) {
+      case 'session.new': return this.newSessionCommand(payload);
+      case 'session.record':
+      case 'session.stop':
+      case 'session.resume':
+      case 'session.close': return this.sessionCommand(payload);
+      case 'transcript.edit':
+        await this.graph.dispatchFrom('@desktop-controller', 'domain', 'transcript.segment-update', payload.session_id, { segment_id: payload.segment_id, session_id: payload.session_id, expected_revision: payload.expected_revision, text: payload.text, updated_at: new Date().toISOString(), editor: 'user' }, payload.command_id);
+        return this.accepted(payload, 'transcript/active-state', payload.segment_id, payload.expected_revision + 1, 'Transcript revision accepted by the active owner.');
+      case 'logged-item.edit':
+        await this.graph.dispatchFrom('@desktop-controller', 'domain', 'logged-item.update', payload.session_id, { item_id: payload.item_id, session_id: payload.session_id, expected_revision: payload.expected_revision, text: payload.text, updated_at: new Date().toISOString(), editor: 'user' }, payload.command_id);
+        return this.accepted(payload, 'logged-items/active-owner', payload.item_id, payload.expected_revision + 1, 'Logged-item revision accepted by the active owner.');
+      case 'copy': return this.copyCommand(payload);
+      case 'copy-session-path': return this.copySessionPath(payload);
+      case 'open-folder': return this.openFolder(payload);
+      default: throw Object.assign(new Error(`Unsupported UI command ${payload.command}.`), { code: 'UNSUPPORTED_COMMAND' });
+    }
+  }
+
+  async sessionCommand(payload) {
+    if (payload.command === 'session.stop') {
+      await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`);
+      await this.graph.waitForIdle();
+    }
+    if (payload.command === 'session.close') {
+      await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`);
+      await this.graph.waitForIdle();
+    }
+    const output = await this.graph.dispatchFrom('@desktop-controller', 'control', payload.command, payload.session_id, { operation_id: payload.command_id, session_id: payload.session_id, requested_at: new Date().toISOString() }, payload.command_id);
+    await this.loadLatestSession(payload.session_id);
+    this.emit('ui.session-status', this.sessionProjection());
+    const state = this.metadata?.state || (payload.command === 'session.record' ? 'recording' : 'stopped');
+    return this.accepted(payload, 'runtime/session-lifecycle', payload.session_id, this.metadata?.revision, `${payload.command} accepted by the session lifecycle owner (${state}).`);
+  }
+
+  async newSessionCommand(payload) {
+    if (this.metadata && this.metadata.state !== 'closed') throw Object.assign(new Error('New Session is available only after the current session is closed.'), { code: 'SESSION_NOT_CLOSED' });
+    const sessionId = `session-${randomUUID()}`;
+    await this.graph.dispatchFrom('@desktop-controller', 'control', 'session.record', sessionId, {
+      operation_id: payload.command_id,
+      session_id: sessionId,
+      requested_at: new Date().toISOString()
+    }, payload.command_id);
+    await this.loadLatestSession(sessionId);
+    this.transcript = [];
+    this.loggedItems = [];
+    return this.accepted({ ...payload, session_id: sessionId }, 'runtime/session-lifecycle', sessionId, this.metadata?.revision, 'New Session accepted by the session lifecycle owner.');
+  }
+
+  async copyCommand(payload) {
+    const { transcriptSegments, loggedItems } = await this.storageProjections();
+    const values = payload.kind === 'transcript' ? transcriptSegments.filter((item) => payload.item_ids.includes(item.segment_id)) : loggedItems.filter((item) => payload.item_ids.includes(item.item_id));
+    const text = values.map((item) => `${payload.include_timestamps ? `[${item.start_time || item.stored_at}] ` : ''}${item.text}`).join('\n');
+    const receipt = await this.capabilities.clipboard.write(text);
+    return this.accepted(payload, 'platform/clipboard', undefined, undefined, receipt.message);
+  }
+
+  async copySessionPath(payload) {
+    const folder = this.storage.paths(payload.session_id).session;
+    const receipt = await this.capabilities.clipboard.write(folder);
+    return this.accepted(payload, 'platform/clipboard', undefined, undefined, receipt.message);
+  }
+
+  async openFolder(payload) { return this.accepted(payload, 'platform/folder', undefined, undefined, (await this.capabilities.folder.open(payload.session_id)).message); }
+
+  async storageProjections(sessionId = this.sessionId) {
+    const [transcript, logged] = await Promise.all([this.storage.readActiveSnapshot(sessionId, 'transcript'), this.storage.readActiveSnapshot(sessionId, 'logged-item')]);
+    return { transcriptSegments: transcript?.segments || [], loggedItems: logged?.items || [] };
+  }
+
+  async loadLatestSession(preferredSessionId) {
+    const selected = preferredSessionId || process.env.ARGUS_SESSION_ID;
+    const entries = await readdir(this.sessionRoot, { withFileTypes: true }).catch(() => []);
+    const sessions = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const metadata = await this.storage.readMetadata(entry.name).catch(() => undefined);
+      if (metadata) sessions.push(metadata);
+    }
+    const metadata = selected ? sessions.find((item) => item.session_id === selected) : sessions.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
+    if (metadata) this.sessionId = metadata.session_id;
+    this.metadata = metadata;
+    if (metadata) {
+      const active = await this.storageProjections(metadata.session_id);
+      this.transcript = active.transcriptSegments.map((item) => this.transcriptRow(item));
+      this.loggedItems = active.loggedItems.map((item) => this.loggedItemRow(item));
+    } else { this.transcript = []; this.loggedItems = []; }
+  }
+
+  sessionProjection() {
+    const metadata = this.metadata;
+    const state = metadata?.state || 'stopped';
+    const createdAt = metadata?.created_at || new Date().toISOString();
+    const end = metadata?.closed_at || metadata?.stopped_at || new Date().toISOString();
+    const duration = Math.max(0, Math.floor((Date.parse(end) - Date.parse(createdAt)) / 1000));
+    const elapsed = state === 'recording' ? Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 1000)) : duration;
+    return { session_id: this.sessionId, state, elapsed_seconds: elapsed, created_at: createdAt, duration_seconds: duration, transcript_count: this.transcript.length, logged_item_count: this.loggedItems.length };
+  }
+
+  handleGraphMessage(message) {
+    if (!message || this.seenMessages.has(message.message_id)) return;
+    this.seenMessages.add(message.message_id);
+    if (message.message_type === 'transcript.partial') {
+      const partial = message.payload;
+      this.emit('ui.transcript-row', { session_id: partial.session_id, segment_id: `${partial.session_id}-live`, revision: partial.revision, sequence: 0, start_time: partial.start_time, end_time: partial.end_time, text: partial.text, provisional: true, read_only: true, review_flags: [] });
+      return;
+    }
+    if (message.message_type === 'transcript.segment') { this.emit('ui.transcript-row', this.transcriptRow(message.payload)); return; }
+    if (message.message_type === 'logged-item.stored') { this.emit('ui.logged-item-row', this.loggedItemRow(message.payload)); return; }
+    if (message.message_type === 'session.recorded' || message.message_type === 'session.stopped' || message.message_type === 'session.resumed' || message.message_type === 'session.closed') {
+      this.loadLatestSession(message.payload?.session_id).then(() => this.emit('ui.session-status', this.sessionProjection())).catch(() => {});
+      return;
+    }
+    if (message.message_type === 'service.failure') {
+      const service = message.payload.service || '';
+      if (service.includes('speech') || service.includes('stt')) this.setCapability('stt', 'unavailable', message.payload.error?.message || 'The real Whisper transcription dependency failed.', true);
+      if (service.includes('model')) this.setCapability('model', 'unavailable', message.payload.error?.message || 'The configured local model dependency failed.', true);
+    }
+  }
+
+  handleGraphStatus(status) {
+    if (status.type === 'graph-ready') this.setCapability('orchestration', 'available', 'Production Argus graph is supervised and ready.', false);
+    if (status.type === 'graph-failure') this.setCapability('orchestration', 'unavailable', status.message, true);
+    if (status.type === 'service-failure') {
+      if (status.service === 'speech-to-text') this.setCapability('stt', 'unavailable', status.message, true);
+      if (status.service === 'model-lane') this.setCapability('model', 'unavailable', status.message, true);
+    }
+  }
+
+  async setInitialCapabilities() {
+    await this.storage.ensureRoot();
+    this.setCapability('storage-session', 'available', `Durable sessions are stored under ${this.sessionRoot}.`, false);
+    this.setCapability('microphone', 'degraded', 'Physical microphone permission is requested by Electron when Record starts.', true);
+    const whisperBinary = process.env.ARGUS_WHISPER_BINARY;
+    const whisperModel = process.env.ARGUS_WHISPER_MODEL;
+    let stt = 'unavailable', sttMessage = 'Whisper runtime/model paths are not configured; run npm run setup:real.';
+    if (whisperBinary && whisperModel) {
+      try { await access(whisperBinary); await access(whisperModel); stt = 'available'; sttMessage = 'Pinned whisper.cpp runtime and model are available.'; }
+      catch (error) { sttMessage = `Whisper dependency unavailable: ${error.message}`; }
+    }
+    this.setCapability('stt', stt, sttMessage, true);
+    const endpoint = String(process.env.ARGUS_MODEL_ENDPOINT || '').trim();
+    const model = String(process.env.ARGUS_MODEL_NAME || '').trim();
+    const modelAvailability = endpoint && model ? await probeLocalModel(endpoint, model, this.provisionedManifest?.local_model?.identity) : { status: 'unavailable', message: 'Local model endpoint/name are not configured; run npm run setup:real.' };
+    this.setCapability('model', modelAvailability.status, modelAvailability.message, modelAvailability.status !== 'available');
+    this.setCapability('transcript', stt, sttMessage, true);
+    this.setCapability('logged-item-pipeline', modelAvailability.status === 'available' ? 'available' : 'unavailable', modelAvailability.status === 'available' ? 'Real local model extraction is available through the serial model lane.' : `Logged-item extraction is unavailable: ${modelAvailability.message}`, true);
+    this.setCapability('clipboard', this.capabilities.clipboard.available ? 'available' : 'unavailable', this.capabilities.clipboard.available ? 'Clipboard is available through the Electron host.' : 'Clipboard host capability is unavailable.', true);
+    this.setCapability('folder-opening', this.capabilities.folder.available ? 'available' : 'unavailable', this.capabilities.folder.available ? 'Session folders can be opened by identity.' : 'Folder opening is unavailable.', true);
+    this.setCapability('orchestration', 'degraded', 'Starting supervised production graph.', true);
+  }
+
+  setCapability(capability, status, message, retryable) {
+    if (!CAPABILITIES.includes(capability)) return;
+    const value = { capability, status, message, retryable, updated_at: new Date().toISOString() };
+    this.capabilityState.set(capability, value);
+    if (this.started) this.emit('ui.service-status', value);
+  }
+
+  capabilityProjections() { return [...this.capabilityState.values()].map((value) => this.ui('ui.service-status', value)); }
+  transcriptRow(item) { return { session_id: item.session_id, segment_id: item.segment_id, revision: item.revision || 0, sequence: item.sequence, start_time: item.start_time, end_time: item.end_time, text: item.text, provisional: false, read_only: false, review_flags: item.review_flags || [] }; }
+  loggedItemRow(item) { return { session_id: item.session_id, item_id: item.item_id, revision: item.revision, revision_id: item.revision_id, logged_at: item.stored_at || item.created_at, text: item.text, source: item.source, classification_suggestion: item.classification_suggestion || null }; }
+  accepted(payload, owner, resourceId, revision, message) { return { command_id: payload.command_id, session_id: payload.session_id, command: payload.command, status: 'accepted', owner, ...(resourceId ? { resource_id: resourceId } : {}), ...(revision === undefined ? {} : { revision }), message }; }
+  rejected(payload = {}, code, message, owner, pending = false) { return { command_id: payload.command_id || 'invalid-command', session_id: payload.session_id || this.sessionId, command: payload.command || 'unknown', status: 'rejected', owner, code, message, ...(pending ? { pending: true } : {}) }; }
+  emitCommandResult(payload, result) { const message = this.emit('ui.command-result', result); this.commandResults.set(payload?.command_id, message); return message; }
+  emit(type, payload) { const message = this.ui(type, payload); for (const listener of this.projectionListeners) listener(message); return message; }
+  ui(type, payload) { return this.boundary.projection(type, payload, payload.session_id || this.sessionId); }
+}
+
+function ownerFor(command) { if (command === 'transcript.edit') return 'transcript/active-state'; if (command === 'logged-item.edit') return 'logged-items/active-owner'; if (command === 'copy' || command === 'copy-session-path') return 'platform/clipboard'; if (command === 'open-folder') return 'platform/folder'; if (command?.startsWith('session.')) return 'runtime/session-lifecycle'; return 'ui/command'; }
+
+function resolveProvisionedPath(root, absolutePath, relativePath) {
+  if (relativePath) return path.resolve(root, relativePath);
+  if (!absolutePath) return undefined;
+  return path.isAbsolute(absolutePath) ? absolutePath : path.resolve(root, absolutePath);
+}
+
+async function probeLocalModel(endpoint, modelName, expectedIdentity) {
+  try {
+    const url = new URL(endpoint);
+    const tags = await fetchJson(new URL('/api/tags', url.origin), { method: 'GET' }, 5000);
+    const model = (tags.models || []).find((entry) => entry.name === modelName || entry.model === modelName);
+    if (!model) return { status: 'unavailable', message: `Ollama is reachable but selected model ${modelName} is not installed.` };
+    const digest = model.digest || model.details?.digest;
+    if (expectedIdentity?.digest && digest && digest !== expectedIdentity.digest) return { status: 'unavailable', message: `Ollama model identity mismatch for ${modelName}; expected ${expectedIdentity.digest}, found ${digest}.` };
+    return { status: 'available', message: `Ollama loopback endpoint is available with selected model ${modelName}${digest ? ` (${digest})` : ''}.` };
+  } catch (error) {
+    return { status: 'unavailable', message: `Ollama local model unavailable: ${error.message}` };
+  }
+}
+
+async function fetchJson(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error(`request timed out after ${timeoutMs} ms`);
+    throw error;
+  } finally { clearTimeout(timer); }
+}

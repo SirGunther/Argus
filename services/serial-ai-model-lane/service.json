@@ -1,0 +1,50 @@
+{
+  "service_name": "serial-ai-model-lane",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs",
+    "includes": [
+      "model-config.mjs"
+    ],
+    "environment": {
+        "allow": [
+          "ARGUS_MODEL_ENDPOINT",
+          "ARGUS_MODEL_NAME",
+          "ARGUS_MODEL_TIMEOUT_MS",
+          "ARGUS_MODEL_PROTOCOL"
+      ]
+    }
+  },
+  "permissions": {
+    "network": {
+      "outbound": [
+        "loopback-http"
+      ]
+    }
+  },
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": []
+    },
+    "control": {
+      "accepts": [
+        "ai.work-request",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "ai.work-completed",
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "one in-memory SerialAiScheduler for model-backed workloads",
+  "side_effects": [
+    "localhost model HTTP request"
+  ]
+}

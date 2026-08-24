@@ -1,0 +1,36 @@
+{
+  "service_name": "transcript-window-selector",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [
+        "transcript.segment"
+      ],
+      "emits": [
+        "transcript.context-window"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.health-check",
+        "lifecycle.drain",
+        "transcript.context-policy"
+      ],
+      "emits": [
+        "transcript.context-policy",
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed",
+        "operation.rejected"
+      ]
+    }
+  },
+  "state": "owns in-memory policy, pending authoritative ranges, bounded context history, and deferred forward-context windows keyed by session_id",
+  "side_effects": []
+}

@@ -1,0 +1,32 @@
+{
+  "service_name": "logged-item-evidence-observer",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [
+        "logged-item.stored",
+        "logged-item.history-appended"
+      ],
+      "emits": []
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "none",
+  "side_effects": []
+}

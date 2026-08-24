@@ -1,0 +1,13 @@
+{
+  "$id": "argus.service-health.v1",
+  "type": "object",
+  "required": ["service", "probe_id", "status", "runtime_kind", "rss_bytes"],
+  "properties": {
+    "service": { "type": "string", "minLength": 1 },
+    "probe_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["ready", "not_ready"] },
+    "runtime_kind": { "type": "string", "minLength": 1 },
+    "rss_bytes": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

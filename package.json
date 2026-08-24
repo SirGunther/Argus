@@ -1,0 +1,46 @@
+{
+  "name": "argus-standalone",
+  "version": "0.1.0",
+  "private": true,
+  "author": "Argus",
+  "type": "module",
+  "description": "Argus standalone Electron application with governed local audio, transcription, and logged-item pipelines.",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "demo": "node runtime/orchestrator.mjs wiring/demo.concise.json",
+    "demo:alternate": "node runtime/orchestrator.mjs wiring/demo.passthrough.json",
+    "demo:transcript": "node runtime/orchestrator.mjs wiring/demo.transcript-pipeline.json",
+    "demo:context": "node runtime/orchestrator.mjs wiring/demo.transcript-context.json",
+    "demo:logged-items": "node runtime/orchestrator.mjs wiring/demo.logged-item-pipeline.json",
+    "demo:logged-item-model": "node scripts/run-logged-item-model-demo.mjs",
+    "demo:ui": "node ui/bridge.mjs",
+    "demo:ui:smoke": "node scripts/smoke-ui.mjs",
+    "setup:real": "node scripts/setup-real-dependencies.mjs",
+    "start": "electron .",
+    "start:desktop": "electron .",
+    "package:win": "electron-forge make --platform win32",
+    "contracts:docs": "node scripts/generate-contract-docs.mjs",
+    "contracts:docs:check": "node scripts/generate-contract-docs.mjs --check",
+    "contracts:check": "node scripts/check-contracts.mjs",
+    "package:graph": "node scripts/package-graph.mjs",
+    "package:graph:verify": "node scripts/package-graph.mjs --verify",
+    "measure:runtime": "node scripts/measure-runtime.mjs",
+    "benchmark:transport": "node scripts/benchmark-audio-transport.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "config": {
+    "forge": "forge.config.cjs"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.8.1",
+    "@electron-forge/maker-squirrel": "^7.8.1",
+    "@electron-forge/maker-zip": "^7.8.1",
+    "electron": "^38.0.0"
+  }
+}

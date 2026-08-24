@@ -1,0 +1,14 @@
+{
+  "$id": "argus.logged-item-update.v1",
+  "type": "object",
+  "required": ["item_id", "session_id", "expected_revision", "text", "updated_at"],
+  "properties": {
+    "item_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "expected_revision": { "type": "integer", "minimum": 0 },
+    "text": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 },
+    "editor": { "type": "string", "const": "user" }
+  },
+  "additionalProperties": false
+}

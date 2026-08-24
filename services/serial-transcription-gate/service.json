@@ -1,0 +1,34 @@
+{
+  "service_name": "serial-transcription-gate",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [
+        "audio.chunk"
+      ],
+      "emits": [
+        "audio.chunk"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed",
+        "operation.rejected"
+      ]
+    }
+  },
+  "state": "in-memory Phase 4D adapter over the proven global SerialAiScheduler; durable scheduler recovery is proved separately",
+  "side_effects": []
+}

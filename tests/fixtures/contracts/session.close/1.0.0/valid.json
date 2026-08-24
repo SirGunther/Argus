@@ -1,0 +1,1 @@
+{"message_id":"fixture-session-close-v1","plane":"control","message_type":"session.close","timestamp":"2026-08-19T00:00:00.000Z","producer":"fixture-session-controller","correlation_id":"fixture-session","schema_version":"1.0.0","payload":{"operation_id":"close-fixture","session_id":"fixture-session","requested_at":"2026-08-19T00:03:00.000Z"}}

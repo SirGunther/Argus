@@ -1,0 +1,18 @@
+{
+  "message_id": "fixture-transcript-segment-v1",
+  "plane": "domain",
+  "message_type": "transcript.segment",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "producer": "fixture-transcript-source",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "segment_id": "fixture-segment-1",
+    "session_id": "fixture-session",
+    "sequence": 0,
+    "start_time": "00:00:00.000",
+    "end_time": "00:00:01.000",
+    "text": "Fixture transcript text.",
+    "boundary": "pause"
+  }
+}

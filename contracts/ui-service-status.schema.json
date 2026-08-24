@@ -1,0 +1,13 @@
+{
+  "$id": "argus.ui-service-status.v1",
+  "type": "object",
+  "required": ["capability", "status", "message", "retryable", "updated_at"],
+  "properties": {
+    "capability": { "enum": ["microphone", "stt", "model", "orchestration", "transcript", "logged-item-pipeline", "storage-session", "clipboard", "folder-opening", "classification"] },
+    "status": { "enum": ["available", "degraded", "unavailable"] },
+    "message": { "type": "string", "minLength": 1 },
+    "retryable": { "type": "boolean" },
+    "updated_at": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

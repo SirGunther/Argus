@@ -1,0 +1,161 @@
+{
+  "$id": "argus.ai-work-request.v1",
+  "type": "object",
+  "required": ["work_id", "workload", "session_id", "sequence", "queued_at", "input"],
+  "properties": {
+    "work_id": { "type": "string", "minLength": 1 },
+    "workload": { "type": "string", "enum": ["transcription", "transcript-correction-formatting", "logged-item-extraction", "classification-enrichment"] },
+    "session_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "queued_at": { "type": "string", "minLength": 1 },
+    "input": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["model_request"],
+          "properties": { "model_request": { "$ref": "#/$defs/modelRequest" } },
+          "additionalProperties": false
+        },
+        { "$ref": "#/$defs/legacyInput" }
+      ]
+    },
+    "recovery": {
+      "type": "object",
+      "required": ["max_attempts"],
+      "properties": { "max_attempts": { "type": "integer", "minimum": 1 } },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "legacyInput": {
+      "type": "object",
+      "properties": {
+        "chunk_id": { "type": "string", "minLength": 1 },
+        "item_id": { "type": "string", "minLength": 1 },
+        "value": {},
+        "classification": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "segment": {
+      "type": "object",
+      "required": ["segment_id", "sequence", "start_time", "end_time", "text"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "contextSegment": {
+      "type": "object",
+      "required": ["segment_id", "sequence", "start_time", "end_time", "text", "relation"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "relation": { "type": "string", "enum": ["lookback", "forward"] }
+      },
+      "additionalProperties": false
+    },
+    "sourceRange": {
+      "type": "object",
+      "required": ["first_segment_id", "last_segment_id", "start_time", "end_time"],
+      "properties": {
+        "first_segment_id": { "type": "string", "minLength": 1 },
+        "last_segment_id": { "type": "string", "minLength": 1 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "required": ["max_context_chars", "max_context_tokens", "max_output_chars", "max_output_tokens"],
+      "properties": {
+        "max_context_chars": { "type": "integer", "minimum": 1 },
+        "max_context_tokens": { "type": "integer", "minimum": 1 },
+        "max_output_chars": { "type": "integer", "minimum": 1 },
+        "max_output_tokens": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "extractionIdentity": {
+      "type": "object",
+      "required": ["work_id", "session_id", "context_window_id"],
+      "properties": {
+        "work_id": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "context_window_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "classificationIdentity": {
+      "type": "object",
+      "required": ["work_id", "session_id", "item_id", "item_revision"],
+      "properties": {
+        "work_id": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "item_id": { "type": "string", "minLength": 1 },
+        "item_revision": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "authoritativeItem": {
+      "type": "object",
+      "required": ["item_id", "revision", "text", "source"],
+      "properties": {
+        "item_id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 0 },
+        "text": { "type": "string", "minLength": 1 },
+        "source": { "$ref": "#/$defs/sourceRange" }
+      },
+      "additionalProperties": false
+    },
+    "modelRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["protocol_version", "purpose", "model", "authoritative_source_segments", "bounded_context_segments", "policy_profile", "instruction_version", "limits", "identity"],
+          "properties": {
+            "protocol_version": { "const": "1.0.0" },
+            "purpose": { "const": "logged-item-extraction" },
+            "model": { "type": "string", "minLength": 1 },
+            "authoritative_source_segments": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/segment" } },
+            "bounded_context_segments": { "type": "array", "items": { "$ref": "#/$defs/contextSegment" } },
+            "policy_profile": { "type": "string", "minLength": 1 },
+            "instruction_version": { "type": "string", "minLength": 1 },
+            "limits": { "$ref": "#/$defs/limits" },
+            "identity": { "$ref": "#/$defs/extractionIdentity" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["protocol_version", "purpose", "model", "authoritative_logged_item", "source_range", "source_transcript", "lookback_context", "forward_context", "evidence_segment_ids", "policy_profile", "instruction_version", "limits", "identity"],
+          "properties": {
+            "protocol_version": { "const": "1.0.0" },
+            "purpose": { "const": "classification-enrichment" },
+            "model": { "type": "string", "minLength": 1 },
+            "authoritative_logged_item": { "$ref": "#/$defs/authoritativeItem" },
+            "source_range": { "$ref": "#/$defs/sourceRange" },
+            "source_transcript": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/segment" } },
+            "lookback_context": { "type": "array", "items": { "$ref": "#/$defs/contextSegment" } },
+            "forward_context": { "type": "array", "items": { "$ref": "#/$defs/contextSegment" } },
+            "evidence_segment_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+            "policy_profile": { "type": "string", "minLength": 1 },
+            "instruction_version": { "type": "string", "minLength": 1 },
+            "limits": { "$ref": "#/$defs/limits" },
+            "identity": { "$ref": "#/$defs/classificationIdentity" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

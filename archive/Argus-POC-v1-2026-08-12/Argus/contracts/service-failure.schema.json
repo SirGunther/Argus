@@ -1,0 +1,22 @@
+{
+  "$id": "argus.service-failure.v1",
+  "type": "object",
+  "required": ["service", "operation", "error"],
+  "properties": {
+    "service": { "type": "string", "minLength": 1 },
+    "operation": { "type": "string", "minLength": 1 },
+    "input_message_id": { "type": "string", "minLength": 1 },
+    "error": {
+      "type": "object",
+      "required": ["type", "message", "retryable"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+

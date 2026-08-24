@@ -1,0 +1,10 @@
+{
+  "message_id": "fixture-service-health-v1",
+  "plane": "control",
+  "message_type": "service.health",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "producer": "fixture-service",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": { "service": "fixture-service", "probe_id": "fixture-probe", "status": "ready", "runtime_kind": "node", "rss_bytes": 1024 }
+}

@@ -1,0 +1,18 @@
+{
+  "message_id": "743c67e0-766e-452d-8624-148d70795ef3",
+  "idempotency_key": "fixture:logged-item.update",
+  "plane": "domain",
+  "message_type": "logged-item.update",
+  "timestamp": "2026-08-12T21:00:00.000Z",
+  "producer": "fixture-ui",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.2.0",
+  "payload": {
+    "item_id": "item-1",
+    "session_id": "fixture-session",
+    "expected_revision": 0,
+    "text": "Edited text.",
+    "updated_at": "2026-08-12T21:00:00.000Z"
+  },
+  "content_fingerprint": "sha256:63419e018f845c34e6916f15319720cbed6332a038fbfea865d9da8c8eb34e71"
+}

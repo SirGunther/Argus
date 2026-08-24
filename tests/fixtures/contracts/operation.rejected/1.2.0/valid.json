@@ -1,0 +1,18 @@
+{
+  "message_id": "a458f9f3-98fe-455e-95b3-eefc25fe966c",
+  "idempotency_key": "fixture:operation.rejected",
+  "plane": "control",
+  "message_type": "operation.rejected",
+  "timestamp": "2026-08-12T21:00:00.000Z",
+  "producer": "fixture-service",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.2.0",
+  "payload": {
+    "service": "fixture-service",
+    "operation": "update-item",
+    "input_message_id": "11111111-1111-4111-8111-111111111111",
+    "outcome": "rejected",
+    "reason": { "code": "STALE_REVISION", "message": "Expected revision is stale" }
+  },
+  "content_fingerprint": "sha256:81e35fcec539e5092528a12bb159c2f1a4215f4aafe88b86b68952571db95cec"
+}

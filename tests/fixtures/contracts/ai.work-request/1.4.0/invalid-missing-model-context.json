@@ -1,0 +1,19 @@
+{
+  "message_id": "d4e7e20a-58d5-4f08-9fc1-9857bc4c0a12",
+  "idempotency_key": "fixture:ai.work-request:invalid-model-context",
+  "plane": "control",
+  "message_type": "ai.work-request",
+  "timestamp": "2026-08-19T17:00:00.000Z",
+  "producer": "fixture-model-extractor",
+  "correlation_id": "fixture-model-session",
+  "schema_version": "1.4.0",
+  "payload": {
+    "work_id": "logged-item-extraction:fixture-model-session:window-1",
+    "workload": "logged-item-extraction",
+    "session_id": "fixture-model-session",
+    "sequence": 1,
+    "queued_at": "2026-08-19T17:00:00.000Z",
+    "input": { "model_request": { "protocol_version": "1.0.0", "purpose": "logged-item-extraction", "model": "fixture-model" } },
+    "recovery": { "max_attempts": 2 }
+  }
+}

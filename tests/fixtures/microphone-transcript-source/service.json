@@ -1,0 +1,36 @@
+{
+  "service_name": "microphone-transcript-source",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {
+    "microphone": {
+      "granted": true
+    }
+  },
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": [
+        "transcript.segment"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.start",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "none",
+  "side_effects": []
+}

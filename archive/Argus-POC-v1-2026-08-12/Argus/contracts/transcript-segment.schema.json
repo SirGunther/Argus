@@ -1,0 +1,24 @@
+{
+  "$id": "argus.transcript-segment.v1",
+  "type": "object",
+  "required": [
+    "segment_id",
+    "session_id",
+    "sequence",
+    "start_time",
+    "end_time",
+    "text",
+    "boundary"
+  ],
+  "properties": {
+    "segment_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "start_time": { "type": "string", "minLength": 1 },
+    "end_time": { "type": "string", "minLength": 1 },
+    "text": { "type": "string", "minLength": 1 },
+    "boundary": { "type": "string", "enum": ["continuation", "pause"] }
+  },
+  "additionalProperties": false
+}
+

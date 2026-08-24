@@ -1,0 +1,36 @@
+{
+  "service_name": "fake-stt-alternate",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [
+        "audio.chunk"
+      ],
+      "emits": [
+        "transcript.partial",
+        "transcript.word-committed",
+        "transcript.utterance-boundary"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed",
+        "operation.rejected"
+      ]
+    }
+  },
+  "state": "independent deterministic provider-B utterance projection for replacement conformance",
+  "side_effects": []
+}

@@ -1,0 +1,20 @@
+{
+  "message_id": "4cb54cef-d306-48cf-b734-9c3cc621375f",
+  "idempotency_key": "fixture:ai.work-request",
+  "plane": "control",
+  "message_type": "ai.work-request",
+  "timestamp": "2026-08-12T21:00:00.000Z",
+  "producer": "fixture-scheduler",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.2.0",
+  "payload": {
+    "work_id": "work-1",
+    "workload": "classification-enrichment",
+    "session_id": "fixture-session",
+    "sequence": 0,
+    "queued_at": "2026-08-12T21:00:00.000Z",
+    "input": { "item_id": "item-1" },
+    "recovery": { "max_attempts": 2 }
+  },
+  "content_fingerprint": "sha256:133489ce83679b2621f6ed3bc698ea6cc97b49fc3f6c4361c9345f3920d261d6"
+}

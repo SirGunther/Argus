@@ -1,0 +1,18 @@
+{
+  "message_id": "0781a7ad-f46d-408a-88c8-658e26e28fe8",
+  "idempotency_key": "fixture:classification.suggestion-accepted",
+  "plane": "domain",
+  "message_type": "classification.suggestion-accepted",
+  "timestamp": "2026-08-12T21:00:00.000Z",
+  "producer": "fixture-store",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.2.0",
+  "payload": {
+    "item_id": "item-1",
+    "session_id": "fixture-session",
+    "item_revision": 0,
+    "suggested_classification": "task",
+    "accepted_at": "2026-08-12T21:00:01.000Z"
+  },
+  "content_fingerprint": "sha256:c0dee5c4cb2d8c412ad84614f1185a3d3acaebf64c6cb72ded564e6883774e2e"
+}

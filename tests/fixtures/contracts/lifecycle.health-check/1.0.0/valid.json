@@ -1,0 +1,10 @@
+{
+  "message_id": "fixture-health-check-v1",
+  "plane": "control",
+  "message_type": "lifecycle.health-check",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "producer": "fixture-supervisor",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": { "probe_id": "fixture-probe" }
+}

@@ -1,0 +1,13 @@
+{
+  "$id": "argus.operation-completed.v1",
+  "type": "object",
+  "required": ["service", "operation", "input_message_id", "outcome"],
+  "properties": {
+    "service": { "type": "string", "minLength": 1 },
+    "operation": { "type": "string", "minLength": 1 },
+    "input_message_id": { "type": "string", "minLength": 1 },
+    "outcome": { "const": "success" },
+    "duplicate": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

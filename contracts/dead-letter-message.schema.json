@@ -1,0 +1,13 @@
+{
+  "$id": "argus.dead-letter-message.v1",
+  "type": "object",
+  "required": ["source_wire", "target_service", "attempts", "original_message", "failure"],
+  "properties": {
+    "source_wire": { "type": "string", "minLength": 1 },
+    "target_service": { "type": "string", "minLength": 1 },
+    "attempts": { "type": "integer", "minimum": 1 },
+    "original_message": { "type": "object" },
+    "failure": { "type": "object" }
+  },
+  "additionalProperties": false
+}

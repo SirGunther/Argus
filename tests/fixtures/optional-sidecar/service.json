@@ -1,0 +1,30 @@
+{
+  "service_name": "optional-sidecar",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": []
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.start",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "none",
+  "side_effects": []
+}

@@ -1,0 +1,65 @@
+{
+  "$id": "argus.transcript-history-append.v1",
+  "type": "object",
+  "required": ["history_entry_id", "session_id", "segment", "requested_at"],
+  "properties": {
+    "history_entry_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "segment": {
+      "type": "object",
+      "required": ["segment_id", "session_id", "sequence", "revision", "start_time", "end_time", "text", "original_stt_text", "boundary", "word_provenance", "stored_at"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "revision": { "type": "integer", "minimum": 0 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "original_stt_text": { "type": "string", "minLength": 1 },
+        "boundary": { "type": "string", "enum": ["continuation", "pause", "size", "latency", "flush"] },
+        "word_provenance": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["word_id", "source_text", "rendered_text"],
+            "properties": {
+              "word_id": { "type": "string", "minLength": 1 },
+              "source_text": { "type": "string", "minLength": 1 },
+              "rendered_text": { "type": "string", "minLength": 1 },
+              "correction_proposal_id": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "formatting": {
+          "type": "object",
+          "required": ["source", "provisional_until_finalized"],
+          "properties": {
+            "source": { "type": "string", "enum": ["stt-provider", "active-transcript-owner", "contextual-language"] },
+            "provisional_until_finalized": { "const": true }
+          },
+          "additionalProperties": false
+        },
+        "review_flags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["word_id", "reason", "candidates"],
+            "properties": {
+              "word_id": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "enum": ["unresolved-ambiguity", "correction-review"] },
+              "candidates": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "stored_at": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "requested_at": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

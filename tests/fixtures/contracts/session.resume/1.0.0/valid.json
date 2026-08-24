@@ -1,0 +1,1 @@
+{"message_id":"fixture-session-resume-v1","plane":"control","message_type":"session.resume","timestamp":"2026-08-19T00:00:00.000Z","producer":"fixture-session-controller","correlation_id":"fixture-session","schema_version":"1.0.0","payload":{"operation_id":"resume-fixture","session_id":"fixture-session","requested_at":"2026-08-19T00:02:00.000Z"}}

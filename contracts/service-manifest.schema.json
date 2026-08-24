@@ -1,0 +1,148 @@
+{
+  "$id": "argus.service-manifest.v1",
+  "type": "object",
+  "required": ["service_name", "version", "runtime", "ports", "state", "side_effects", "permissions"],
+  "properties": {
+    "service_name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "runtime": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "entrypoint"],
+          "properties": {
+            "kind": { "const": "node" },
+            "entrypoint": { "type": "string", "minLength": 1 },
+            "includes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+            "environment": {
+              "type": "object",
+              "required": ["allow"],
+              "properties": {
+                "allow": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" } }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "executable"],
+          "properties": {
+            "kind": { "const": "native" },
+            "executable": { "type": "string", "minLength": 1 },
+            "arguments": { "type": "array", "items": { "type": "string" } },
+            "includes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "image"],
+          "properties": {
+            "kind": { "const": "container" },
+            "image": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "filesystem": {
+          "type": "object",
+          "properties": {
+            "read": { "type": "array", "uniqueItems": true, "items": { "enum": ["session-root"] } },
+            "write": { "type": "array", "uniqueItems": true, "items": { "enum": ["session-root"] } }
+          },
+          "additionalProperties": false
+        },
+        "microphone": {
+          "type": "object",
+          "properties": { "granted": { "type": "boolean" } },
+          "additionalProperties": false
+        },
+        "clipboard": {
+          "type": "object",
+          "properties": { "granted": { "type": "boolean" } },
+          "additionalProperties": false
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "outbound": { "type": "array", "uniqueItems": true, "items": { "enum": ["loopback-http"] } },
+            "listen": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "model_credentials": {
+          "type": "object",
+          "properties": { "granted": { "type": "boolean" } },
+          "additionalProperties": false
+        },
+        "process": {
+          "type": "object",
+          "properties": { "granted": { "type": "boolean" } },
+          "additionalProperties": false
+        },
+        "worker": {
+          "type": "object",
+          "properties": { "granted": { "type": "boolean" } },
+          "additionalProperties": false
+        },
+        "addons": {
+          "type": "object",
+          "properties": { "granted": { "type": "boolean" } },
+          "additionalProperties": false
+        },
+        "wasi": {
+          "type": "object",
+          "properties": { "granted": { "type": "boolean" } },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "max_heap_mb": { "type": "integer", "minimum": 16, "maximum": 8192 },
+        "memory_mb": { "type": "integer", "minimum": 16 },
+        "cpu_limit": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "ports": {
+      "type": "object",
+      "required": ["domain", "control"],
+      "properties": {
+        "domain": {
+          "type": "object",
+          "required": ["accepts", "emits"],
+          "properties": {
+            "accepts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "emits": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        },
+        "control": {
+          "type": "object",
+          "required": ["accepts", "emits"],
+          "properties": {
+            "accepts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "emits": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "state": { "type": "string" },
+    "side_effects": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "additionalProperties": false
+}

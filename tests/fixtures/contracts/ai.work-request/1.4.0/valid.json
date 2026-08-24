@@ -1,0 +1,36 @@
+{
+  "message_id": "d4e7e20a-58d5-4f08-9fc1-9857bc4c0a11",
+  "idempotency_key": "fixture:ai.work-request:model-protocol",
+  "plane": "control",
+  "message_type": "ai.work-request",
+  "timestamp": "2026-08-19T17:00:00.000Z",
+  "producer": "fixture-model-extractor",
+  "correlation_id": "fixture-model-session",
+  "schema_version": "1.4.0",
+  "payload": {
+    "work_id": "logged-item-extraction:fixture-model-session:window-1",
+    "workload": "logged-item-extraction",
+    "session_id": "fixture-model-session",
+    "sequence": 1,
+    "queued_at": "2026-08-19T17:00:00.000Z",
+    "input": {
+      "model_request": {
+        "protocol_version": "1.0.0",
+        "purpose": "logged-item-extraction",
+        "model": "fixture-model",
+        "authoritative_source_segments": [
+          { "segment_id": "segment-1", "sequence": 1, "start_time": "00:00:01.000", "end_time": "00:00:02.000", "text": "Review the model boundary." }
+        ],
+        "bounded_context_segments": [
+          { "segment_id": "segment-0", "sequence": 0, "start_time": "00:00:00.000", "end_time": "00:00:01.000", "text": "Earlier context.", "relation": "lookback" }
+        ],
+        "policy_profile": "neutral-contextual-log",
+        "instruction_version": "1.0.0",
+        "limits": { "max_context_chars": 128, "max_context_tokens": 32, "max_output_chars": 512, "max_output_tokens": 128 },
+        "identity": { "work_id": "logged-item-extraction:fixture-model-session:window-1", "session_id": "fixture-model-session", "context_window_id": "window-1" }
+      }
+    },
+    "recovery": { "max_attempts": 2 }
+  },
+  "content_fingerprint": "sha256:68c718be95664f6c3d44676ffd4ed3bab53a4529e7ce7d03ed7b4360307045b6"
+}

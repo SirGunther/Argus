@@ -1,0 +1,13 @@
+{
+  "$id": "argus.transcript-history-appended.v1",
+  "type": "object",
+  "required": ["history_entry_id", "session_id", "segment_id", "segment_revision", "appended_at"],
+  "properties": {
+    "history_entry_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "segment_id": { "type": "string", "minLength": 1 },
+    "segment_revision": { "type": "integer", "minimum": 0 },
+    "appended_at": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "messages": {
+    "lifecycle.start": { "plane": "control", "version": "1.0.0" },
+    "service.failure": { "plane": "control", "version": "1.0.0" },
+    "workflow.completed": { "plane": "control", "version": "1.0.0" },
+    "transcript.segment": { "plane": "domain", "version": "1.0.0" },
+    "transcript.context-window": { "plane": "domain", "version": "1.0.0" },
+    "logged-item.draft": { "plane": "domain", "version": "1.0.0" },
+    "logged-item.stored": { "plane": "domain", "version": "1.0.0" }
+  }
+}

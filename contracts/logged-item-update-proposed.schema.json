@@ -1,0 +1,9 @@
+{
+  "$id": "argus.logged-item-update-proposed.v1", "type": "object",
+  "required": ["proposal_id", "item_id", "session_id", "base_revision", "proposed_text", "proposed_at", "generator"],
+  "properties": {
+    "proposal_id": { "type": "string", "minLength": 1 }, "item_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 },
+    "base_revision": { "type": "integer", "minimum": 0 }, "proposed_text": { "type": "string", "minLength": 1 }, "proposed_at": { "type": "string", "minLength": 1 },
+    "generator": { "type": "object", "required": ["implementation"], "properties": { "implementation": { "type": "string", "minLength": 1 } }, "additionalProperties": false }
+  }, "additionalProperties": false
+}

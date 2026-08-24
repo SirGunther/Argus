@@ -1,0 +1,45 @@
+{
+  "service_name": "session-folder-locator",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs",
+    "environment": {
+      "allow": [
+        "ARGUS_SESSION_ROOT"
+      ]
+    }
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "session-root"
+      ]
+    }
+  },
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": []
+    },
+    "control": {
+      "accepts": [
+        "session.folder-locate",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "session.folder-located",
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed",
+        "operation.rejected"
+      ]
+    }
+  },
+  "state": "none; read-only locator authority scoped to configured session root",
+  "side_effects": [
+    "filesystem:locate-session-folders"
+  ]
+}

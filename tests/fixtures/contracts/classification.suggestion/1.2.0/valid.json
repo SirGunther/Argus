@@ -1,0 +1,19 @@
+{
+  "message_id": "cbc072a4-55d7-478d-8074-e7d8e2bacbcb",
+  "idempotency_key": "fixture:classification.suggestion",
+  "plane": "domain",
+  "message_type": "classification.suggestion",
+  "timestamp": "2026-08-12T21:00:00.000Z",
+  "producer": "fixture-classifier",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.2.0",
+  "payload": {
+    "item_id": "item-1",
+    "session_id": "fixture-session",
+    "item_revision": 0,
+    "suggested_classification": "task",
+    "confidence": 0.8,
+    "evidence_segment_ids": ["segment-1"]
+  },
+  "content_fingerprint": "sha256:bea0813e850b36da48152c7c0c6a5aa7ac3ef987c601f6fcf75b8232935cb93f"
+}

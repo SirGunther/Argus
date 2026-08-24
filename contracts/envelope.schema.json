@@ -1,0 +1,32 @@
+{
+  "$id": "argus.message-envelope.v1",
+  "type": "object",
+  "required": [
+    "message_id",
+    "plane",
+    "message_type",
+    "timestamp",
+    "producer",
+    "correlation_id",
+    "schema_version",
+    "payload"
+  ],
+  "properties": {
+    "message_id": { "type": "string", "minLength": 1 },
+    "plane": { "type": "string", "enum": ["domain", "control"] },
+    "message_type": { "type": "string", "minLength": 1 },
+    "timestamp": { "type": "string", "minLength": 1 },
+    "producer": { "type": "string", "minLength": 1 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "causation_id": { "type": "string", "minLength": 1 },
+    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "content_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "schema_version": { "type": "string", "pattern": "^[1-9][0-9]*\\.[0-9]+\\.[0-9]+$" },
+    "extensions": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$" }
+    },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": false
+}

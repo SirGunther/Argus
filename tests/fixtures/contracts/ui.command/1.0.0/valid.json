@@ -1,0 +1,17 @@
+{
+  "message_id": "fixture-ui-command-v1",
+  "plane": "control",
+  "message_type": "ui.command",
+  "timestamp": "2026-08-19T00:00:00.000Z",
+  "producer": "fixture-browser",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "command_id": "command-fixture-1",
+    "session_id": "fixture-session",
+    "command": "transcript.edit",
+    "segment_id": "fixture-segment-1",
+    "expected_revision": 0,
+    "text": "Edited fixture transcript."
+  }
+}

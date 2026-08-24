@@ -1,0 +1,1 @@
+{"message_id":"fixture-session-folder-locate-v1","plane":"control","message_type":"session.folder-locate","timestamp":"2026-08-19T00:00:00.000Z","producer":"fixture-client","correlation_id":"fixture-session","schema_version":"1.0.0","payload":{"operation_id":"locate-fixture","session_id":"fixture-session","requested_at":"2026-08-19T00:04:00.000Z"}}

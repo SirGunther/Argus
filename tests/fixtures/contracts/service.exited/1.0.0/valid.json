@@ -1,0 +1,10 @@
+{
+  "message_id": "fixture-service-exited-v1",
+  "plane": "control",
+  "message_type": "service.exited",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "producer": "fixture-provider",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": { "service_instance": "fixture-service", "runtime_kind": "node", "expected": false, "exit_code": 1, "signal": null }
+}

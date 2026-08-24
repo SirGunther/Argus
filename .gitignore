@@ -1,0 +1,11 @@
+node_modules/
+runtime-output/
+out/
+*.log
+
+# Local configuration and operating-system artifacts
+.env
+.env.*
+!.env.example
+Thumbs.db
+.DS_Store

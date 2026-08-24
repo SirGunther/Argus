@@ -1,0 +1,10 @@
+{
+  "$id": "argus.lifecycle-drain.v1",
+  "type": "object",
+  "required": ["reason", "deadline_ms"],
+  "properties": {
+    "reason": { "type": "string", "enum": ["completed", "failed", "cancelled"] },
+    "deadline_ms": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

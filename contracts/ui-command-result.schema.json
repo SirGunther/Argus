@@ -1,0 +1,18 @@
+{
+  "$id": "argus.ui-command-result.v1",
+  "type": "object",
+  "required": ["command_id", "session_id", "command", "status", "message"],
+  "properties": {
+    "command_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "command": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["accepted", "rejected"] },
+    "owner": { "type": "string", "minLength": 1 },
+    "resource_id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 0 },
+    "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+    "message": { "type": "string", "minLength": 1 },
+    "pending": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

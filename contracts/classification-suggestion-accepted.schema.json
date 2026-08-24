@@ -1,0 +1,13 @@
+{
+  "$id": "argus.classification-suggestion-accepted.v1",
+  "type": "object",
+  "required": ["item_id", "session_id", "item_revision", "suggested_classification", "accepted_at"],
+  "properties": {
+    "item_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "item_revision": { "type": "integer", "minimum": 0 },
+    "suggested_classification": { "type": "string", "enum": ["task", "note", "observation", "idea"] },
+    "accepted_at": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

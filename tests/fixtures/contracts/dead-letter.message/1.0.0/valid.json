@@ -1,0 +1,16 @@
+{
+  "message_id": "fixture-dead-letter-v1",
+  "plane": "control",
+  "message_type": "dead-letter.message",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "producer": "fixture-supervisor",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "source_wire": "fixture-source:fixture.contract:fixture-target",
+    "target_service": "fixture-target",
+    "attempts": 2,
+    "original_message": { "message_id": "fixture-input" },
+    "failure": { "code": "FIXTURE_FAILURE" }
+  }
+}

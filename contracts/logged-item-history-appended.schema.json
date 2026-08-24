@@ -1,0 +1,8 @@
+{
+  "$id": "argus.logged-item-history-appended.v1", "type": "object",
+  "required": ["history_entry_id", "session_id", "item_id", "revision", "revision_id", "appended_at"],
+  "properties": {
+    "history_entry_id": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "minLength": 1 }, "item_id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 0 }, "revision_id": { "type": "string", "minLength": 1 }, "appended_at": { "type": "string", "minLength": 1 }
+  }, "additionalProperties": false
+}

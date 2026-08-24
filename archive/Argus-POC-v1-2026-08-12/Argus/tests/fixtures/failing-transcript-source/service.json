@@ -1,0 +1,21 @@
+{
+  "service_name": "failing-transcript-source",
+  "version": "1.0.0",
+  "runtime": {
+    "command": "node",
+    "entrypoint": "index.mjs"
+  },
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": ["transcript.segment"]
+    },
+    "control": {
+      "accepts": ["lifecycle.start"],
+      "emits": ["service.failure"]
+    }
+  },
+  "state": "none",
+  "side_effects": []
+}
+

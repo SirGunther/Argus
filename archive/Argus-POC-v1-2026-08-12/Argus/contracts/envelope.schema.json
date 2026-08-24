@@ -1,0 +1,26 @@
+{
+  "$id": "argus.message-envelope.v1",
+  "type": "object",
+  "required": [
+    "message_id",
+    "plane",
+    "message_type",
+    "timestamp",
+    "producer",
+    "correlation_id",
+    "schema_version",
+    "payload"
+  ],
+  "properties": {
+    "message_id": { "type": "string", "minLength": 1 },
+    "plane": { "type": "string", "enum": ["domain", "control"] },
+    "message_type": { "type": "string", "minLength": 1 },
+    "timestamp": { "type": "string", "minLength": 1 },
+    "producer": { "type": "string", "minLength": 1 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "causation_id": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": false
+}

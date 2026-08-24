@@ -1,0 +1,13 @@
+{
+  "$id": "argus.service-exited.v1",
+  "type": "object",
+  "required": ["service_instance", "runtime_kind", "expected"],
+  "properties": {
+    "service_instance": { "type": "string", "minLength": 1 },
+    "runtime_kind": { "type": "string", "minLength": 1 },
+    "expected": { "type": "boolean" },
+    "exit_code": { "type": ["integer", "null"] },
+    "signal": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

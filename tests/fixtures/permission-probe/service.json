@@ -1,0 +1,37 @@
+{
+  "service_name": "permission-probe",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs",
+    "environment": {
+      "allow": [
+        "ARGUS_SESSION_ROOT"
+      ]
+    }
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": [
+        "transcript.segment"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.start",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "none; declares the configured session root but no filesystem authority over it",
+  "side_effects": []
+}

@@ -1,0 +1,20 @@
+{
+  "message_id": "c8051e97-166c-48f3-ab63-8c0b9e008d7b",
+  "idempotency_key": "fixture:ai.work-completed",
+  "plane": "control",
+  "message_type": "ai.work-completed",
+  "timestamp": "2026-08-12T21:00:00.000Z",
+  "producer": "fixture-scheduler",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.2.0",
+  "payload": {
+    "work_id": "work-1",
+    "workload": "classification-enrichment",
+    "session_id": "fixture-session",
+    "sequence": 0,
+    "attempt": 1,
+    "completed_at": "2026-08-12T21:00:01.000Z",
+    "result": { "classification": "task" }
+  },
+  "content_fingerprint": "sha256:c62b5021e0225ec4806aaeb26633b9d4520f9b52a4301e98a89fd8bc06230c69"
+}

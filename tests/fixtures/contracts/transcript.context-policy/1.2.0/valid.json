@@ -1,0 +1,32 @@
+{
+  "message_id": "55555555-5555-4555-8555-555555555555",
+  "idempotency_key": "transcript.context-policy:fixture-session:fixture-default:1.0.0",
+  "plane": "control",
+  "message_type": "transcript.context-policy",
+  "timestamp": "2026-08-13T00:00:00.000Z",
+  "producer": "fixture-context-policy-source",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.2.0",
+  "payload": {
+    "policy_id": "fixture-default",
+    "policy_version": "1.0.0",
+    "session_id": "fixture-session",
+    "triggers": {
+      "pause_enabled": true,
+      "max_source_segments": 4,
+      "max_source_chars": 4000,
+      "topic_boundary_after_sequences": [],
+      "max_latency_ms": 8000
+    },
+    "context": {
+      "lookback_segment_count": 2,
+      "forward_segment_count": 0,
+      "max_context_chars": 12000
+    },
+    "generation": {
+      "policy_profile": "neutral-contextual-log",
+      "instruction_version": "1.0.0"
+    }
+  },
+  "content_fingerprint": "sha256:c68077b75ea2d70b96e50664cf12630ef97751aefb1504a135186b1e56b2c792"
+}

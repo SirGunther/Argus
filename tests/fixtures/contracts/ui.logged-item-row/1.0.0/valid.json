@@ -1,0 +1,19 @@
+{
+  "message_id": "fixture-ui-logged-item-row-v1",
+  "plane": "domain",
+  "message_type": "ui.logged-item-row",
+  "timestamp": "2026-08-19T00:00:00.000Z",
+  "producer": "fixture-ui-projection",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "session_id": "fixture-session",
+    "item_id": "fixture-item",
+    "revision": 0,
+    "revision_id": "fixture-item:r0",
+    "logged_at": "2026-08-19T00:00:02.000Z",
+    "text": "Fixture logged item.",
+    "source": { "first_segment_id": "fixture-segment-1", "last_segment_id": "fixture-segment-1", "start_time": "00:00:00.000", "end_time": "00:00:01.000" },
+    "classification_suggestion": null
+  }
+}

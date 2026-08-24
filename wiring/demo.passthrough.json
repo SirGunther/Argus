@@ -1,0 +1,116 @@
+{
+  "name": "transcript-to-log-passthrough",
+  "schema_version": 2,
+  "contracts": "../contracts/catalog.json",
+  "supervision": {
+    "readiness_timeout_ms": 5000,
+    "drain_timeout_ms": 2000,
+    "operation_timeout_ms": 2000,
+    "queue": { "capacity": 16, "overflow": "fail" }
+  },
+  "runtime_components": [
+    {
+      "id": "@session-controller",
+      "kind": "session-controller",
+      "ports": {
+        "domain": { "accepts": [], "emits": [] },
+        "control": { "accepts": [], "emits": ["lifecycle.start"] }
+      }
+    },
+    {
+      "id": "@supervisor",
+      "kind": "supervisor",
+      "ports": {
+        "domain": { "accepts": [], "emits": [] },
+        "control": {
+          "accepts": ["service.failure", "service.health", "service.drained", "operation.completed", "operation.rejected", "service.exited"],
+          "emits": ["lifecycle.health-check", "lifecycle.drain", "dead-letter.message"]
+        }
+      }
+    },
+    {
+      "id": "@runtime-provider",
+      "kind": "runtime-provider",
+      "ports": {
+        "domain": { "accepts": [], "emits": [] },
+        "control": { "accepts": [], "emits": ["service.exited", "service.failure"] }
+      }
+    },
+    {
+      "id": "@dead-letter-collector",
+      "kind": "dead-letter-collector",
+      "ports": {
+        "domain": { "accepts": [], "emits": [] },
+        "control": { "accepts": ["dead-letter.message"], "emits": [] }
+      }
+    },
+    {
+      "id": "@result-collector",
+      "kind": "result-collector",
+      "ports": {
+        "domain": { "accepts": ["logged-item.stored"], "emits": [] },
+        "control": { "accepts": [], "emits": ["workflow.completed"] }
+      }
+    },
+    {
+      "id": "@run-controller",
+      "kind": "run-controller",
+      "ports": {
+        "domain": { "accepts": [], "emits": [] },
+        "control": { "accepts": ["workflow.completed"], "emits": [] }
+      }
+    }
+  ],
+  "services": [
+    { "id": "transcript-source", "manifest": "../services/fake-transcript-source/service.json", "required": true, "recovery": { "restart": "never", "max_restarts": 0 } },
+    { "id": "window-selector", "manifest": "../services/transcript-window-selector/service.json", "required": true, "recovery": { "restart": "never", "max_restarts": 0 } },
+    { "id": "log-extractor", "manifest": "../services/log-extractor-passthrough/service.json", "required": true, "recovery": { "restart": "never", "max_restarts": 0 } },
+    { "id": "logged-item-store", "manifest": "../services/logged-item-memory-store/service.json", "required": true, "recovery": { "restart": "never", "max_restarts": 0 } }
+  ],
+  "domain_wires": [
+    { "from": "transcript-source", "contract": "transcript.segment", "to": "window-selector" },
+    { "from": "window-selector", "contract": "transcript.context-window", "to": "log-extractor" },
+    { "from": "log-extractor", "contract": "logged-item.draft", "to": "logged-item-store" },
+    { "from": "logged-item-store", "contract": "logged-item.stored", "to": "@result-collector" }
+  ],
+  "control_wires": [
+    { "from": "@session-controller", "contract": "lifecycle.start", "to": "transcript-source" },
+    { "from": "@supervisor", "contract": "lifecycle.health-check", "to": "transcript-source" },
+    { "from": "@supervisor", "contract": "lifecycle.health-check", "to": "window-selector" },
+    { "from": "@supervisor", "contract": "lifecycle.health-check", "to": "log-extractor" },
+    { "from": "@supervisor", "contract": "lifecycle.health-check", "to": "logged-item-store" },
+    { "from": "transcript-source", "contract": "service.health", "to": "@supervisor" },
+    { "from": "window-selector", "contract": "service.health", "to": "@supervisor" },
+    { "from": "log-extractor", "contract": "service.health", "to": "@supervisor" },
+    { "from": "logged-item-store", "contract": "service.health", "to": "@supervisor" },
+    { "from": "@supervisor", "contract": "lifecycle.drain", "to": "transcript-source" },
+    { "from": "@supervisor", "contract": "lifecycle.drain", "to": "window-selector" },
+    { "from": "@supervisor", "contract": "lifecycle.drain", "to": "log-extractor" },
+    { "from": "@supervisor", "contract": "lifecycle.drain", "to": "logged-item-store" },
+    { "from": "transcript-source", "contract": "service.drained", "to": "@supervisor" },
+    { "from": "window-selector", "contract": "service.drained", "to": "@supervisor" },
+    { "from": "log-extractor", "contract": "service.drained", "to": "@supervisor" },
+    { "from": "logged-item-store", "contract": "service.drained", "to": "@supervisor" },
+    { "from": "transcript-source", "contract": "operation.completed", "to": "@supervisor" },
+    { "from": "window-selector", "contract": "operation.completed", "to": "@supervisor" },
+    { "from": "log-extractor", "contract": "operation.completed", "to": "@supervisor" },
+    { "from": "logged-item-store", "contract": "operation.completed", "to": "@supervisor" },
+    { "from": "window-selector", "contract": "operation.rejected", "to": "@supervisor" },
+    { "from": "logged-item-store", "contract": "operation.rejected", "to": "@supervisor" },
+    { "from": "transcript-source", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "window-selector", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "log-extractor", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "logged-item-store", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "@runtime-provider", "contract": "service.exited", "to": "@supervisor" },
+    { "from": "@runtime-provider", "contract": "service.failure", "to": "@supervisor" },
+    { "from": "@supervisor", "contract": "dead-letter.message", "to": "@dead-letter-collector" },
+    { "from": "@result-collector", "contract": "workflow.completed", "to": "@run-controller" }
+  ],
+  "run": {
+    "session_controller": "@session-controller",
+    "run_controller": "@run-controller",
+    "session_id": "architecture-demo-session",
+    "completion_count": 1,
+    "timeout_ms": 5000
+  }
+}

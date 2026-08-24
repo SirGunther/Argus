@@ -1,0 +1,9 @@
+{
+  "$id": "argus.lifecycle-health-check.v1",
+  "type": "object",
+  "required": ["probe_id"],
+  "properties": {
+    "probe_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

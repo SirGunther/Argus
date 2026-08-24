@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "envelope": "envelope.schema.json",
+  "artifacts": {
+    "service_manifest": "service-manifest.schema.json",
+    "wiring_graph": "wiring-graph.schema.json"
+  },
+  "messages": {
+    "lifecycle.start": {
+      "plane": "control",
+      "schema": "lifecycle-start.schema.json"
+    },
+    "service.failure": {
+      "plane": "control",
+      "schema": "service-failure.schema.json"
+    },
+    "workflow.completed": {
+      "plane": "control",
+      "schema": "workflow-completed.schema.json"
+    },
+    "transcript.segment": {
+      "plane": "domain",
+      "schema": "transcript-segment.schema.json"
+    },
+    "transcript.context-window": {
+      "plane": "domain",
+      "schema": "context-window.schema.json"
+    },
+    "logged-item.draft": {
+      "plane": "domain",
+      "schema": "logged-item-draft.schema.json"
+    },
+    "logged-item.stored": {
+      "plane": "domain",
+      "schema": "logged-item-stored.schema.json"
+    }
+  }
+}

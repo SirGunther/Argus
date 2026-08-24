@@ -1,0 +1,11 @@
+{
+  "$id": "argus.audio-flush.v1",
+  "type": "object",
+  "required": ["session_id", "requested_at"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "requested_at": { "type": "string", "minLength": 1 },
+    "reason": { "enum": ["pause", "flush"] }
+  },
+  "additionalProperties": false
+}

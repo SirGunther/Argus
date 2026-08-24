@@ -1,0 +1,16 @@
+Argus-POC-v1-2026-08-12
+Captured: 2026-08-12 America/New_York
+Node: v24.11.1
+
+Command:
+node --test tests/service-contract.test.mjs tests/wiring.test.mjs tests/integration.test.mjs
+
+Result:
+tests 20
+pass 20
+fail 0
+cancelled 0
+skipped 0
+todo 0
+
+The complete suite was also rerun from the copied snapshot before archival publication.

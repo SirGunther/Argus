@@ -1,0 +1,20 @@
+{
+  "service_name": "transcript-window-selector",
+  "version": "1.0.0",
+  "runtime": {
+    "command": "node",
+    "entrypoint": "index.mjs"
+  },
+  "ports": {
+    "domain": {
+      "accepts": ["transcript.segment"],
+      "emits": ["transcript.context-window"]
+    },
+    "control": {
+      "accepts": [],
+      "emits": ["service.failure"]
+    }
+  },
+  "state": "owns in-memory pending transcript segments keyed by session_id",
+  "side_effects": []
+}

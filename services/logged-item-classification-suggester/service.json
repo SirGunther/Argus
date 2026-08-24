@@ -1,0 +1,44 @@
+{
+  "service_name": "logged-item-classification-suggester",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs",
+    "includes": [
+      "model-boundary.mjs"
+    ],
+    "environment": {
+      "allow": [
+        "ARGUS_MODEL_NAME"
+      ]
+    }
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [
+        "transcript.context-window",
+        "logged-item.stored"
+      ],
+      "emits": [
+        "classification.suggestion"
+      ]
+    },
+    "control": {
+      "accepts": [
+        "ai.work-completed",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "ai.work-request",
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed"
+      ]
+    }
+  },
+  "state": "optional bounded in-memory context/request state; context capacity 32, request capacity 32; never mutates logged-item ownership",
+  "side_effects": []
+}

@@ -1,0 +1,39 @@
+{
+  "$id": "argus.context-window.v1",
+  "type": "object",
+  "required": ["window_id", "session_id", "reason", "segments", "source"],
+  "properties": {
+    "window_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "enum": ["pause", "size", "latency", "flush"] },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["segment_id", "sequence", "start_time", "end_time", "text"],
+        "properties": {
+          "segment_id": { "type": "string", "minLength": 1 },
+          "sequence": { "type": "integer", "minimum": 0 },
+          "start_time": { "type": "string", "minLength": 1 },
+          "end_time": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["first_segment_id", "last_segment_id", "start_time", "end_time"],
+      "properties": {
+        "first_segment_id": { "type": "string", "minLength": 1 },
+        "last_segment_id": { "type": "string", "minLength": 1 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+

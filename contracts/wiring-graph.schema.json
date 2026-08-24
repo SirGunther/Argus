@@ -1,0 +1,153 @@
+{
+  "$id": "argus.wiring-graph.v1",
+  "type": "object",
+  "required": ["name", "schema_version", "contracts", "supervision", "runtime_components", "services", "domain_wires", "control_wires", "run"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "contracts": { "type": "string", "minLength": 1 },
+    "supervision": {
+      "type": "object",
+      "required": ["readiness_timeout_ms", "drain_timeout_ms", "operation_timeout_ms", "queue"],
+      "properties": {
+        "readiness_timeout_ms": { "type": "integer", "minimum": 1 },
+        "drain_timeout_ms": { "type": "integer", "minimum": 1 },
+        "operation_timeout_ms": { "type": "integer", "minimum": 1 },
+        "queue": {
+          "type": "object",
+          "required": ["capacity", "overflow"],
+          "properties": {
+            "capacity": { "type": "integer", "minimum": 1 },
+            "overflow": { "const": "fail" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtime_components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "ports"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "enum": ["input-source", "session-controller", "supervisor", "run-controller", "result-collector", "runtime-provider", "dead-letter-collector"] },
+          "ports": {
+            "type": "object",
+            "required": ["domain", "control"],
+            "properties": {
+              "domain": {
+                "type": "object",
+                "required": ["accepts", "emits"],
+                "properties": {
+                  "accepts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+                  "emits": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                },
+                "additionalProperties": false
+              },
+              "control": {
+                "type": "object",
+                "required": ["accepts", "emits"],
+                "properties": {
+                  "accepts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+                  "emits": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "services": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "manifest", "required", "recovery"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "manifest": { "type": "string", "minLength": 1 },
+          "required": { "type": "boolean" },
+          "recovery": {
+            "type": "object",
+            "required": ["restart", "max_restarts"],
+            "properties": {
+              "restart": { "type": "string", "enum": ["never", "on-failure"] },
+              "max_restarts": { "type": "integer", "minimum": 0 },
+              "recovery_owner": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "domain_wires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+          "required": ["from", "contract", "to"],
+          "properties": {
+            "from": { "type": "string", "minLength": 1 },
+            "contract": { "type": "string", "minLength": 1 },
+            "to": { "type": "string", "minLength": 1 },
+            "delivery": { "$ref": "#/definitions/delivery" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "control_wires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "contract", "to"],
+        "properties": {
+          "from": { "type": "string", "minLength": 1 },
+          "contract": { "type": "string", "minLength": 1 },
+          "to": { "type": "string", "minLength": 1 },
+          "delivery": { "$ref": "#/definitions/delivery" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["session_controller", "run_controller", "session_id", "completion_count", "timeout_ms"],
+      "properties": {
+        "session_controller": { "type": "string", "minLength": 1 },
+        "run_controller": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "completion_count": { "type": "integer", "minimum": 1 },
+        "timeout_ms": { "type": "integer", "minimum": 1 },
+        "configuration": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "definitions": {
+    "delivery": {
+      "type": "object",
+      "properties": {
+        "operation_timeout_ms": { "type": "integer", "minimum": 1 },
+        "queue_capacity": { "type": "integer", "minimum": 1 },
+        "retry": {
+          "type": "object",
+          "required": ["max_attempts", "delay_ms"],
+          "properties": {
+            "max_attempts": { "type": "integer", "minimum": 1 },
+            "delay_ms": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "dead_letter_to": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

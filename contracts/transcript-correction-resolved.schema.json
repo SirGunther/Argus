@@ -1,0 +1,70 @@
+{
+  "$id": "argus.transcript-correction-resolved.v1",
+  "type": "object",
+  "required": ["request_id", "session_id", "utterance_id", "boundary_id", "proposals", "formatting", "generator"],
+  "properties": {
+    "request_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "utterance_id": { "type": "string", "minLength": 1 },
+    "boundary_id": { "type": "string", "minLength": 1 },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["proposal_id", "target_word_id", "target_word_sequence", "expected_text", "proposed_text", "confidence", "basis", "context"],
+        "properties": {
+          "proposal_id": { "type": "string", "minLength": 1 },
+          "target_word_id": { "type": "string", "minLength": 1 },
+          "target_word_sequence": { "type": "integer", "minimum": 0 },
+          "expected_text": { "type": "string", "minLength": 1 },
+          "proposed_text": { "type": "string", "minLength": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "basis": { "type": "string", "enum": ["acoustic-similarity", "contextual-meaning", "acoustic-and-contextual"] },
+          "context": {
+            "type": "object",
+            "required": ["first_word_id", "last_word_id"],
+            "properties": {
+              "first_word_id": { "type": "string", "minLength": 1 },
+              "last_word_id": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "formatting": {
+      "type": "object",
+      "required": ["terminal_mark", "capitalize_first_word", "confidence"],
+      "properties": {
+        "terminal_mark": { "type": "string", "enum": [".", "?", "!", ""] },
+        "capitalize_first_word": { "type": "boolean" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "punctuation_after": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["word_id", "mark"],
+        "properties": {
+          "word_id": { "type": "string", "minLength": 1 },
+          "mark": { "type": "string", "enum": [",", ";", ":"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "generator": {
+      "type": "object",
+      "required": ["implementation", "policy_profile", "instruction_version"],
+      "properties": {
+        "implementation": { "type": "string", "minLength": 1 },
+        "policy_profile": { "type": "string", "minLength": 1 },
+        "instruction_version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

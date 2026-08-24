@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101514" />
+    <title>Argus — Active Voice Assistant</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div>
+            <div class="brand-line">
+              <h1>ARGUS</h1>
+              <span class="product-label">ACTIVE ASSISTANT</span>
+            </div>
+            <button class="session-link" id="sessionDetailsButton" type="button" aria-label="Open session details">
+              <span class="session-state-dot" id="sessionStateDot"></span>
+              <span id="sessionIdentity">Session AA-260811-042</span>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 5 5 5-5 5" /></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="capture-controls" role="group" aria-label="Capture controls">
+          <div class="elapsed-block">
+            <span class="elapsed-label">SESSION TIME</span>
+            <span class="elapsed-value" id="elapsedTime">00:18:42</span>
+          </div>
+          <button class="button button-record" id="recordButton" type="button">
+            <span class="record-dot"></span>
+            <span>Record</span>
+          </button>
+          <button class="button button-stop" id="stopButton" type="button">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6" y="6" width="8" height="8" rx="1" /></svg>
+            <span>Stop</span>
+          </button>
+          <button class="icon-button close-session-button" id="closeSessionButton" type="button" title="Close session" aria-label="Close session">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="pane" id="transcriptPane" aria-labelledby="transcriptTitle">
+          <div class="pane-header">
+            <div class="pane-title-group">
+              <span class="eyebrow">LIVE INPUT</span>
+              <div class="pane-title-line">
+                <h2 id="transcriptTitle">Raw Transcript</h2>
+                <span class="count-badge" id="transcriptCount">0 entries</span>
+              </div>
+            </div>
+            <div class="pane-actions">
+              <button class="text-button select-all-button" data-kind="transcript" type="button">Select all</button>
+              <button class="button button-secondary batch-copy-button" id="copyTranscriptSelected" data-kind="transcript" type="button" disabled>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg>
+                <span>Copy selected</span>
+                <span class="selected-count">0</span>
+              </button>
+            </div>
+          </div>
+          <div class="column-labels" aria-hidden="true">
+            <span></span><span>Time</span><span>Transcript</span><span></span>
+          </div>
+          <div class="rows-scroll" id="transcriptScroll">
+            <div class="rows-list" id="transcriptList"></div>
+          </div>
+          <button class="jump-live" id="transcriptJump" data-kind="transcript" type="button" hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>
+            <span>Jump to live</span>
+            <span class="new-count" id="transcriptNewCount">0</span>
+          </button>
+        </section>
+
+        <section class="pane derived-pane" id="derivedPane" aria-labelledby="derivedTitle">
+          <div class="pane-header">
+            <div class="pane-title-group">
+              <span class="eyebrow">TRANSCRIPT LOG</span>
+              <div class="pane-title-line">
+                <h2 id="derivedTitle">Logged Items</h2>
+                <span class="count-badge" id="derivedCount">0 items</span>
+              </div>
+            </div>
+            <div class="pane-actions">
+              <button class="text-button select-all-button" data-kind="derived" type="button">Select all</button>
+              <button class="button button-secondary batch-copy-button" id="copyDerivedSelected" data-kind="derived" type="button" disabled>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg>
+                <span>Copy selected</span>
+                <span class="selected-count">0</span>
+              </button>
+            </div>
+          </div>
+          <div class="column-labels derived-labels" aria-hidden="true">
+            <span></span><span>Logged</span><span>Source context</span><span>Logged item</span><span></span>
+          </div>
+          <div class="rows-scroll" id="derivedScroll">
+            <div class="rows-list" id="derivedList"></div>
+          </div>
+          <button class="jump-live" id="derivedJump" data-kind="derived" type="button" hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>
+            <span>Jump to live</span>
+            <span class="new-count" id="derivedNewCount">0</span>
+          </button>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <div class="status-cluster">
+          <div class="capture-status" id="captureStatus">
+            <span class="status-pulse"></span>
+            <span id="captureStatusText">Session stopped</span>
+          </div>
+          <span class="status-divider"></span>
+          <div class="save-status" id="saveStatus">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8" /></svg>
+            <span id="saveStatusText">All changes saved</span>
+          </div>
+        </div>
+
+        <div class="footer-actions">
+          <label class="timestamp-toggle">
+            <input type="checkbox" id="includeTimestamps" checked />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span>Copy timestamps</span>
+          </label>
+          <span class="status-divider"></span>
+          <button class="folder-button" id="openFolderButton" type="button">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6.5h5l1.5 2H17v6.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6.5Z"/><path d="M3 9h14"/></svg>
+            <span>Open session folder</span>
+          </button>
+        </div>
+      </footer>
+    </div>
+
+    <aside class="session-drawer" id="sessionDrawer" aria-hidden="true" aria-labelledby="drawerTitle">
+      <div class="drawer-scrim" data-close-drawer></div>
+      <div class="drawer-panel">
+        <div class="drawer-header">
+          <div>
+            <span class="eyebrow">CURRENT SESSION</span>
+            <h2 id="drawerTitle">Session details</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-drawer aria-label="Close session details">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <div class="session-card">
+          <div class="session-card-top">
+            <div class="session-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M8 7v10M4 9v6M16 7v10M20 10v4" /></svg>
+            </div>
+            <div>
+              <strong>AA-260811-042</strong>
+              <span id="drawerState">Stopped · Ready to resume</span>
+            </div>
+          </div>
+          <dl>
+            <div><dt>Created</dt><dd>Aug 11, 2026 · 4:23 PM</dd></div>
+            <div><dt>Duration</dt><dd id="drawerDuration">18m 42s</dd></div>
+            <div><dt>Entries</dt><dd id="drawerEntries">0 transcript · 0 derived</dd></div>
+          </dl>
+        </div>
+        <div class="drawer-section">
+          <span class="drawer-label">STORAGE LOCATION</span>
+          <button class="path-box" id="copyPathButton" type="button" title="Copy path">
+            <span>C:\Users\you\Documents\Argus\sessions\AA-260811-042</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg>
+          </button>
+        </div>
+        <div class="drawer-section">
+          <span class="drawer-label">SESSION DATA</span>
+          <div class="file-stack">
+            <div class="file-row"><span class="file-dot hot"></span><div><strong>Active transcript</strong><small>temp/transcript.live.jsonl</small></div><span class="file-state">Live</span></div>
+            <div class="file-row"><span class="file-dot hot"></span><div><strong>Active logged items</strong><small>temp/derived.live.jsonl</small></div><span class="file-state">Live</span></div>
+            <div class="file-row"><span class="file-dot"></span><div><strong>Permanent history</strong><small>history/</small></div><span class="file-state neutral">Saved</span></div>
+            <div class="file-row"><span class="file-dot"></span><div><strong>Session metadata</strong><small>session.json</small></div><span class="file-state neutral">Saved</span></div>
+          </div>
+        </div>
+        <button class="button drawer-folder-button" id="drawerFolderButton" type="button">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6.5h5l1.5 2H17v6.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6.5Z"/><path d="M3 9h14"/></svg>
+          Open session folder
+        </button>
+      </div>
+    </aside>
+
+    <div class="modal-layer" id="closeModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="closeModalTitle">
+      <div class="modal-scrim" data-close-modal></div>
+      <div class="modal-card">
+        <div class="modal-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h5M9 13h7M9 17h5"/></svg>
+        </div>
+        <h2 id="closeModalTitle">Close this session?</h2>
+        <p>This finalizes all temporary transcript and derived data into the permanent session record. You won’t be able to resume this capture afterward.</p>
+        <div class="finalization-summary">
+          <span><strong id="finalTranscriptCount">0</strong> transcript entries</span>
+          <span><strong id="finalDerivedCount">0</strong> logged items</span>
+        </div>
+        <div class="modal-actions">
+          <button class="button button-secondary" type="button" data-close-modal>Keep session open</button>
+          <button class="button button-danger" id="confirmCloseButton" type="button">Finalize &amp; close</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+
+    <template id="rowTemplate">
+      <article class="data-row">
+        <label class="row-checkbox" title="Select row">
+          <input type="checkbox" />
+          <span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8 3 3 6-6" /></svg></span>
+        </label>
+        <time></time>
+        <button class="source-range" type="button" hidden>
+          <span class="source-start"></span>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12M12 6l4 4-4 4" /></svg>
+          <span class="source-end"></span>
+        </button>
+        <div class="row-main">
+          <div class="editable-text" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true"></div>
+        </div>
+        <button class="row-copy" type="button" title="Copy row" aria-label="Copy row">
+          <svg class="copy-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg>
+          <svg class="check-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8" /></svg>
+        </button>
+      </article>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>

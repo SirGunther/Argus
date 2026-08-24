@@ -1,0 +1,20 @@
+{
+  "service_name": "log-extractor-passthrough",
+  "version": "1.0.0",
+  "runtime": {
+    "command": "node",
+    "entrypoint": "index.mjs"
+  },
+  "ports": {
+    "domain": {
+      "accepts": ["transcript.context-window"],
+      "emits": ["logged-item.draft"]
+    },
+    "control": {
+      "accepts": [],
+      "emits": ["service.failure"]
+    }
+  },
+  "state": "none",
+  "side_effects": []
+}

@@ -1,0 +1,14 @@
+{
+  "$id": "argus.transcript-segment-update.v1",
+  "type": "object",
+  "required": ["segment_id", "session_id", "expected_revision", "text", "updated_at", "editor"],
+  "properties": {
+    "segment_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "expected_revision": { "type": "integer", "minimum": 0 },
+    "text": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 },
+    "editor": { "type": "string", "enum": ["user", "authorized-system"] }
+  },
+  "additionalProperties": false
+}
