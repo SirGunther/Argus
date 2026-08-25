@@ -3,16 +3,19 @@ import {
   noteIncomingContent, notePaneScroll, reconcileKeyedRows, replaceSourceHighlights,
   resolveSourceRangeIds, selectionCount, setAllSelected, toggleSelected
 } from './ui/ui-state.mjs';
-import { createAudioCapture } from './ui/audio-capture.mjs';
+import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from './ui/audio-capture.mjs';
 
 (() => {
   'use strict';
 
+  const AUDIO_INPUT_STORAGE_KEY = 'argus.selected-audio-input-device';
   const ui = createUiState();
   const desktop = window.argus || null;
   const state = { session: null, transcript: [], derived: [], services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false };
+  const audioInput = { devices: [], selectedDeviceId: readRememberedAudioInput(), refreshing: false, initialized: false, ready: false, message: 'Checking microphone access...', tone: '' };
   let events;
   let unsubscribeProjection;
+  let unsubscribeAudioDeviceChange;
 
   const els = {
     template: document.querySelector('#rowTemplate'), transcriptList: document.querySelector('#transcriptList'), derivedList: document.querySelector('#derivedList'),
@@ -20,6 +23,7 @@ import { createAudioCapture } from './ui/audio-capture.mjs';
     recordButton: document.querySelector('#recordButton'), stopButton: document.querySelector('#stopButton'), closeSessionButton: document.querySelector('#closeSessionButton'), captureStatus: document.querySelector('#captureStatus'), captureStatusText: document.querySelector('#captureStatusText'), sessionStateDot: document.querySelector('#sessionStateDot'), elapsedTime: document.querySelector('#elapsedTime'), sessionIdentity: document.querySelector('#sessionIdentity'),
     saveStatus: document.querySelector('#saveStatus'), saveStatusText: document.querySelector('#saveStatusText'), transcriptJump: document.querySelector('#transcriptJump'), derivedJump: document.querySelector('#derivedJump'), transcriptNewCount: document.querySelector('#transcriptNewCount'), derivedNewCount: document.querySelector('#derivedNewCount'),
     sessionDrawer: document.querySelector('#sessionDrawer'), closeModal: document.querySelector('#closeModal'), drawerState: document.querySelector('#drawerState'), drawerDuration: document.querySelector('#drawerDuration'), drawerEntries: document.querySelector('#drawerEntries'), finalTranscriptCount: document.querySelector('#finalTranscriptCount'), finalDerivedCount: document.querySelector('#finalDerivedCount'), toastRegion: document.querySelector('#toastRegion'), serviceStatusList: document.querySelector('#serviceStatusList'),
+    audioInputControl: document.querySelector('#audioInputControl'), audioInputSelect: document.querySelector('#audioInputSelect'), audioInputRefresh: document.querySelector('#audioInputRefresh'), audioInputStatus: document.querySelector('#audioInputStatus'),
     includeTimestamps: document.querySelector('#includeTimestamps'), sessionDetailsButton: document.querySelector('#sessionDetailsButton'), openFolderButton: document.querySelector('#openFolderButton'), drawerFolderButton: document.querySelector('#drawerFolderButton'), copyPathButton: document.querySelector('#copyPathButton'), confirmCloseButton: document.querySelector('#confirmCloseButton')
   };
 
@@ -28,13 +32,149 @@ import { createAudioCapture } from './ui/audio-capture.mjs';
   const capture = desktop ? createAudioCapture({
     sendAudioChunk: (chunk) => desktop.sendAudioChunk(chunk),
     sendAudioFlush: (payload) => desktop.sendAudioFlush(payload),
-    reportFailure: (error) => { void desktop.reportCaptureFailure(error.message); showToast(`Microphone unavailable · ${error.message}`, 'error'); }
+    reportFailure: (error) => { void desktop.reportCaptureFailure(error.message); handleCaptureFailure(error); }
   }) : null;
+
+  els.audioInputControl.hidden = !desktop;
 
   const kindConfig = {
     transcript: { list: 'transcriptList', scroll: 'transcriptScroll', count: 'transcriptCount', label: 'transcript entry' },
     derived: { list: 'derivedList', scroll: 'derivedScroll', count: 'derivedCount', label: 'logged item' }
   };
+
+  function readRememberedAudioInput() {
+    try {
+      const value = window.localStorage.getItem(AUDIO_INPUT_STORAGE_KEY);
+      return value?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function rememberAudioInput(deviceId) {
+    try {
+      if (deviceId) window.localStorage.setItem(AUDIO_INPUT_STORAGE_KEY, deviceId);
+      else window.localStorage.removeItem(AUDIO_INPUT_STORAGE_KEY);
+    } catch {
+      // Renderer storage can be unavailable in a restricted profile; capture still works this launch.
+    }
+  }
+
+  function setAudioInputStatus(message, tone = '') {
+    audioInput.message = message;
+    audioInput.tone = tone;
+  }
+
+  function renderAudioInput() {
+    const recording = state.session?.state === 'recording';
+    const selectedValue = audioInput.selectedDeviceId || '';
+    const selectedExists = !audioInput.selectedDeviceId || audioInput.devices.some((device) => device.deviceId === audioInput.selectedDeviceId);
+    els.audioInputSelect.textContent = '';
+    els.audioInputSelect.append(new Option('System Default', ''));
+    if (audioInput.selectedDeviceId && !selectedExists) {
+      const unavailable = new Option('Unavailable · Previously selected', audioInput.selectedDeviceId);
+      unavailable.disabled = true;
+      els.audioInputSelect.append(unavailable);
+    }
+    audioInput.devices.forEach((device, index) => {
+      const label = device.label || `Microphone ${index + 1} · ${device.deviceId.slice(-8)}`;
+      els.audioInputSelect.append(new Option(label, device.deviceId));
+    });
+    els.audioInputSelect.value = selectedValue;
+    els.audioInputSelect.disabled = recording || audioInput.refreshing || !audioInput.initialized;
+    els.audioInputRefresh.disabled = recording || audioInput.refreshing;
+    els.audioInputStatus.className = `audio-input-status ${audioInput.tone}`.trim();
+    els.audioInputStatus.textContent = audioInput.message;
+  }
+
+  function updateAudioInputStatus() {
+    const selectedExists = !audioInput.selectedDeviceId || audioInput.devices.some((device) => device.deviceId === audioInput.selectedDeviceId);
+    audioInput.ready = audioInput.devices.length > 0 && selectedExists;
+    if (!audioInput.devices.length) setAudioInputStatus('No input devices found. Connect a microphone, then rescan.', 'error');
+    else if (!selectedExists) setAudioInputStatus('Selected device unavailable. Select another input.', 'error');
+    else setAudioInputStatus(audioInput.selectedDeviceId ? 'Ready · Selected microphone' : 'Ready · System Default', 'ready');
+  }
+
+  function handleCaptureFailure(error) {
+    if (audioInput.lastFailure === error) return;
+    audioInput.lastFailure = error;
+    const failure = describeCaptureFailure(error, audioInput.selectedDeviceId);
+    audioInput.ready = false;
+    setAudioInputStatus(failure.message, 'error');
+    showToast(failure.message, 'error');
+    renderAudioInput();
+  }
+
+  function refreshAudioInput() {
+    if (!capture) return Promise.resolve(false);
+    if (audioInput.refreshPromise) return audioInput.refreshPromise;
+    audioInput.refreshing = true;
+    setAudioInputStatus('Rescanning microphones...');
+    renderAudioInput();
+    audioInput.refreshPromise = (async () => {
+      let devices = await capture.enumerateAudioInputs();
+      if (!devices.length || devices.some((device) => !device.label)) {
+        try {
+          await capture.requestPermission();
+        } catch (error) {
+          audioInput.devices = devices;
+          audioInput.initialized = true;
+          const failure = describeCaptureFailure(error);
+          audioInput.ready = false;
+          setAudioInputStatus(failure.message, 'error');
+          return false;
+        }
+        devices = await capture.enumerateAudioInputs();
+      }
+      audioInput.devices = devices;
+      audioInput.initialized = true;
+      updateAudioInputStatus();
+      return audioInput.ready;
+    })().catch((error) => {
+      audioInput.devices = [];
+      audioInput.initialized = true;
+      audioInput.ready = false;
+      setAudioInputStatus(`Capture startup failure. ${error.message}`, 'error');
+      return false;
+    }).finally(() => {
+      audioInput.refreshing = false;
+      audioInput.refreshPromise = null;
+      renderAudioInput();
+    });
+    return audioInput.refreshPromise;
+  }
+
+  async function ensureAudioInputReady() {
+    if (!capture) return true;
+    await refreshAudioInput();
+    if (!audioInput.ready) {
+      renderAudioInput();
+      showToast(audioInput.message, 'error');
+      return false;
+    }
+    return true;
+  }
+
+  function handleAudioInputChange() {
+    if (!canChangeAudioInput(state.session?.state)) {
+      renderAudioInput();
+      showToast('Stop recording before changing the audio input.', 'error');
+      return;
+    }
+    audioInput.selectedDeviceId = els.audioInputSelect.value || null;
+    rememberAudioInput(audioInput.selectedDeviceId);
+    updateAudioInputStatus();
+    renderAudioInput();
+  }
+
+  async function startCapture(sessionId) {
+    audioInput.lastFailure = null;
+    try {
+      await capture.start(sessionId, audioInput.selectedDeviceId);
+    } catch (error) {
+      handleCaptureFailure(error);
+    }
+  }
 
   function receive(message, { bootstrap = false } = {}) {
     if (!message || typeof message.message_type !== 'string' || !message.payload) return;
@@ -276,6 +416,7 @@ import { createAudioCapture } from './ui/audio-capture.mjs';
     els.drawerState.textContent = recording ? 'Recording · Live' : closed ? 'Finalized · Complete' : 'Stopped · Ready to resume';
     els.elapsedTime.textContent = formatElapsed(state.session.elapsed_seconds);
     els.drawerDuration.textContent = formatDuration(state.session.duration_seconds);
+    renderAudioInput();
   }
 
   function renderServices() {
@@ -355,10 +496,10 @@ import { createAudioCapture } from './ui/audio-capture.mjs';
       state.newSession = false;
       renderAll();
       showToast('New session started', 'success');
-      void capture.start(result.session_id).catch(() => {});
+      void startCapture(result.session_id);
     } else if (result.status === 'accepted' && desktop && (result.command === 'session.record' || result.command === 'session.resume')) {
       state.newSession = false;
-      void capture.start(result.session_id).catch(() => {});
+      void startCapture(result.session_id);
     }
   }
 
@@ -366,6 +507,7 @@ import { createAudioCapture } from './ui/audio-capture.mjs';
     if (!state.session) return;
     const requestedCommand = desktop && command === 'session.record' && state.session.state === 'closed' ? 'session.new' : command;
     const actualCommand = desktop && requestedCommand === 'session.record' && !state.newSession ? 'session.resume' : requestedCommand;
+    if (desktop && (actualCommand === 'session.new' || actualCommand === 'session.record' || actualCommand === 'session.resume') && !(await ensureAudioInputReady())) return;
     if (desktop && (actualCommand === 'session.stop' || actualCommand === 'session.close')) await capture.stop();
     await postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: actualCommand });
   }
@@ -487,13 +629,19 @@ import { createAudioCapture } from './ui/audio-capture.mjs';
   els.transcriptScroll.addEventListener('scroll', () => handlePaneScroll('transcript'), { passive: true });
   els.derivedScroll.addEventListener('scroll', () => handlePaneScroll('derived'), { passive: true });
   els.includeTimestamps.addEventListener('change', () => { ui.includeTimestamps = els.includeTimestamps.checked; showToast(ui.includeTimestamps ? 'Copied text will include timestamps' : 'Copied text will omit timestamps'); });
+  els.audioInputSelect.addEventListener('change', handleAudioInputChange);
+  els.audioInputRefresh.addEventListener('click', () => { void refreshAudioInput(); });
   els.sessionDetailsButton.addEventListener('click', openDrawer);
   els.openFolderButton.addEventListener('click', () => postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: 'open-folder' }));
   els.drawerFolderButton.addEventListener('click', () => postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: 'open-folder' }));
   els.copyPathButton.addEventListener('click', () => postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: 'copy-session-path' }));
   els.confirmCloseButton.addEventListener('click', () => { closeCloseModal(); sendSessionCommand('session.close'); });
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeDrawer(); closeCloseModal(); } });
-  window.addEventListener('beforeunload', () => { events?.close(); unsubscribeProjection?.(); void capture?.stop(); });
+  window.addEventListener('beforeunload', () => { events?.close(); unsubscribeProjection?.(); unsubscribeAudioDeviceChange?.(); void capture?.stop(); });
+  if (capture) {
+    unsubscribeAudioDeviceChange = capture.onDeviceChange(() => { void refreshAudioInput(); });
+    void refreshAudioInput();
+  }
   load();
 })();
 

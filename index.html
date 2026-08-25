@@ -123,6 +123,15 @@
           </div>
         </div>
 
+        <div class="audio-input-control" id="audioInputControl" hidden>
+          <label class="audio-input-label" for="audioInputSelect">Audio input</label>
+          <select id="audioInputSelect" aria-describedby="audioInputStatus">
+            <option value="">System Default</option>
+          </select>
+          <button class="text-button" id="audioInputRefresh" type="button">Rescan</button>
+          <span class="audio-input-status" id="audioInputStatus" role="status" aria-live="polite"></span>
+        </div>
+
         <div class="service-status-list" id="serviceStatusList" aria-live="polite" aria-label="Service and capability status"></div>
 
         <div class="footer-actions">

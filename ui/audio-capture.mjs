@@ -7,6 +7,35 @@ const DEFAULT_SPEECH_RMS_THRESHOLD = 0.0125;
 const DEFAULT_SILENCE_RMS_THRESHOLD = 0.008;
 const MIN_SPEECH_MS = 160;
 
+export function getAudioCaptureConstraints(selectedDeviceId) {
+  const audio = {
+    channelCount: 1,
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false
+  };
+  if (selectedDeviceId) audio.deviceId = { exact: selectedDeviceId };
+  return { audio, video: false };
+}
+
+export function describeCaptureFailure(error, selectedDeviceId) {
+  const name = error?.name || '';
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+    return { code: 'PERMISSION_DENIED', message: 'Permission denied. Allow microphone access, then rescan.' };
+  }
+  if (selectedDeviceId && (name === 'NotFoundError' || name === 'OverconstrainedError')) {
+    return { code: 'SELECTED_DEVICE_UNAVAILABLE', message: 'Selected device unavailable. Select another input.' };
+  }
+  if (name === 'NotFoundError') {
+    return { code: 'NO_INPUT_DEVICES', message: 'No input devices found. Connect a microphone, then rescan.' };
+  }
+  return { code: 'CAPTURE_STARTUP_FAILURE', message: `Capture startup failure. ${error?.message || 'The microphone could not be started.'}` };
+}
+
+export function canChangeAudioInput(sessionState) {
+  return sessionState !== 'recording';
+}
+
 export function createAudioCapture({
   sendAudioChunk,
   sendAudioFlush = async () => {},
@@ -38,12 +67,37 @@ export function createAudioCapture({
   let silenceSamples = 0;
   let speechDetected = false;
 
-  async function start(nextSessionId) {
+  function mediaDevices() {
+    if (!navigator.mediaDevices) throw new Error('Microphone media devices are unavailable in this Electron renderer.');
+    return navigator.mediaDevices;
+  }
+
+  async function enumerateAudioInputs() {
+    return (await mediaDevices().enumerateDevices()).filter((device) => device.kind === 'audioinput');
+  }
+
+  async function requestPermission() {
+    let permissionStream;
+    try {
+      permissionStream = await mediaDevices().getUserMedia({ audio: true, video: false });
+    } finally {
+      permissionStream?.getTracks?.().forEach((track) => track.stop());
+    }
+  }
+
+  function onDeviceChange(listener) {
+    const devices = mediaDevices();
+    if (typeof listener !== 'function' || typeof devices.addEventListener !== 'function') return () => {};
+    devices.addEventListener('devicechange', listener);
+    return () => devices.removeEventListener?.('devicechange', listener);
+  }
+
+  async function start(nextSessionId, selectedDeviceId) {
     if (stream) return;
     sessionId = nextSessionId;
     stopping = false;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
+      stream = await mediaDevices().getUserMedia(getAudioCaptureConstraints(selectedDeviceId));
       context = new AudioContext({ latencyHint: 'interactive' });
       await context.audioWorklet.addModule(new URL('./audio-worklet.mjs', import.meta.url));
       source = context.createMediaStreamSource(stream);
@@ -59,8 +113,10 @@ export function createAudioCapture({
       speechDetected = false;
     } catch (error) {
       await stop();
-      reportFailure(error);
-      throw error;
+      const failure = describeCaptureFailure(error, selectedDeviceId);
+      const reportedError = Object.assign(new Error(failure.message), { name: error?.name || 'Error', code: failure.code, cause: error });
+      reportFailure(reportedError);
+      throw reportedError;
     }
   }
 
@@ -157,7 +213,7 @@ export function createAudioCapture({
     source = undefined; worklet = undefined; stream = undefined; context = undefined; buffer = [];
   }
 
-  return Object.freeze({ start, stop, get active() { return Boolean(stream); } });
+  return Object.freeze({ start, stop, enumerateAudioInputs, requestPermission, onDeviceChange, get active() { return Boolean(stream); } });
 }
 
 function analyzeEnergy(samples) {

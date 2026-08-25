@@ -351,6 +351,14 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .service-chip.available { border-color: rgba(158, 214, 94, .25); color: #b5d887; }
 .service-chip.degraded { border-color: rgba(255, 205, 92, .36); color: #f0c978; }
 .service-chip.unavailable { border-color: rgba(255, 101, 92, .32); color: #f19a93; }
+.audio-input-control { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.audio-input-label { color: var(--text-soft); font-size: 9px; font-weight: 650; white-space: nowrap; }
+.audio-input-control select { width: 190px; min-width: 0; padding: 5px 22px 5px 7px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--text); font-size: 9px; text-overflow: ellipsis; }
+.audio-input-control select:disabled { opacity: .45; }
+.audio-input-control select:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.audio-input-status { max-width: 190px; overflow: hidden; color: var(--text-muted); font: 400 8px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.audio-input-status.error { color: #f19a93; }
+.audio-input-status.ready { color: #b5d887; }
 .status-cluster, .footer-actions { height: 100%; gap: 13px; }
 .capture-status, .save-status, .folder-button, .timestamp-toggle { gap: 7px; }
 .status-pulse { width: 7px; height: 7px; border: 1px solid var(--amber); border-radius: 50%; }
@@ -461,6 +469,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   .product-label, .elapsed-block { display: none; }
   .pane-header, .column-labels, .data-row { padding-left: 16px; padding-right: 16px; }
   .select-all-button { display: none; }
+  .audio-input-status { display: none; }
+  .audio-input-control select { width: 145px; }
 }
 
 @media (max-width: 840px) {

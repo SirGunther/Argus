@@ -11,6 +11,17 @@ npm.cmd install
 npm.cmd start
 ```
 
+### Select a Windows microphone
+
+From PowerShell, launch the source application from the repository:
+
+```powershell
+cd C:\Argus
+npm.cmd start
+```
+
+In the running Electron window, use the **Audio input** selector in the bottom status bar. The first scan requests microphone permission so Windows/Electron can reveal physical microphone labels; the permission probe stops its tracks immediately. Choose **System Default** or a listed physical microphone, then use **Rescan** after connecting, disconnecting, or enabling a microphone in Windows. An explicitly chosen microphone is remembered for the next launch. If that device disappears, Argus marks it **Unavailable** and will not silently use System Default; select another input before pressing Record.
+
 The desktop host uses a per-user session root under Electron's `userData` directory unless `ARGUS_SESSION_ROOT` is set. It does not silently fall back to fake audio, fake STT, or a fake model: unavailable real dependencies are shown as degraded capabilities.
 
 Provision the real local dependencies before expecting transcription or logged-item extraction:
