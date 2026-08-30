@@ -26,11 +26,19 @@
     },
     "audio.flush": {
       "plane": "domain",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "owner": "audio/capture",
       "schema": "audio-flush.schema.json",
       "max_payload_bytes": 16384,
       "changelog": "history/audio.flush.md"
+    },
+    "audio.preview": {
+      "plane": "domain",
+      "version": "1.2.0",
+      "owner": "audio/capture",
+      "schema": "audio-preview.schema.json",
+      "max_payload_bytes": 4194304,
+      "changelog": "history/audio.preview.md"
     },
     "transcript.partial": {
       "plane": "domain",

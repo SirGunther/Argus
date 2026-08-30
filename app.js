@@ -213,10 +213,13 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       for (let index = collection.length - 1; index >= 0; index -= 1) if (collection[index].provisional) collection.splice(index, 1);
     }
     const index = collection.findIndex((entry) => (kind === 'transcript' ? entry.segment_id : entry.item_id) === id);
+    if (index >= 0 && kind === 'transcript' && item.provisional && collection[index].provisional && item.revision <= collection[index].revision) return;
     const wasPresent = index >= 0;
     if (wasPresent) collection[index] = { ...collection[index], ...item };
     else collection.push({ ...item });
-    collection.sort((a, b) => kind === 'transcript' ? a.sequence - b.sequence : a.logged_at.localeCompare(b.logged_at));
+    collection.sort((a, b) => kind === 'transcript'
+      ? Number(Boolean(a.provisional)) - Number(Boolean(b.provisional)) || a.sequence - b.sequence
+      : a.logged_at.localeCompare(b.logged_at));
     renderRows(kind, !bootstrap && !wasPresent);
     updateCounts();
     if (!bootstrap && !wasPresent) {
@@ -267,8 +270,15 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     time.textContent = item.start_time || item.logged_at;
     editable.textContent = item.text;
     editable.contentEditable = editableAllowed ? 'true' : 'false';
-    editable.setAttribute('aria-label', `${editableAllowed ? 'Edit' : 'Read-only'} ${kindConfig[kind].label} at ${item.start_time || item.logged_at}`);
+    editable.setAttribute('aria-label', `${editableAllowed ? 'Edit' : item.provisional ? 'Read-only Live' : 'Read-only'} ${kindConfig[kind].label} at ${item.start_time || item.logged_at}`);
     if (!editableAllowed) editable.setAttribute('aria-readonly', 'true');
+
+    if (kind === 'transcript' && item.provisional) {
+      row.classList.add('live-preview');
+      provenance.hidden = false;
+      provenance.querySelector('strong').textContent = 'Live';
+      sourceIdentity.textContent = 'Read-only provisional transcript';
+    }
 
     if (kind === 'derived') {
       row.classList.add('derived-row');
@@ -353,9 +363,18 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       editable.textContent = item.text;
       editable.contentEditable = editableAllowed ? 'true' : 'false';
     }
-    editable.setAttribute('aria-label', `${editableAllowed ? 'Edit' : 'Read-only'} ${kindConfig[kind].label} at ${displayTime}`);
+    editable.setAttribute('aria-label', `${editableAllowed ? 'Edit' : item.provisional ? 'Read-only Live' : 'Read-only'} ${kindConfig[kind].label} at ${displayTime}`);
     if (editableAllowed) editable.removeAttribute('aria-readonly');
     else editable.setAttribute('aria-readonly', 'true');
+
+    row.classList.toggle('live-preview', kind === 'transcript' && Boolean(item.provisional));
+    if (kind === 'transcript' && item.provisional) {
+      provenance.hidden = false;
+      provenance.querySelector('strong').textContent = 'Live';
+      sourceIdentity.textContent = 'Read-only provisional transcript';
+    } else if (kind === 'transcript') {
+      provenance.hidden = true;
+    }
 
     row.classList.remove('degraded', 'review-needed');
     editable.removeAttribute('title');

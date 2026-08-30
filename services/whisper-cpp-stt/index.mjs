@@ -5,11 +5,14 @@ import { spawn } from 'node:child_process';
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
 import { resolveSessionRoot } from '../../runtime/session-storage.mjs';
 import { createDiagnosticLogger } from '../../runtime/diagnostics.mjs';
+import { createSerialWhisperLane } from './preview-scheduler.mjs';
 
 const SERVICE = 'whisper-cpp-stt';
 const MAX_WINDOW_CHUNKS = 120;
 const stateBySession = new Map();
+const latestPreviewRevisionByUtterance = new Map();
 const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS !== '0', source: SERVICE });
+const whisperLane = createSerialWhisperLane({ diagnostic: (event, details) => diagnostics.log(`whisper.${event}`, details) });
 
 runLineService({ service: SERVICE, operations: {
   'audio.chunk': { name: 'buffer-whisper-audio', async handle(message) {
@@ -22,18 +25,45 @@ runLineService({ service: SERVICE, operations: {
     state.chunks.push({ ...chunk, bytes: Buffer.from(chunk.audio_base64, 'base64') });
     return [];
   } },
+  'audio.preview': { name: 'preview-whisper-window', retainOutputs: false, async handle(message, { emit } = {}) {
+    const preview = message.payload;
+    validatePreview(preview);
+    const latest = latestPreviewRevisionByUtterance.get(preview.utterance_id) || 0;
+    if (whisperLane.isFinalized(preview.utterance_id) || preview.revision <= latest) {
+      diagnostics.log('preview.discarded', { session_id: preview.session_id, utterance_id: preview.utterance_id, revision: preview.revision, latest_revision: latest, reason: whisperLane.isFinalized(preview.utterance_id) ? 'utterance-finalized' : 'stale-revision' });
+      return [];
+    }
+    latestPreviewRevisionByUtterance.set(preview.utterance_id, preview.revision);
+    whisperLane.submitPreview({
+      ...preview,
+      run: async (signal) => {
+        const result = await transcribePreview(preview, signal);
+        if (!result.text || !countWords(result.segments) || !whisperLane.canEmitPreview(preview.utterance_id, preview.revision)) return;
+        emit?.({ messageType: 'transcript.partial', schemaVersion: '1.2.0', identityKey: `${SERVICE}:partial:${preview.utterance_id}:r${preview.revision}`, payload: partialOutput(preview, result) });
+        diagnostics.log('preview.emitted', { session_id: preview.session_id, utterance_id: preview.utterance_id, revision: preview.revision, covered_chunk_count: preview.covered_chunk_ids.length, transcript_preview: result.text });
+      }
+    });
+    return [];
+  } },
   'audio.flush': { name: 'finalize-whisper-window', async handle(message) {
     const sessionId = message.payload?.session_id;
     if (!sessionId) throw invalid('audio.flush requires session_id');
     const state = stateBySession.get(sessionId);
     if (!state?.chunks.length) return [];
+    const utteranceId = message.payload?.utterance_id || `${sessionId}-utterance-${state.nextUtteranceSequence}`;
     try {
-      const result = await transcribe(state);
-      return finalOutputs(state, result, message.payload?.reason || 'flush');
+      return await whisperLane.runFinal({
+        utterance_id: utteranceId,
+        run: async () => {
+          const result = await transcribe(state);
+          return finalOutputs(state, result, message.payload?.reason || 'flush', utteranceId);
+        }
+      });
     } finally {
       // A failed or empty window must not poison the next queued utterance.
       state.chunks = [];
       state.chunkIds.clear();
+      latestPreviewRevisionByUtterance.delete(utteranceId);
     }
   } }
 }, async onReady() {
@@ -67,6 +97,23 @@ function audioWindowId(state) {
 
 async function transcribe(state) {
   const window = audioWindowDetails(state);
+  const bytes = Buffer.concat(state.chunks.map((chunk) => chunk.bytes));
+  return transcribeBytes(bytes, window, 'final');
+}
+
+async function transcribePreview(preview, signal) {
+  const bytes = Buffer.from(preview.pcm_base64, 'base64');
+  return transcribeBytes(bytes, {
+    session_id: preview.session_id,
+    audio_window_id: preview.preview_id,
+    first_sequence: undefined,
+    last_sequence: undefined,
+    chunk_count: preview.covered_chunk_ids.length,
+    duration_ms: Math.max(0, parseClock(preview.end_time) - parseClock(preview.start_time))
+  }, 'preview', signal);
+}
+
+async function transcribeBytes(bytes, window, inferenceKind, signal) {
   const binary = String(process.env.ARGUS_WHISPER_BINARY || '').trim();
   const model = String(process.env.ARGUS_WHISPER_MODEL || '').trim();
   if (!binary || !model) {
@@ -93,9 +140,8 @@ async function transcribe(state) {
   let processResult;
   try {
     await writeFile(ownerFile, JSON.stringify({ pid: process.pid, output_base: outputBase }), { flag: 'wx' });
-    const bytes = Buffer.concat(state.chunks.map((chunk) => chunk.bytes));
     await writeFile(wav, createWav(bytes, 16000, 1, 16));
-    processResult = await runWhisper(binary, model, wav, outputBase, { ...window, byte_count: bytes.byteLength });
+    processResult = await runWhisper(binary, model, wav, outputBase, { ...window, byte_count: bytes.byteLength, inference_kind: inferenceKind }, { signal });
     let raw;
     try { raw = JSON.parse(await readFile(outputJson, 'utf8')); }
     catch (error) { throw malformed(`Whisper returned malformed JSON: ${error.message}`, processResult.stderr); }
@@ -105,9 +151,9 @@ async function transcribe(state) {
     }
     const text = segments.map((segment) => segment.text).join(' ').replace(/\s+/g, ' ').trim();
     const wordCount = countWords(segments);
-    diagnostics.log('whisper.completed', { session_id: window.session_id, audio_window_id: window.audio_window_id, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, transcript_preview: text });
+    diagnostics.log('whisper.completed', { session_id: window.session_id, audio_window_id: window.audio_window_id, inference_kind: inferenceKind, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, transcript_preview: text });
     if (!segments.length || !wordCount || !text) {
-      diagnostics.log('whisper.empty', { session_id: window.session_id, audio_window_id: window.audio_window_id, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, reason: 'no-speech' });
+      diagnostics.log('whisper.empty', { session_id: window.session_id, audio_window_id: window.audio_window_id, inference_kind: inferenceKind, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, reason: 'no-speech' });
     }
     return { text, segments, process: processResult };
   } catch (error) {
@@ -120,10 +166,11 @@ async function transcribe(state) {
   }
 }
 
-function finalOutputs(state, result, reason = 'flush') {
+function finalOutputs(state, result, reason = 'flush', requestedUtteranceId) {
   const first = state.chunks[0];
   const last = state.chunks.at(-1);
-  const utteranceId = `${first.session_id}-utterance-${state.nextUtteranceSequence++}`;
+  const utteranceId = requestedUtteranceId || `${first.session_id}-utterance-${state.nextUtteranceSequence++}`;
+  if (requestedUtteranceId) state.nextUtteranceSequence += 1;
   const words = [];
   for (const segment of result.segments) {
     for (const token of segment.tokens) {
@@ -170,6 +217,26 @@ function parseTranscription(raw) {
   }).filter((segment) => segment.text);
 }
 
+function partialOutput(preview, result) {
+  const probabilities = result.segments.flatMap((segment) => segment.tokens)
+    .filter((token) => sanitizeWhisperText(token.text) && !isControlToken(token.text))
+    .map((token) => token.probability)
+    .filter(Number.isFinite);
+  const stability = probabilities.length ? probabilities.reduce((sum, value) => sum + value, 0) / probabilities.length : 0;
+  return {
+    projection_id: `${preview.utterance_id}-partial`,
+    session_id: preview.session_id,
+    utterance_id: preview.utterance_id,
+    revision: preview.revision,
+    replaces_revision: preview.revision - 1,
+    start_time: preview.start_time,
+    end_time: preview.end_time,
+    text: result.text,
+    stability: Math.max(0, Math.min(1, stability)),
+    covered_chunk_ids: preview.covered_chunk_ids
+  };
+}
+
 function readTimestamp(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
   if (typeof value !== 'string' || !value.trim()) return undefined;
@@ -179,7 +246,7 @@ function readTimestamp(value) {
   return (((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3])) * 1000) + Number(match[4]);
 }
 
-function runWhisper(binary, model, wav, outputBase, window) {
+function runWhisper(binary, model, wav, outputBase, window, { signal } = {}) {
   return new Promise((resolve, reject) => {
     const startedAt = performance.now();
     const delayedMs = positiveEnvironmentNumber('ARGUS_WHISPER_DELAYED_MS', 10000);
@@ -192,8 +259,13 @@ function runWhisper(binary, model, wav, outputBase, window) {
     let delayedTimer;
     let timeoutTimer;
     let killTimer;
+    let superseded = false;
     const timeoutError = () => unavailable(`whisper.cpp exceeded its ${timeoutMs} ms hard timeout`, { code: 'STT_TIMEOUT', category: 'timeout', retryable: true });
-    const clearTimers = () => { clearTimeout(delayedTimer); clearTimeout(timeoutTimer); clearTimeout(killTimer); };
+    const supersededError = () => unavailable('Provisional Whisper inference was superseded by final transcription.', { code: 'STT_PREVIEW_SUPERSEDED', category: 'cancellation', retryable: true });
+    const clearTimers = () => {
+      clearTimeout(delayedTimer); clearTimeout(timeoutTimer); clearTimeout(killTimer);
+      signal?.removeEventListener('abort', abort);
+    };
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
@@ -201,6 +273,14 @@ function runWhisper(binary, model, wav, outputBase, window) {
       if (error) reject(error);
       else resolve(result);
     };
+    const abort = () => {
+      if (settled) return;
+      superseded = true;
+      terminateProcessTree(child);
+      finish(supersededError());
+    };
+    if (signal?.aborted) return abort();
+    signal?.addEventListener('abort', abort, { once: true });
     child.stderr.on('data', (chunk) => {
       if (stderr.length < 4096) stderr += chunk.toString().slice(0, 4096 - stderr.length);
     });
@@ -208,6 +288,7 @@ function runWhisper(binary, model, wav, outputBase, window) {
     child.once('error', (error) => finish(unavailable(`Unable to start whisper.cpp: ${error.message}`)));
     child.once('exit', (code, signal) => {
       exited = true;
+      if (superseded) return finish(supersededError());
       if (timedOut) return finish(timeoutError());
       if (code === 0) return finish(undefined, { stderr, pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt) });
       finish(unavailable(`whisper.cpp exited with code ${code ?? 'none'}${signal ? ` (${signal})` : ''}: ${stderr.trim() || 'no diagnostic'}`, { code: 'STT_PROCESS_EXIT', category: 'dependency', retryable: true }));
@@ -247,11 +328,19 @@ function validateChunk(chunk) {
   if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== chunk.checksum) throw invalid('audio checksum does not match bytes');
 }
 
+function validatePreview(preview) {
+  if (!preview?.session_id || !preview.utterance_id || !preview.preview_id || !Number.isInteger(preview.revision) || preview.revision < 1) throw invalid('audio.preview identity is invalid', 'INVALID_AUDIO_PREVIEW');
+  const bytes = Buffer.from(preview.pcm_base64 || '', 'base64');
+  if (bytes.toString('base64') !== preview.pcm_base64 || bytes.byteLength !== preview.byte_length || bytes.byteLength !== preview.sample_count * 2) throw invalid('preview PCM bytes and metadata do not match', 'INVALID_AUDIO_PREVIEW');
+  if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== preview.checksum) throw invalid('preview checksum does not match', 'INVALID_AUDIO_PREVIEW');
+  if (!Array.isArray(preview.covered_chunk_ids) || !preview.covered_chunk_ids.length || preview.covered_chunk_ids.length > MAX_WINDOW_CHUNKS) throw invalid('preview covered chunk ids are invalid', 'INVALID_AUDIO_PREVIEW');
+}
+
 function offsetTime(base, offsetMs) { return formatClock(parseClock(base) + Math.max(0, offsetMs)); }
 function parseClock(value) { const match = /^(\d+):(\d+):(\d+)\.(\d{3})$/.exec(value); return match ? (((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3])) * 1000) + Number(match[4]) : 0; }
 function formatClock(value) { const ms = Math.max(0, Math.round(value)); const hours = Math.floor(ms / 3600000); const minutes = Math.floor((ms % 3600000) / 60000); const seconds = Math.floor((ms % 60000) / 1000); return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`; }
 function punctuationHint(text) { return text.trim().endsWith('?') ? 'question' : text.trim().endsWith('!') ? 'exclamation' : 'statement'; }
-function invalid(message) { return new ServiceOperationError(message, { code: 'INVALID_AUDIO_CHUNK', category: 'validation' }); }
+function invalid(message, code = 'INVALID_AUDIO_CHUNK') { return new ServiceOperationError(message, { code, category: 'validation' }); }
 function unavailable(message, options = {}) { return new ServiceOperationError(message, { code: 'STT_UNAVAILABLE', category: 'dependency', retryable: true, ...options }); }
 function malformed(message, stderr) { return new ServiceOperationError(`${message}${stderr ? ` Diagnostic: ${stderr.trim()}` : ''}`, { code: 'STT_MALFORMED_OUTPUT', category: 'validation', retryable: true }); }
 function boundedAudioWindow() { return new ServiceOperationError(`Whisper audio buffer reached its governed ${MAX_WINDOW_CHUNKS}-chunk limit; stop or pause recording to finalize it before continuing.`, { code: 'AUDIO_WINDOW_LIMIT', category: 'resource' }); }

@@ -1,0 +1,20 @@
+{
+  "$id": "argus.audio-preview.v1",
+  "type": "object",
+  "required": ["preview_id", "session_id", "utterance_id", "revision", "requested_at", "start_time", "end_time", "sample_count", "byte_length", "pcm_base64", "checksum", "covered_chunk_ids"],
+  "properties": {
+    "preview_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "utterance_id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "requested_at": { "type": "string", "minLength": 1 },
+    "start_time": { "type": "string", "minLength": 1 },
+    "end_time": { "type": "string", "minLength": 1 },
+    "sample_count": { "type": "integer", "minimum": 1, "maximum": 1105920 },
+    "byte_length": { "type": "integer", "minimum": 2, "maximum": 2211840 },
+    "pcm_base64": { "type": "string", "minLength": 4, "maxLength": 2949120, "pattern": "^[A-Za-z0-9+/]+={0,2}$" },
+    "checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "covered_chunk_ids": { "type": "array", "minItems": 1, "maxItems": 120, "items": { "type": "string", "minLength": 1 } }
+  },
+  "additionalProperties": false
+}
