@@ -1,0 +1,1 @@
+{"transcription":[{"text":" hello, world!","offsets":{"from":0,"to":1600},"tokens":[{"text":" hello","p":0.96,"offsets":{"from":100,"to":500}},{"text":",","p":0.91,"offsets":{"from":500,"to":600}},{"text":" world","p":0.94,"offsets":{"from":800,"to":1300}},{"text":"!","p":0.83,"offsets":{"from":1300,"to":1600}}]}]}

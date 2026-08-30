@@ -56,10 +56,10 @@ test('empty Whisper result is observable and the next queued window still transc
   try {
     const result = await runServiceBatches(whisperManifest, [
       { inputs: [chunk(0), flush('empty')] , expectedOutputCount: 3 },
-      { inputs: [chunk(1), flush('next')], expectedOutputCount: 5 }
+      { inputs: [chunk(1), flush('next')], expectedOutputCount: 4 }
     ], 10000, { env: { ARGUS_SESSION_ROOT: sessionRoot, ARGUS_WHISPER_BINARY: binary, ARGUS_WHISPER_MODEL: model, ARGUS_PROBE_COUNTER: counter, ARGUS_DIAGNOSTICS: '1' } });
     assert.equal(result.outputs.filter((message) => message.message_type === 'transcript.empty').length, 1);
-    assert.deepEqual(result.outputs.filter((message) => message.message_type === 'transcript.word-committed').map((message) => message.payload.text), ['Next', '.']);
+    assert.deepEqual(result.outputs.filter((message) => message.message_type === 'transcript.word-committed').map((message) => message.payload.text), ['Next.']);
     assert.ok(result.diagnostics.filter((line) => line.trimStart().startsWith('{')).some((line) => JSON.parse(line).event === 'whisper.empty'));
     assert.equal(result.diagnostics.join('\n').includes('audio_base64'), false);
   } finally {

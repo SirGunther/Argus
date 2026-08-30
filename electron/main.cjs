@@ -124,6 +124,5 @@ app.on('activate', () => { if (!mainWindow) createWindow(); });
 
 function shouldEnableDiagnostics() {
   const explicit = String(process.env.ARGUS_DIAGNOSTICS || '').trim().toLowerCase();
-  if (app.isPackaged) return ['1', 'true', 'yes', 'on'].includes(explicit);
-  return !['0', 'false', 'no', 'off'].includes(explicit);
+  return explicit === '1';
 }

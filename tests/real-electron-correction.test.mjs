@@ -215,11 +215,11 @@ test('Whisper buffers many chunks without launching and launches exactly once on
   try {
     const result = await runServiceBatches(whisperManifest, [
       { inputs: chunks, expectedOutputCount: chunks.length },
-      { inputs: [flush], expectedOutputCount: 4 }
+      { inputs: [flush], expectedOutputCount: 3 }
     ], 10000, { env: { ARGUS_SESSION_ROOT: sessionRoot, ARGUS_WHISPER_BINARY: binary, ARGUS_WHISPER_MODEL: model, ARGUS_PROBE_COUNTER: counter } });
     assert.equal((await readFile(counter, 'utf8')).trim().split(/\r?\n/).filter(Boolean).length, 1);
     const words = result.outputs.filter((message) => message.message_type === 'transcript.word-committed');
-    assert.deepEqual(words.map((message) => message.payload.text), ['Okay', '.']);
+    assert.deepEqual(words.map((message) => message.payload.text), ['Okay.']);
     assert.equal(JSON.stringify(words).includes('[*BEG*]'), false);
     assert.equal(JSON.stringify(words).includes('[_TT_250]'), false);
     assert.equal(JSON.stringify(result.outputs).includes('<|'), false);

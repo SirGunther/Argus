@@ -94,7 +94,7 @@ test('at-least-once replay re-emits ephemeral PCM and creates no duplicate words
   const chunks = source.outputs.filter((message) => message.message_type === 'audio.chunk');
   const redelivered = chunks.flatMap((chunk) => [chunk, structuredClone(chunk)]);
 
-  const gate = await runService(manifest('serial-transcription-gate'), redelivered, 12, 5000);
+  const gate = await runService(manifest('serial-transcription-gate'), redelivered, 12, 5000, { env: { ARGUS_DIAGNOSTICS: '1' } });
   const scheduled = gate.outputs.filter((message) => message.message_type === 'audio.chunk');
   assert.equal(scheduled.length, 6);
   assert.deepEqual(scheduled.map((message) => message.payload), redelivered.map((message) => message.payload));
