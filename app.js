@@ -26,8 +26,8 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     transcriptScroll: document.querySelector('#transcriptScroll'), derivedScroll: document.querySelector('#derivedScroll'), transcriptCount: document.querySelector('#transcriptCount'), derivedCount: document.querySelector('#derivedCount'),
     recordButton: document.querySelector('#recordButton'), stopButton: document.querySelector('#stopButton'), closeSessionButton: document.querySelector('#closeSessionButton'), captureStatus: document.querySelector('#captureStatus'), captureStatusText: document.querySelector('#captureStatusText'), transcriptionStatus: document.querySelector('#transcriptionStatus'), transcriptionStatusText: document.querySelector('#transcriptionStatusText'), sessionStateDot: document.querySelector('#sessionStateDot'), elapsedTime: document.querySelector('#elapsedTime'), sessionIdentity: document.querySelector('#sessionIdentity'),
     saveStatus: document.querySelector('#saveStatus'), saveStatusText: document.querySelector('#saveStatusText'), transcriptJump: document.querySelector('#transcriptJump'), derivedJump: document.querySelector('#derivedJump'), transcriptNewCount: document.querySelector('#transcriptNewCount'), derivedNewCount: document.querySelector('#derivedNewCount'),
-    sessionDrawer: document.querySelector('#sessionDrawer'), closeModal: document.querySelector('#closeModal'), drawerState: document.querySelector('#drawerState'), drawerDuration: document.querySelector('#drawerDuration'), drawerEntries: document.querySelector('#drawerEntries'), finalTranscriptCount: document.querySelector('#finalTranscriptCount'), finalDerivedCount: document.querySelector('#finalDerivedCount'), toastRegion: document.querySelector('#toastRegion'), serviceStatusList: document.querySelector('#serviceStatusList'),
-    audioInputControl: document.querySelector('#audioInputControl'), audioInputSelect: document.querySelector('#audioInputSelect'), audioInputRefresh: document.querySelector('#audioInputRefresh'), audioInputStatus: document.querySelector('#audioInputStatus'),
+    sessionDrawer: document.querySelector('#sessionDrawer'), closeModal: document.querySelector('#closeModal'), drawerState: document.querySelector('#drawerState'), drawerDuration: document.querySelector('#drawerDuration'), drawerEntries: document.querySelector('#drawerEntries'), finalTranscriptCount: document.querySelector('#finalTranscriptCount'), finalDerivedCount: document.querySelector('#finalDerivedCount'), toastRegion: document.querySelector('#toastRegion'), serviceStatusList: document.querySelector('#serviceStatusList'), systemStatusSummary: document.querySelector('#systemStatusSummary'), systemStatusIndicator: document.querySelector('#systemStatusIndicator'),
+    audioInputDetails: document.querySelector('#audioInputDetails'), audioInputControl: document.querySelector('#audioInputControl'), audioInputSelect: document.querySelector('#audioInputSelect'), audioInputRefresh: document.querySelector('#audioInputRefresh'), audioInputStatus: document.querySelector('#audioInputStatus'), audioInputSummary: document.querySelector('#audioInputSummary'),
     includeTimestamps: document.querySelector('#includeTimestamps'), sessionDetailsButton: document.querySelector('#sessionDetailsButton'), openFolderButton: document.querySelector('#openFolderButton'), drawerFolderButton: document.querySelector('#drawerFolderButton'), copyPathButton: document.querySelector('#copyPathButton'), confirmCloseButton: document.querySelector('#confirmCloseButton')
   };
 
@@ -41,6 +41,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   }) : null;
 
   els.audioInputControl.hidden = !desktop;
+  els.audioInputDetails.hidden = !desktop;
 
   const kindConfig = {
     transcript: { list: 'transcriptList', scroll: 'transcriptScroll', count: 'transcriptCount', label: 'transcript entry' },
@@ -90,6 +91,34 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     els.audioInputRefresh.disabled = recording || audioInput.refreshing;
     els.audioInputStatus.className = `audio-input-status ${audioInput.tone}`.trim();
     els.audioInputStatus.textContent = audioInput.message;
+    const summaryTone = audioInput.initialized ? (audioInput.ready ? 'ready' : 'error') : 'checking';
+    els.audioInputSummary.className = `audio-input-summary-text ${summaryTone}`;
+    els.audioInputSummary.textContent = audioInput.initialized ? (audioInput.ready ? (audioInput.selectedDeviceId ? 'Ready · Selected' : 'Ready · System default') : 'Unavailable') : 'Checking access';
+    renderSystemStatusSummary();
+  }
+
+  function renderSystemStatusSummary() {
+    const services = [...state.services.values()];
+    const unavailable = services.filter((service) => service.status === 'unavailable');
+    const degraded = services.filter((service) => service.status === 'degraded');
+    let tone = 'available';
+    let summary = desktop ? 'Checking microphone' : 'Checking bridge';
+    if (desktop && audioInput.initialized && !audioInput.ready) {
+      tone = 'unavailable';
+      summary = 'Microphone unavailable';
+    } else if (!desktop && unavailable.length) {
+      tone = 'unavailable';
+      summary = `${unavailable.length} service issue${unavailable.length === 1 ? '' : 's'}`;
+    } else if (unavailable.length || degraded.length) {
+      tone = unavailable.length ? 'unavailable' : 'degraded';
+      summary = `${unavailable.length + degraded.length} system issue${unavailable.length + degraded.length === 1 ? '' : 's'}`;
+    } else if (desktop && !audioInput.initialized) {
+      tone = 'degraded';
+    } else {
+      summary = desktop ? 'Microphone ready' : 'Bridge ready';
+    }
+    els.systemStatusIndicator.className = `system-status-indicator ${tone}`;
+    els.systemStatusSummary.textContent = summary;
   }
 
   function updateAudioInputStatus() {
@@ -462,6 +491,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       chip.textContent = `${service.capability}: ${service.status}`;
       els.serviceStatusList.append(chip);
     }
+    renderSystemStatusSummary();
   }
 
   function setBridgeStatus(status, message) {
