@@ -275,6 +275,9 @@ function lexicalWordsForSegments(segments) {
 }
 
 function mergeWhisperTokens(segment) {
+  // Whisper may expose a known non-speech marker as several BPE tokens. The
+  // segment-level text is authoritative for filtering the complete marker.
+  if (segment.nonSpeech) return [];
   const words = [];
   let current;
   for (const token of segment.tokens) {
