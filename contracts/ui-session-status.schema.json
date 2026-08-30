@@ -9,7 +9,17 @@
     "created_at": { "type": "string", "minLength": 1 },
     "duration_seconds": { "type": "integer", "minimum": 0 },
     "transcript_count": { "type": "integer", "minimum": 0 },
-    "logged_item_count": { "type": "integer", "minimum": 0 }
+    "logged_item_count": { "type": "integer", "minimum": 0 },
+    "audio_processing": {
+      "type": "object",
+      "required": ["state", "queue_depth"],
+      "properties": {
+        "state": { "enum": ["listening", "queued", "transcribing", "delayed", "error"] },
+        "queue_depth": { "type": "integer", "minimum": 0 },
+        "detail": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

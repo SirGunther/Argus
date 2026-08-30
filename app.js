@@ -418,6 +418,8 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     const closed = state.session.state === 'closed';
     const processing = state.sessionAction === 'session.stop' || state.sessionAction === 'session.close';
     const starting = state.starting;
+    const audioProcessing = state.session.audio_processing || { state: 'listening', queue_depth: 0 };
+    const audioLabel = formatAudioProcessing(audioProcessing);
     els.sessionIdentity.textContent = `Session ${state.session.session_id}`;
     els.recordButton.classList.toggle('active', recording);
     els.recordButton.disabled = recording || starting || processing;
@@ -425,14 +427,24 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     els.closeSessionButton.disabled = closed || starting || processing;
     els.recordButton.title = starting ? 'Waiting for the new recording session to be accepted' : closed ? 'Start a new session' : recording ? 'Recording from the physical microphone' : 'Start recording for this session';
     els.recordButton.querySelector('span:last-child').textContent = starting ? 'Starting' : recording ? 'Recording' : closed ? 'New Session' : (desktop && !state.newSession ? 'Resume' : 'Record');
-    els.captureStatus.className = `capture-status ${starting ? 'starting' : recording ? 'recording' : closed ? 'closed' : ''}`;
-    els.captureStatusText.textContent = starting ? 'Starting · Waiting for command acceptance' : processing ? 'Processing final audio…' : recording ? 'Listening · Processing finalized audio' : closed ? 'Session finalized' : 'Session stopped · Ready to resume';
+    els.captureStatus.className = `capture-status ${starting ? 'starting' : recording ? `recording ${audioProcessing.state}` : closed ? 'closed' : ''}`.trim();
+    els.captureStatusText.textContent = starting ? 'Starting · Waiting for command acceptance' : processing ? `Finishing accepted audio · ${audioLabel}` : recording ? audioLabel : closed ? 'Session finalized' : 'Session stopped · Ready to resume';
     els.sessionStateDot.className = `session-state-dot ${recording ? 'recording' : closed ? 'closed' : ''}`;
     els.drawerState.textContent = starting ? 'Starting · Awaiting acceptance' : recording ? 'Recording · Live' : closed ? 'Finalized · Complete' : 'Stopped · Ready to resume';
     const elapsed = timer.current();
     els.elapsedTime.textContent = formatElapsed(elapsed);
     els.drawerDuration.textContent = formatDuration(recording ? elapsed : state.session.duration_seconds);
     renderAudioInput();
+  }
+
+  function formatAudioProcessing(processing) {
+    const labels = { listening: 'Listening', queued: 'Queued', transcribing: 'Transcribing', delayed: 'Delayed', error: 'Error' };
+    const label = labels[processing.state] || 'Listening';
+    const queueDepth = Number(processing.queue_depth) || 0;
+    if (processing.state === 'error' || processing.state === 'delayed') return `${label} · ${processing.detail || 'Audio processing needs attention'}`;
+    if (processing.state === 'queued') return `${label} · ${queueDepth} utterance${queueDepth === 1 ? '' : 's'} pending`;
+    if (processing.state === 'transcribing' && queueDepth > 0) return `${label} · ${queueDepth} queued`;
+    return label;
   }
 
   function renderServices() {

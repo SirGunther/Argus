@@ -60,7 +60,8 @@ export function createAudioCapture({
   let sequence = 0;
   let sampleCount = 0;
   let startedAt;
-  let pending = Promise.resolve();
+  let ingressTail = Promise.resolve();
+  const pendingTasks = new Set();
   let buffer = [];
   let stopping = false;
   let flushQueued = false;
@@ -109,6 +110,8 @@ export function createAudioCapture({
       startedAt = performance.now();
       sequence = 0;
       sampleCount = 0;
+      ingressTail = Promise.resolve();
+      pendingTasks.clear();
       flushQueued = false;
       speechSamples = 0;
       silenceSamples = 0;
@@ -142,19 +145,33 @@ export function createAudioCapture({
   function enqueueChunk(samples) {
     pendingChunkCount += 1;
     const chunk = makeChunk(samples);
-    pending = pending.then(async () => sendAudioChunk(await chunk)).catch(handleFailure).finally(() => { pendingChunkCount -= 1; });
+    const previousChunks = ingressTail;
+    const task = previousChunks
+      .then(async () => sendAudioChunk(await chunk))
+      .finally(() => { pendingChunkCount -= 1; })
+      .catch(handleFailure);
+    ingressTail = task.catch(() => {});
+    trackTask(task);
   }
 
   function enqueuePauseFlush() {
     if (flushQueued || !sessionId) return;
     flushQueued = true;
-    pending = pending.then(async () => {
+    const previousChunks = ingressTail;
+    const task = previousChunks.then(async () => {
       await sendAudioFlush({ session_id: sessionId, requested_at: new Date().toISOString(), reason: 'pause' });
       speechSamples = 0;
       silenceSamples = 0;
       speechDetected = false;
       flushQueued = false;
     }).catch(handleFailure);
+    ingressTail = task.catch(() => {});
+    trackTask(task);
+  }
+
+  function trackTask(task) {
+    pendingTasks.add(task);
+    task.then(() => pendingTasks.delete(task), () => pendingTasks.delete(task));
   }
 
   function updateSpeechState(rms, sampleLength) {
@@ -210,7 +227,7 @@ export function createAudioCapture({
     source?.disconnect();
     worklet?.disconnect();
     stream?.getTracks().forEach((track) => track.stop());
-    await pending.catch(() => {});
+    await Promise.allSettled([...pendingTasks]);
     if (context) await context.close().catch(() => {});
     source = undefined; worklet = undefined; stream = undefined; context = undefined; buffer = []; sessionId = undefined; pendingChunkCount = 0;
   }

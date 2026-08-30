@@ -9,6 +9,10 @@ import { calculateRecordingDurationMs } from './session-lifecycle.mjs';
 
 const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL'];
 const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'storage-session', 'clipboard', 'folder-opening'];
+const MAX_AUDIO_QUEUE_ITEMS = 256;
+const MAX_AUDIO_UTTERANCES = 16;
+const DELAYED_AUDIO_UTTERANCES = 4;
+const MAX_UTTERANCE_CHUNKS = 120;
 
 export class DesktopApplication {
   constructor({ root, graphFile, sessionRoot, environment = process.env } = {}) {
@@ -32,6 +36,16 @@ export class DesktopApplication {
     this.seenMessages = new Set();
     this.audioInFlight = 0;
     this.audioIdleWaiters = new Set();
+    this.audioUtteranceQueue = [];
+    this.audioCurrentUtterance = [];
+    this.audioQueuedUtterances = 0;
+    this.audioQueuedChunkCount = 0;
+    this.audioPreparingUtterance = undefined;
+    this.audioActiveFlush = undefined;
+    this.audioWorkerPromise = undefined;
+    this.audioProcessingError = undefined;
+    this.audioProcessingOverride = undefined;
+    this.audioProcessingLast = undefined;
     this.shuttingDown = false;
     this.shutdownPromise = undefined;
     this.provisionedManifest = undefined;
@@ -121,26 +135,26 @@ export class DesktopApplication {
   async acceptAudioChunk(chunk) {
     if (this.shuttingDown || this.graph?.closed) return this.ignoredAudioResult(chunk?.session_id);
     if (!this.graph || this.metadata?.state !== 'recording') throw new Error('Audio is accepted only while the governed session is recording');
-    if (this.audioInFlight >= 4) throw Object.assign(new Error('Audio backpressure capacity reached; capture must pause.'), { code: 'AUDIO_BACKPRESSURE', retryable: true });
-    this.audioInFlight += 1;
-    try {
-      await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.chunk', chunk.session_id, chunk, `${chunk.session_id}:audio.chunk:${chunk.sequence}`);
-      return { accepted: true, sequence: chunk.sequence };
-    } finally {
-      this.audioInFlight -= 1;
-      this.resolveAudioIdleWaiters();
-    }
+    if (chunk?.session_id !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${chunk?.session_id}`), { code: 'SESSION_NOT_FOUND' });
+    if (this.audioProcessingError) throw this.audioProcessingError;
+    if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length >= MAX_AUDIO_QUEUE_ITEMS) throw this.audioBackpressure('Audio processing queue is full; capture must pause briefly.');
+    if (this.audioCurrentUtterance.length >= MAX_UTTERANCE_CHUNKS) throw this.audioBackpressure('The current utterance reached its governed 120-chunk limit; pause to finalize it before continuing.');
+    this.audioProcessingOverride = undefined;
+    const snapshot = freezeAudioChunk(chunk);
+    this.audioCurrentUtterance.push(snapshot);
+    this.updateAudioProcessing();
+    return { accepted: true, sequence: chunk.sequence };
   }
 
   async acceptAudioFlush(payload = {}) {
     if (this.shuttingDown || this.graph?.closed) return this.ignoredAudioResult(payload.session_id);
     if (!this.graph || this.metadata?.state !== 'recording') throw new Error('Audio flush is accepted only while the governed session is recording');
-    await this.dispatchAudioFlush(payload.session_id, {
+    const result = this.enqueueAudioFlush(payload.session_id, {
       session_id: payload.session_id,
       requested_at: payload.requested_at || new Date().toISOString(),
       ...(payload.reason === 'pause' ? { reason: 'pause' } : {})
     }, `${payload.session_id}:audio.flush:${randomUUID()}`);
-    return { accepted: true, session_id: payload.session_id };
+    return result;
   }
 
   async handleCommand(rawPayload) {
@@ -182,7 +196,8 @@ export class DesktopApplication {
   async sessionCommand(payload, { allowFlushFailure = false } = {}) {
     if ((payload.command === 'session.stop' || payload.command === 'session.close') && this.metadata?.state === 'recording') {
       try {
-        await this.dispatchAudioFlush(payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`);
+        this.enqueueAudioFlush(payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`, { allowShutdown: true });
+        await this.waitForAudioIdle();
         await this.graph.waitForIdle();
       } catch (error) {
         if (!allowFlushFailure) throw error;
@@ -213,19 +228,118 @@ export class DesktopApplication {
   }
 
   async dispatchAudioFlush(sessionId, payload, idempotencyKey) {
-    if (sessionId !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${sessionId}`), { code: 'SESSION_NOT_FOUND' });
-    return this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', sessionId, payload, idempotencyKey);
+    return this.enqueueAudioFlush(sessionId, payload, idempotencyKey, { allowShutdown: true });
   }
 
   async waitForAudioIdle() {
-    if (this.audioInFlight === 0) return;
+    if (this.audioInFlight === 0 && !this.audioWorkerPromise) return;
     await new Promise((resolve) => this.audioIdleWaiters.add(resolve));
   }
 
   resolveAudioIdleWaiters() {
-    if (this.audioInFlight !== 0) return;
+    if (this.audioInFlight !== 0 || this.audioWorkerPromise) return;
     for (const resolve of this.audioIdleWaiters) resolve();
     this.audioIdleWaiters.clear();
+  }
+
+  enqueueAudioFlush(sessionId, payload, idempotencyKey, { allowShutdown = false } = {}) {
+    if (sessionId !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${sessionId}`), { code: 'SESSION_NOT_FOUND' });
+    if (this.shuttingDown && !allowShutdown) return this.ignoredAudioResult(sessionId);
+    if (this.audioProcessingError) throw this.audioProcessingError;
+    if (!this.audioCurrentUtterance.length) return { accepted: true, session_id: sessionId, queued: false };
+    if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length > MAX_AUDIO_QUEUE_ITEMS || this.audioQueuedUtterances >= MAX_AUDIO_UTTERANCES) throw this.audioBackpressure('Audio utterance queue is full; capture must pause briefly.');
+    this.audioProcessingOverride = undefined;
+    const utterance = Object.freeze({
+      session_id: sessionId,
+      chunks: Object.freeze(this.audioCurrentUtterance.slice()),
+      requested_at: payload.requested_at || new Date().toISOString(),
+      ...(payload.reason === 'pause' ? { reason: 'pause' } : {})
+    });
+    this.audioCurrentUtterance = [];
+    this.audioQueuedUtterances += 1;
+    this.audioQueuedChunkCount += utterance.chunks.length;
+    this.enqueueAudioWork({ utterance, idempotencyKey });
+    return { accepted: true, session_id: sessionId, queued: true, queue_depth: this.audioQueuedUtterances };
+  }
+
+  enqueueAudioWork(work) {
+    this.audioUtteranceQueue.push(work);
+    this.audioInFlight += 1;
+    this.updateAudioProcessing();
+    if (!this.audioWorkerPromise) {
+      this.audioWorkerPromise = this.processAudioQueue().finally(() => {
+        this.audioWorkerPromise = undefined;
+        this.resolveAudioIdleWaiters();
+      });
+    }
+  }
+
+  async processAudioQueue() {
+    while (this.audioUtteranceQueue.length) {
+      const work = this.audioUtteranceQueue.shift();
+      let queueAccountingCleared = false;
+      try {
+        this.audioQueuedUtterances -= 1;
+        this.audioPreparingUtterance = work;
+        this.updateAudioProcessing();
+        for (const chunk of work.utterance.chunks) {
+          await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.chunk', chunk.session_id, chunk, `${chunk.session_id}:audio.chunk:${chunk.sequence}`);
+        }
+        this.audioPreparingUtterance = undefined;
+        this.audioActiveFlush = work;
+        this.updateAudioProcessing();
+        await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', work.utterance.session_id, {
+          session_id: work.utterance.session_id,
+          requested_at: work.utterance.requested_at,
+          ...(work.utterance.reason ? { reason: work.utterance.reason } : {})
+        }, work.idempotencyKey);
+      } catch (error) {
+        this.failAudioProcessing(error);
+        this.audioInFlight -= this.audioUtteranceQueue.length;
+        this.audioUtteranceQueue.length = 0;
+        this.audioQueuedUtterances = 0;
+        this.audioQueuedChunkCount = 0;
+        this.audioCurrentUtterance = [];
+        queueAccountingCleared = true;
+      } finally {
+        this.audioPreparingUtterance = undefined;
+        this.audioActiveFlush = undefined;
+        if (!queueAccountingCleared) this.audioQueuedChunkCount -= work.utterance.chunks.length;
+        this.audioInFlight -= 1;
+        this.updateAudioProcessing();
+      }
+      if (this.audioProcessingError) break;
+    }
+  }
+
+  failAudioProcessing(error) {
+    this.audioProcessingError = Object.assign(error, { retryable: error.retryable ?? true });
+    this.setCapability('stt', 'unavailable', `Audio processing failed: ${error.message}`, true);
+    this.updateAudioProcessing();
+  }
+
+  audioBackpressure(message) {
+    const error = Object.assign(new Error(message), { code: 'AUDIO_BACKPRESSURE', retryable: true });
+    this.audioProcessingOverride = { state: 'delayed', detail: message };
+    this.updateAudioProcessing('delayed', message);
+    return error;
+  }
+
+  updateAudioProcessing(forcedState, detail) {
+    const next = this.audioProcessingSnapshot(forcedState, detail);
+    const changed = JSON.stringify(this.audioProcessingLast) !== JSON.stringify(next);
+    this.audioProcessingLast = next;
+    if (changed && this.started) this.emit('ui.session-status', this.sessionProjection());
+  }
+
+  audioProcessingSnapshot(forcedState, detail) {
+    const queueDepth = this.audioQueuedUtterances + (this.audioPreparingUtterance ? 1 : 0);
+    const state = forcedState || this.audioProcessingOverride?.state || (this.audioProcessingError ? 'error' : this.audioActiveFlush ? 'transcribing' : queueDepth ? (queueDepth >= DELAYED_AUDIO_UTTERANCES ? 'delayed' : 'queued') : 'listening');
+    return {
+      state,
+      queue_depth: queueDepth,
+      ...(detail || this.audioProcessingOverride?.detail || this.audioProcessingError ? { detail: detail || this.audioProcessingOverride?.detail || this.audioProcessingError.message } : {})
+    };
   }
 
   ignoredAudioResult(sessionId) { return { accepted: false, ignored: true, code: 'SHUTDOWN_IN_PROGRESS', session_id: sessionId, reason: 'Application shutdown is in progress.' }; }
@@ -295,7 +409,7 @@ export class DesktopApplication {
     const elapsedMs = calculateRecordingDurationMs(metadata, Date.now());
     const duration = Math.max(0, Math.floor(elapsedMs / 1000));
     const elapsed = duration;
-    return { session_id: this.sessionId, state, elapsed_seconds: elapsed, created_at: createdAt, duration_seconds: duration, transcript_count: this.transcript.length, logged_item_count: this.loggedItems.length };
+    return { session_id: this.sessionId, state, elapsed_seconds: elapsed, created_at: createdAt, duration_seconds: duration, transcript_count: this.transcript.length, logged_item_count: this.loggedItems.length, audio_processing: this.audioProcessingSnapshot() };
   }
 
   handleGraphMessage(message) {
@@ -369,6 +483,10 @@ export class DesktopApplication {
 }
 
 function ownerFor(command) { if (command === 'transcript.edit') return 'transcript/active-state'; if (command === 'logged-item.edit') return 'logged-items/active-owner'; if (command === 'copy' || command === 'copy-session-path') return 'platform/clipboard'; if (command === 'open-folder') return 'platform/folder'; if (command?.startsWith('session.')) return 'runtime/session-lifecycle'; return 'ui/command'; }
+
+function freezeAudioChunk(chunk) {
+  return Object.freeze({ ...chunk, format: Object.freeze({ ...(chunk.format || {}) }) });
+}
 
 function resolveProvisionedPath(root, absolutePath, relativePath) {
   if (relativePath) return path.resolve(root, relativePath);
