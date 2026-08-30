@@ -145,6 +145,7 @@ function emitCompletion(service, operation, message, duplicate) {
 }
 
 function trace(service, operation, status, inputMessage, detail = {}) {
+  if (process.env.ARGUS_DIAGNOSTICS !== '1') return;
   process.stderr.write(`${JSON.stringify({
     service,
     operation,

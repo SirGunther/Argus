@@ -5,7 +5,7 @@ import { createDiagnosticLogger } from '../../runtime/diagnostics.mjs';
 
 const SERVICE = 'permanent-transcript-history';
 const entries = new Map();
-const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS !== '0', source: SERVICE });
+const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS === '1', source: SERVICE });
 runLineService({ service: SERVICE, operations: {
   'transcript.history-append': { name: 'append-transcript-revision', onDuplicate: 'handle', async handle(message) {
     const append = message.payload;

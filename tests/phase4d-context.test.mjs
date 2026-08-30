@@ -63,7 +63,7 @@ test('authoritative windows never overlap while bounded lookback and forward con
 test('deterministic transcription gate preserves PCM output and proves scheduler workload without retaining audio in work input', async () => {
   const audio = await runService(manifest('fake-audio-source'), [start('statement')], 3);
   const chunk = audio.outputs.find((message) => message.message_type === 'audio.chunk');
-  const gate = await runService(manifest('serial-transcription-gate'), [chunk], 2);
+  const gate = await runService(manifest('serial-transcription-gate'), [chunk], 2, 2000, { env: { ARGUS_DIAGNOSTICS: '1' } });
   const scheduled = gate.outputs.find((message) => message.message_type === 'audio.chunk');
   assert.deepEqual(scheduled.payload, chunk.payload);
   assert.ok(gate.diagnostics.some((line) => line.includes('"workload":"transcription"') && line.includes('"scheduler_concurrency":1')));

@@ -16,7 +16,7 @@ const committedWords = new Map();
 const finalizedUtterances = new Set();
 const storage = process.env.ARGUS_SESSION_ROOT ? new SessionStorage() : null;
 const loadedSessions = new Set();
-const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS !== '0', source: SERVICE });
+const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS === '1', source: SERVICE });
 const wordReceiptCountBySession = new Map();
 
 runLineService({ service: SERVICE, operations: {

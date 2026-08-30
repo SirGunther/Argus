@@ -9,7 +9,7 @@ import { createDiagnosticLogger } from '../../runtime/diagnostics.mjs';
 const SERVICE = 'whisper-cpp-stt';
 const MAX_WINDOW_CHUNKS = 120;
 const stateBySession = new Map();
-const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS !== '0', source: SERVICE });
+const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS === '1', source: SERVICE });
 
 runLineService({ service: SERVICE, operations: {
   'audio.chunk': { name: 'buffer-whisper-audio', async handle(message) {
@@ -103,7 +103,7 @@ async function transcribe(state) {
     if (segments.some((segment) => segment.tokens.some((token) => !Number.isFinite(token.probability)))) {
       throw malformed('Whisper JSON did not provide token probabilities; refusing to invent confidence values. Use a compatible whisper.cpp build.', processResult.stderr);
     }
-    const text = segments.map((segment) => segment.text).join(' ').replace(/\s+/g, ' ').trim();
+    const text = reconstructTranscriptText(segments);
     const wordCount = countWords(segments);
     diagnostics.log('whisper.completed', { session_id: window.session_id, audio_window_id: window.audio_window_id, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, transcript_preview: text });
     if (!segments.length || !wordCount || !text) {
@@ -125,17 +125,17 @@ function finalOutputs(state, result, reason = 'flush') {
   const last = state.chunks.at(-1);
   const utteranceId = `${first.session_id}-utterance-${state.nextUtteranceSequence++}`;
   const words = [];
-  for (const segment of result.segments) {
-    for (const token of segment.tokens) {
-      const text = sanitizeWhisperText(token.text);
-      if (!text || isControlToken(text)) continue;
-      const sequence = state.nextWordSequence++;
-      words.push({ messageType: 'transcript.word-committed', identityKey: `${SERVICE}:word:${first.session_id}:${sequence}`, payload: {
-        word_id: `${first.session_id}-word-${sequence}`, session_id: first.session_id, utterance_id: utteranceId, sequence,
-        start_time: offsetTime(first.start_time, token.fromMs ?? segment.fromMs), end_time: offsetTime(first.start_time, token.toMs ?? segment.toMs), text,
-        confidence: token.probability, evidence: { provider: SERVICE, chunk_ids: state.chunks.map((chunk) => chunk.chunk_id), alternatives: [] }
-      } });
-    }
+  for (const word of lexicalWordsForSegments(result.segments)) {
+    const firstToken = word.tokens[0];
+    const lastToken = word.tokens.at(-1);
+    const sequence = state.nextWordSequence++;
+    words.push({ messageType: 'transcript.word-committed', identityKey: `${SERVICE}:word:${first.session_id}:${sequence}`, payload: {
+      word_id: `${first.session_id}-word-${sequence}`, session_id: first.session_id, utterance_id: utteranceId, sequence,
+      start_time: offsetTime(first.start_time, firstToken.fromMs ?? word.segment.fromMs),
+      end_time: offsetTime(first.start_time, lastToken.toMs ?? word.segment.toMs),
+      text: word.text, confidence: word.confidence,
+      evidence: { provider: SERVICE, chunk_ids: state.chunks.map((chunk) => chunk.chunk_id), alternatives: [] }
+    } });
   }
   if (!words.length) {
     return [{ messageType: 'transcript.empty', schemaVersion: '1.0.0', identityKey: `transcript.empty:${utteranceId}`, payload: {
@@ -157,17 +157,19 @@ function parseTranscription(raw) {
   const source = Array.isArray(raw?.transcription) ? raw.transcription : Array.isArray(raw?.segments) ? raw.segments : [];
   if (!source.length) return [];
   return source.map((segment) => {
-    const text = sanitizeWhisperText(segment.text);
-    const tokens = (Array.isArray(segment.tokens) ? segment.tokens : []).map((token) => ({
-      text: String(token.text || ''), probability: Number(token.p ?? token.probability),
-      fromMs: readTimestamp(token.offsets?.from ?? token.timestamps?.from),
-      toMs: readTimestamp(token.offsets?.to ?? token.timestamps?.to)
+    const rawText = String(segment?.text ?? '');
+    const sanitizedText = sanitizeWhisperText(rawText);
+    const nonSpeech = isNonSpeechMarker(sanitizedText);
+    const tokens = (Array.isArray(segment?.tokens) ? segment.tokens : []).map((token, index) => ({
+      index, rawText: String(token?.text ?? ''), text: sanitizeWhisperText(token?.text), probability: Number(token?.p ?? token?.probability),
+      fromMs: readTimestamp(token?.offsets?.from ?? token?.timestamps?.from),
+      toMs: readTimestamp(token?.offsets?.to ?? token?.timestamps?.to)
     }));
-    const fromMs = readTimestamp(segment.offsets?.from ?? segment.timestamps?.from ?? segment.t0);
-    const toMs = readTimestamp(segment.offsets?.to ?? segment.timestamps?.to ?? segment.t1);
+    const fromMs = readTimestamp(segment?.offsets?.from ?? segment?.timestamps?.from ?? segment?.t0);
+    const toMs = readTimestamp(segment?.offsets?.to ?? segment?.timestamps?.to ?? segment?.t1);
     if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) throw malformed('Whisper JSON did not provide usable segment timestamps. Use --output-json-full from the pinned whisper.cpp build.');
-    return { text, tokens, fromMs, toMs };
-  }).filter((segment) => segment.text);
+    return { rawText, text: nonSpeech ? '' : sanitizedText, nonSpeech, tokens, fromMs, toMs };
+  }).filter((segment) => segment.text || segment.nonSpeech || segment.tokens.length);
 }
 
 function readTimestamp(value) {
@@ -256,11 +258,54 @@ function unavailable(message, options = {}) { return new ServiceOperationError(m
 function malformed(message, stderr) { return new ServiceOperationError(`${message}${stderr ? ` Diagnostic: ${stderr.trim()}` : ''}`, { code: 'STT_MALFORMED_OUTPUT', category: 'validation', retryable: true }); }
 function boundedAudioWindow() { return new ServiceOperationError(`Whisper audio buffer reached its governed ${MAX_WINDOW_CHUNKS}-chunk limit; stop or pause recording to finalize it before continuing.`, { code: 'AUDIO_WINDOW_LIMIT', category: 'resource' }); }
 
-function countWords(segments) {
-  return segments.reduce((count, segment) => count + segment.tokens.filter((token) => {
-    const text = sanitizeWhisperText(token.text);
-    return text && !isControlToken(text);
-  }).length, 0);
+function countWords(segments) { return lexicalWordsForSegments(segments).length; }
+
+function reconstructTranscriptText(segments) {
+  return lexicalWordsForSegments(segments).map((word) => word.text).join(' ');
+}
+
+/**
+ * Whisper's BPE token text uses leading whitespace to mark a new lexical word.
+ * A token without that whitespace is a continuation, while contractions and
+ * trailing punctuation attach explicitly even when the provider includes a
+ * leading space. No language model or heuristic spacing guess is involved.
+ */
+function lexicalWordsForSegments(segments) {
+  return segments.flatMap((segment) => mergeWhisperTokens(segment));
+}
+
+function mergeWhisperTokens(segment) {
+  const words = [];
+  let current;
+  for (const token of segment.tokens) {
+    const text = token.text;
+    if (!text || isControlToken(text) || isNonSpeechMarker(text)) continue;
+
+    const startsWithWhitespace = /^\s/u.test(token.rawText);
+    const attachesToPrevious = current && (
+      !startsWithWhitespace || isContractionToken(text) || isTrailingPunctuation(text)
+    );
+    if (!attachesToPrevious) {
+      current = {
+        segment,
+        tokens: [token],
+        text,
+        confidence: token.probability
+      };
+      words.push(current);
+      continue;
+    }
+
+    current.tokens.push(token);
+    current.text += text;
+    current.confidence = conservativeTokenConfidence(current.tokens);
+  }
+  return words;
+}
+
+/** The weakest token bounds a merged word; this prevents confidence inflation. */
+function conservativeTokenConfidence(tokens) {
+  return Math.min(...tokens.map((token) => token.probability));
 }
 
 function positiveEnvironmentNumber(name, fallback) {
@@ -270,8 +315,14 @@ function positiveEnvironmentNumber(name, fallback) {
 
 const CONTROL_TOKEN_PATTERN = /<\|[^|]*\|>|\[\*[^\]]+\*\]|\[_[^\]]+\]/g;
 const CONTROL_TOKEN_EXACT = /^(?:<\|[^|]*\|>|\[\*[^\]]+\*\]|\[_[^\]]+\])$/;
-function sanitizeWhisperText(text) { return String(text || '').replace(CONTROL_TOKEN_PATTERN, '').replace(/\s+/g, ' ').trim(); }
+const NON_SPEECH_MARKERS = new Set(['[BLANK_AUDIO]', '[MUSIC]', '[NOISE]', '[SILENCE]']);
+const CONTRACTION_TOKEN_PATTERN = /^(?:['’](?:d|ll|m|re|s|t|ve)|n['’]t)$/iu;
+const TRAILING_PUNCTUATION_PATTERN = /^[,.;:!?%…]+[\)\]\}»”"']*$/u;
+function sanitizeWhisperText(text) { return String(text ?? '').replace(CONTROL_TOKEN_PATTERN, '').replace(/\s+/g, ' ').trim(); }
 function isControlToken(text) { return CONTROL_TOKEN_EXACT.test(String(text || '').trim()); }
+function isNonSpeechMarker(text) { return NON_SPEECH_MARKERS.has(String(text || '').trim().toUpperCase()); }
+function isContractionToken(text) { return CONTRACTION_TOKEN_PATTERN.test(String(text || '').trim()); }
+function isTrailingPunctuation(text) { return TRAILING_PUNCTUATION_PATTERN.test(String(text || '').trim()); }
 
 async function cleanupAbandonedArtifacts() {
   const root = resolveSessionRoot();

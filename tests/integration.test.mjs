@@ -38,7 +38,7 @@ test('multiple instances of one implementation use distinct graph producer ident
 test('graceful completion preserves the terminal service completed trace', async () => {
   const orchestrator = path.join(root, 'runtime/orchestrator.mjs');
   const graph = path.join(root, 'wiring/demo.concise.json');
-  const { code, stderr } = await runCli(orchestrator, graph);
+  const { code, stderr } = await runCli(orchestrator, graph, { ARGUS_DIAGNOSTICS: '1' });
   assert.equal(code, 0);
   const traces = stderr.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
   assert.ok(traces.some((entry) => entry.service === 'logged-item-memory-store' && entry.operation === 'store-item' && entry.status === 'completed'));
@@ -59,9 +59,9 @@ test('service.failure reaches the explicit supervisor control component', async 
   );
 });
 
-function runCli(orchestrator, graph) {
+function runCli(orchestrator, graph, environment = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [orchestrator, graph], { windowsHide: true });
+    const child = spawn(process.execPath, [orchestrator, graph], { windowsHide: true, env: { ...process.env, ...environment } });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
