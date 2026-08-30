@@ -15,7 +15,8 @@
 | Message | Plane | Version | Owner | Max payload |
 | --- | --- | --- | --- | ---: |
 | `audio.chunk` | domain | `1.2.0` | `audio/capture` | 32 KiB |
-| `audio.flush` | domain | `1.2.0` | `audio/capture` | 16 KiB |
+| `audio.flush` | domain | `1.3.0` | `audio/capture` | 16 KiB |
+| `audio.preview` | domain | `1.2.0` | `audio/capture` | 4096 KiB |
 | `transcript.partial` | domain | `1.2.0` | `transcript/stt` | 32 KiB |
 | `transcript.empty` | domain | `1.0.0` | `transcript/stt` | 16 KiB |
 | `transcript.word-committed` | domain | `1.2.0` | `transcript/stt` | 32 KiB |
@@ -95,7 +96,7 @@
 ## `audio.flush`
 
 - Plane: `domain`
-- Version: `1.2.0`
+- Version: `1.3.0`
 - Owner: `audio/capture`
 - Schema: [`audio-flush.schema.json`](../audio-flush.schema.json)
 - History: [`history/audio.flush.md`](../history/audio.flush.md)
@@ -105,7 +106,32 @@
 | --- | --- | --- | --- |
 | `session_id` | yes | string | min length 1 |
 | `requested_at` | yes | string | min length 1 |
+| `utterance_id` | no | string | min length 1 |
 | `reason` | no | any | `pause`, `flush` |
+
+## `audio.preview`
+
+- Plane: `domain`
+- Version: `1.2.0`
+- Owner: `audio/capture`
+- Schema: [`audio-preview.schema.json`](../audio-preview.schema.json)
+- History: [`history/audio.preview.md`](../history/audio.preview.md)
+- Maximum payload: 4096 KiB (4194304 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `preview_id` | yes | string | min length 1 |
+| `session_id` | yes | string | min length 1 |
+| `utterance_id` | yes | string | min length 1 |
+| `revision` | yes | integer | minimum 1 |
+| `requested_at` | yes | string | min length 1 |
+| `start_time` | yes | string | min length 1 |
+| `end_time` | yes | string | min length 1 |
+| `sample_count` | yes | integer | minimum 1 |
+| `byte_length` | yes | integer | minimum 2 |
+| `pcm_base64` | yes | string | min length 4 |
+| `checksum` | yes | string | — |
+| `covered_chunk_ids` | yes | array<string> | min items 1 |
 
 ## `transcript.partial`
 

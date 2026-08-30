@@ -62,7 +62,14 @@ export function runLineService({ service, operations, onDrain, onReady }) {
         return;
       }
       trace(service, operation.name, 'started', message);
-      const outputs = (await operation.handle(message) || []).map((output, index) => ({
+      const background = (output) => {
+        const normalized = {
+          ...output,
+          identityKey: output.identityKey || `${producer}:${output.messageType}:background:${message.idempotency_key || message.message_id}`
+        };
+        emit(producer, normalized.plane || 'domain', normalized.messageType, message.correlation_id, normalized.payload, message.message_id, normalized.identityKey, normalized.schemaVersion);
+      };
+      const outputs = (await operation.handle(message, { emit: background }) || []).map((output, index) => ({
         ...output,
         identityKey: output.identityKey || `${producer}:${output.messageType}:${message.idempotency_key || message.message_id}:${index}`
       }));

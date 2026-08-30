@@ -9,7 +9,7 @@
     "queue": { "capacity": 32, "overflow": "fail" }
   },
   "runtime_components": [
-    { "id": "@desktop-controller", "kind": "input-source", "ports": { "domain": { "accepts": [], "emits": ["audio.chunk", "audio.flush", "transcript.segment-update", "logged-item.update"] }, "control": { "accepts": [], "emits": ["session.record", "session.stop", "session.resume", "session.close"] } } },
+    { "id": "@desktop-controller", "kind": "input-source", "ports": { "domain": { "accepts": [], "emits": ["audio.chunk", "audio.flush", "audio.preview", "transcript.segment-update", "logged-item.update"] }, "control": { "accepts": [], "emits": ["session.record", "session.stop", "session.resume", "session.close"] } } },
     { "id": "@session-controller", "kind": "session-controller", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": [], "emits": ["lifecycle.start"] } } },
     { "id": "@supervisor", "kind": "supervisor", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": ["service.failure", "service.health", "service.drained", "operation.completed", "operation.rejected", "service.exited"], "emits": ["lifecycle.health-check", "lifecycle.drain", "dead-letter.message"] } } },
     { "id": "@runtime-provider", "kind": "runtime-provider", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": [], "emits": ["service.exited", "service.failure"] } } },
@@ -34,6 +34,7 @@
   "domain_wires": [
     { "from": "@desktop-controller", "contract": "audio.chunk", "to": "speech-to-text", "delivery": { "queue_capacity": 8 } },
     { "from": "@desktop-controller", "contract": "audio.flush", "to": "speech-to-text", "delivery": { "operation_timeout_ms": 125000 } },
+    { "from": "@desktop-controller", "contract": "audio.preview", "to": "speech-to-text", "delivery": { "queue_capacity": 1, "operation_timeout_ms": 5000 } },
     { "from": "@desktop-controller", "contract": "transcript.segment-update", "to": "active-transcript" },
     { "from": "@desktop-controller", "contract": "logged-item.update", "to": "active-logged-item" },
     { "from": "speech-to-text", "contract": "transcript.partial", "to": "active-transcript" },

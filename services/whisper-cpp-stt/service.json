@@ -14,7 +14,7 @@
   },
   "ports": {
     "domain": {
-      "accepts": ["audio.chunk", "audio.flush"],
+      "accepts": ["audio.chunk", "audio.flush", "audio.preview"],
       "emits": ["transcript.partial", "transcript.word-committed", "transcript.utterance-boundary", "transcript.empty"]
     },
     "control": {

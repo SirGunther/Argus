@@ -1,0 +1,24 @@
+{
+  "message_id": "6f9cb5b2-8e13-4f0d-b4bf-13bb4e4f7b8d",
+  "idempotency_key": "fixture:audio.preview:0",
+  "plane": "domain",
+  "message_type": "audio.preview",
+  "timestamp": "2026-08-30T00:00:00.000Z",
+  "producer": "phase-live-preview-fixture",
+  "correlation_id": "live-preview-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "preview_id": "live-preview-session-utterance-0-preview-1",
+    "session_id": "live-preview-session",
+    "utterance_id": "live-preview-session-utterance-0",
+    "revision": 1,
+    "requested_at": "2026-08-30T00:00:00.000Z",
+    "start_time": "00:00:00.000",
+    "end_time": "00:00:00.256",
+    "sample_count": 2,
+    "byte_length": 4,
+    "pcm_base64": "AAABAA==",
+    "checksum": "sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93",
+    "covered_chunk_ids": ["live-preview-session-chunk-0"]
+  }
+}
