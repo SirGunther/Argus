@@ -120,32 +120,51 @@
             <span class="transcription-label">TRANSCRIPTION</span>
             <span id="transcriptionStatusText">Idle</span>
           </div>
-          <span class="status-divider"></span>
-          <div class="save-status" id="saveStatus">
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8" /></svg>
-            <span id="saveStatusText">All changes saved</span>
+        </div>
+
+        <details class="system-status" id="systemStatus">
+          <summary class="system-status-summary" aria-controls="systemStatusPanel">
+            <span class="system-status-indicator" id="systemStatusIndicator" aria-hidden="true"></span>
+            <span class="system-status-title">System status</span>
+            <span class="system-status-summary-text" id="systemStatusSummary" role="status" aria-live="polite">Checking</span>
+            <svg class="system-status-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7.5 5 5 5-5" /></svg>
+          </summary>
+          <div class="system-status-panel" id="systemStatusPanel">
+            <div class="system-status-group">
+              <span class="system-status-label">Services &amp; bridge</span>
+              <div class="service-status-list" id="serviceStatusList" aria-live="polite" aria-label="Service and capability status"></div>
+            </div>
+
+            <details class="audio-input-details" id="audioInputDetails">
+              <summary class="audio-input-summary">
+                <span class="system-status-label">Microphone</span>
+                <span class="audio-input-summary-text" id="audioInputSummary" role="status" aria-live="polite">Checking</span>
+                <svg class="system-status-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7.5 5 5 5-5" /></svg>
+              </summary>
+              <div class="audio-input-control" id="audioInputControl" hidden>
+                <label class="audio-input-label" for="audioInputSelect">Audio input</label>
+                <select id="audioInputSelect" aria-describedby="audioInputStatus">
+                  <option value="">System Default</option>
+                </select>
+                <button class="text-button" id="audioInputRefresh" type="button">Rescan</button>
+                <span class="audio-input-status" id="audioInputStatus" role="status" aria-live="polite"></span>
+              </div>
+            </details>
+
+            <div class="save-status system-save-status" id="saveStatus">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8" /></svg>
+              <span id="saveStatusText">All changes saved</span>
+            </div>
           </div>
-        </div>
-
-        <div class="audio-input-control" id="audioInputControl" hidden>
-          <label class="audio-input-label" for="audioInputSelect">Audio input</label>
-          <select id="audioInputSelect" aria-describedby="audioInputStatus">
-            <option value="">System Default</option>
-          </select>
-          <button class="text-button" id="audioInputRefresh" type="button">Rescan</button>
-          <span class="audio-input-status" id="audioInputStatus" role="status" aria-live="polite"></span>
-        </div>
-
-        <div class="service-status-list" id="serviceStatusList" aria-live="polite" aria-label="Service and capability status"></div>
+        </details>
 
         <div class="footer-actions">
           <label class="timestamp-toggle">
-            <input type="checkbox" id="includeTimestamps" checked />
+            <input type="checkbox" id="includeTimestamps" aria-label="Copy timestamps" checked />
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
             <span>Copy timestamps</span>
           </label>
-          <span class="status-divider"></span>
-          <button class="folder-button" id="openFolderButton" type="button">
+          <button class="folder-button" id="openFolderButton" type="button" title="Open session folder" aria-label="Open session folder">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6.5h5l1.5 2H17v6.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6.5Z"/><path d="M3 9h14"/></svg>
             <span>Open session folder</span>
           </button>

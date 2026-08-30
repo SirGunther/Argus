@@ -24,10 +24,10 @@ function configurePermissions() {
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 1000,
-    minWidth: 1060,
-    minHeight: 720,
+    width: 1180,
+    height: 800,
+    minWidth: 760,
+    minHeight: 600,
     backgroundColor: '#0c1117',
     webPreferences: {
       preload: path.join(ROOT, 'ui', 'desktop-preload.cjs'),
