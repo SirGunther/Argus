@@ -6,11 +6,12 @@ import { MessageIntegrityLedger } from './message-identity.mjs';
 const NO_RECEIPT = new Set(['lifecycle.health-check', 'lifecycle.drain']);
 
 export class InteractiveGraph {
-  constructor(prepared, { trace = false, onMessage = () => {}, onStatus = () => {} } = {}) {
+  constructor(prepared, { trace = false, onMessage = () => {}, onStatus = () => {}, diagnostics } = {}) {
     this.prepared = prepared;
     this.trace = trace;
     this.onMessage = onMessage;
     this.onStatus = onStatus;
+    this.diagnostics = diagnostics;
     this.running = new Map();
     this.queues = new Map();
     this.waiters = new Map();
@@ -65,6 +66,7 @@ export class InteractiveGraph {
     if (this.drainPromise) return this.drainPromise;
     if (!this.started) return;
     this.draining = true;
+    this.diagnostics?.log('shutdown.graph-drain-beginning', { session_id: this.sessionId(), reason });
     this.drainPromise = new Promise((resolve) => {
       this.drainResolve = resolve;
       try {
@@ -85,11 +87,12 @@ export class InteractiveGraph {
     this.running.set(instance.id, record);
     record.handle = provider.start(instance, {
       onMessage: (line) => this.receiveServiceLine(instance, line),
-      onDiagnostic: (line) => this.trace && process.stderr.write(`${line}\n`),
+      onDiagnostic: (line) => this.diagnostics?.ingest(line) || (this.trace && process.stderr.write(`${line}\n`)),
       onError: (error) => this.fail(new Error(`${instance.id} failed to start: ${error.message}`)),
       onExit: ({ code, signal }) => {
         record.exited = true;
         record.handle.dispose();
+        this.diagnostics?.log('graph.service-exited', { session_id: this.sessionId(), correlation_id: this.sessionId(), service: instance.id, pid: record.handle.pid, code, signal, expected: record.expected });
         this.onStatus({ type: 'service-exit', service: instance.id, code, signal, expected: record.expected });
         if (!record.expected && !this.draining) this.fail(new Error(`${instance.id} exited unexpectedly with code ${code ?? 'none'}`));
         if (this.draining && [...this.running.values()].every((item) => item.exited)) this.finishDrain();
@@ -124,7 +127,12 @@ export class InteractiveGraph {
           wireKey: this.wireKey(wire),
           capacity: wire.delivery?.queue_capacity || this.prepared.definition.supervision.queue.capacity,
           onError: (error, item) => this.rejectReceipt(wire.to, item.message.message_id, error),
-          observe: (depth) => this.onStatus({ type: 'queue', wire: this.wireKey(wire), depth })
+          observe: (depth) => {
+            this.onStatus({ type: 'queue', wire: this.wireKey(wire), depth });
+            if (depth >= Math.max(1, Math.floor((wire.delivery?.queue_capacity || this.prepared.definition.supervision.queue.capacity) * 0.75))) {
+              this.diagnostics?.log('graph.queue-pressure', { session_id: message.correlation_id, correlation_id: message.correlation_id, wire: this.wireKey(wire), depth });
+            }
+          }
         });
         queue.consume = async (item) => {
           const current = this.running.get(wire.to);
@@ -134,7 +142,11 @@ export class InteractiveGraph {
         this.queues.set(this.wireKey(wire), queue);
       }
       try { queue.enqueue({ message, attempt: 1 }); }
-      catch (error) { this.rejectReceipt(wire.to, message.message_id, error); this.onStatus({ type: 'service-failure', service: wire.to, code: error.code || 'QUEUE_OVERFLOW', message: error.message, retryable: true }); }
+      catch (error) {
+        this.rejectReceipt(wire.to, message.message_id, error);
+        this.diagnostics?.log('graph.queue-rejected', { session_id: message.correlation_id, correlation_id: message.correlation_id, service: wire.to, input_message_id: message.message_id, message_type: message.message_type, code: error.code || 'QUEUE_OVERFLOW', error: error.message });
+        this.onStatus({ type: 'service-failure', service: wire.to, code: error.code || 'QUEUE_OVERFLOW', message: error.message, retryable: true, correlation_id: message.correlation_id, input_message_id: message.message_id, operation: message.message_type });
+      }
     }
   }
 
@@ -147,8 +159,16 @@ export class InteractiveGraph {
         return;
       }
       if (message.message_type === 'operation.completed') { this.resolveReceipt(from, message.payload.input_message_id); return; }
-      if (message.message_type === 'operation.rejected') { this.rejectReceipt(from, message.payload.input_message_id, new Error(message.payload.reason?.message || 'Operation rejected')); return; }
-      if (message.message_type === 'service.failure') { this.rejectReceipt(message.payload.service, message.payload.input_message_id, new Error(message.payload.error?.message || 'Service failure')); this.onStatus({ type: 'service-failure', service: message.payload.service, code: message.payload.error?.code, message: message.payload.error?.message, retryable: message.payload.error?.retryable }); return; }
+      if (message.message_type === 'operation.rejected') {
+        this.rejectReceipt(from, message.payload.input_message_id, new Error(message.payload.reason?.message || 'Operation rejected'));
+        this.onStatus({ type: 'operation-rejected', service: message.payload.service || from, operation: message.payload.operation, code: message.payload.reason?.code, message: message.payload.reason?.message, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
+        return;
+      }
+      if (message.message_type === 'service.failure') {
+        this.rejectReceipt(message.payload.service, message.payload.input_message_id, new Error(message.payload.error?.message || 'Service failure'));
+        this.onStatus({ type: 'service-failure', service: message.payload.service, operation: message.payload.operation, code: message.payload.error?.code, message: message.payload.error?.message, retryable: message.payload.error?.retryable, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
+        return;
+      }
       if (message.message_type === 'service.drained') { this.drained.add(from); if (this.draining && this.drained.size === this.prepared.services.size) this.stopProcesses(); return; }
       return;
     }
@@ -184,6 +204,7 @@ export class InteractiveGraph {
   finishDrain() {
     if (this.closed) return;
     this.closed = true;
+    this.diagnostics?.log('shutdown.graph-drain-completed', { session_id: this.sessionId() });
     this.drainResolve?.();
     for (const waiter of this.waiters.values()) waiter.reject(new Error('Argus graph drained'));
     this.waiters.clear();

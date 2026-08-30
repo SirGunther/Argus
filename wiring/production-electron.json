@@ -14,7 +14,7 @@
     { "id": "@supervisor", "kind": "supervisor", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": ["service.failure", "service.health", "service.drained", "operation.completed", "operation.rejected", "service.exited"], "emits": ["lifecycle.health-check", "lifecycle.drain", "dead-letter.message"] } } },
     { "id": "@runtime-provider", "kind": "runtime-provider", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": [], "emits": ["service.exited", "service.failure"] } } },
     { "id": "@dead-letter-collector", "kind": "dead-letter-collector", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": ["dead-letter.message"], "emits": [] } } },
-    { "id": "@projection-gateway", "kind": "result-collector", "ports": { "domain": { "accepts": ["transcript.partial", "transcript.segment", "transcript.segment-stored", "transcript.history-appended", "logged-item.stored", "logged-item.history-appended"], "emits": [] }, "control": { "accepts": ["session.recorded", "session.stopped", "session.resumed", "session.closed", "service.failure"], "emits": ["workflow.completed"] } } },
+    { "id": "@projection-gateway", "kind": "result-collector", "ports": { "domain": { "accepts": ["transcript.partial", "transcript.empty", "transcript.segment", "transcript.segment-stored", "transcript.history-appended", "logged-item.stored", "logged-item.history-appended"], "emits": [] }, "control": { "accepts": ["session.recorded", "session.stopped", "session.resumed", "session.closed", "service.failure"], "emits": ["workflow.completed"] } } },
     { "id": "@run-controller", "kind": "run-controller", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": ["workflow.completed"], "emits": [] } } }
   ],
   "services": [
@@ -33,11 +33,12 @@
   ],
   "domain_wires": [
     { "from": "@desktop-controller", "contract": "audio.chunk", "to": "speech-to-text", "delivery": { "queue_capacity": 8 } },
-    { "from": "@desktop-controller", "contract": "audio.flush", "to": "speech-to-text" },
+    { "from": "@desktop-controller", "contract": "audio.flush", "to": "speech-to-text", "delivery": { "operation_timeout_ms": 125000 } },
     { "from": "@desktop-controller", "contract": "transcript.segment-update", "to": "active-transcript" },
     { "from": "@desktop-controller", "contract": "logged-item.update", "to": "active-logged-item" },
     { "from": "speech-to-text", "contract": "transcript.partial", "to": "active-transcript" },
     { "from": "speech-to-text", "contract": "transcript.partial", "to": "@projection-gateway" },
+    { "from": "speech-to-text", "contract": "transcript.empty", "to": "@projection-gateway" },
     { "from": "speech-to-text", "contract": "transcript.word-committed", "to": "active-transcript" },
     { "from": "speech-to-text", "contract": "transcript.utterance-boundary", "to": "active-transcript" },
     { "from": "active-transcript", "contract": "transcript.correction-request", "to": "contextual-correction" },

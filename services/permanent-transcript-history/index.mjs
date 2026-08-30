@@ -1,9 +1,11 @@
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
 import { fingerprintValue } from '../../runtime/message-identity.mjs';
 import { SessionStorage, SessionStorageError } from '../../runtime/session-storage.mjs';
+import { createDiagnosticLogger } from '../../runtime/diagnostics.mjs';
 
 const SERVICE = 'permanent-transcript-history';
 const entries = new Map();
+const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS !== '0', source: SERVICE });
 runLineService({ service: SERVICE, operations: {
   'transcript.history-append': { name: 'append-transcript-revision', onDuplicate: 'handle', async handle(message) {
     const append = message.payload;
@@ -19,6 +21,7 @@ runLineService({ service: SERVICE, operations: {
         });
         const entry = durable.entry;
         entries.set(append.history_entry_id, { fingerprint: entry.fingerprint, segment: structuredClone(entry.record), appendedAt: entry.appended_at });
+        diagnostics.log('transcript.history-appended', { session_id: append.session_id, history_entry_id: append.history_entry_id, segment_id: append.segment.segment_id, revision: append.segment.revision, durable: true });
         return [{ messageType: 'transcript.history-appended', identityKey: `transcript.history-appended:${append.history_entry_id}`, payload: {
           history_entry_id: append.history_entry_id, session_id: append.session_id, segment_id: append.segment.segment_id,
           segment_revision: append.segment.revision, appended_at: entry.appended_at
@@ -33,6 +36,7 @@ runLineService({ service: SERVICE, operations: {
     if (known && known.fingerprint !== fingerprint) throw new ServiceOperationError(`History entry ${append.history_entry_id} was reused with different content`, { code: 'IDEMPOTENT_INPUT_CONFLICT', category: 'conflict' });
     const appendedAt = known?.appendedAt || new Date().toISOString();
     if (!known) entries.set(append.history_entry_id, { fingerprint, segment: structuredClone(append.segment), appendedAt });
+    diagnostics.log('transcript.history-appended', { session_id: append.session_id, history_entry_id: append.history_entry_id, segment_id: append.segment.segment_id, revision: append.segment.revision, durable: false });
     return [{ messageType: 'transcript.history-appended', identityKey: `transcript.history-appended:${append.history_entry_id}`, payload: {
       history_entry_id: append.history_entry_id, session_id: append.session_id, segment_id: append.segment.segment_id,
       segment_revision: append.segment.revision, appended_at: appendedAt

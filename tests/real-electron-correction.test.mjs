@@ -53,7 +53,7 @@ test('New Session emits an authoritative recording projection for its new identi
   assert.equal(result.command, 'session.new');
   assert.equal(result.status, 'accepted');
   assert.equal(result.session_id, application.sessionId);
-  assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0, audio_processing: { state: 'listening', queue_depth: 0, capture_state: 'listening', transcription_state: 'idle' } } });
+  assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0, audio_processing: { state: 'listening', queue_depth: 0, capture_state: 'idle', transcription_state: 'idle' } } });
 });
 
 test('delayed transcription accepts later chunks and completes FIFO without mixing utterances', async () => {

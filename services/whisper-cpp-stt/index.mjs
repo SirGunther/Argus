@@ -4,10 +4,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
 import { resolveSessionRoot } from '../../runtime/session-storage.mjs';
+import { createDiagnosticLogger } from '../../runtime/diagnostics.mjs';
 
 const SERVICE = 'whisper-cpp-stt';
 const MAX_WINDOW_CHUNKS = 120;
 const stateBySession = new Map();
+const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS !== '0', source: SERVICE });
 
 runLineService({ service: SERVICE, operations: {
   'audio.chunk': { name: 'buffer-whisper-audio', async handle(message) {
@@ -25,11 +27,14 @@ runLineService({ service: SERVICE, operations: {
     if (!sessionId) throw invalid('audio.flush requires session_id');
     const state = stateBySession.get(sessionId);
     if (!state?.chunks.length) return [];
-    const result = await transcribe(state);
-    const outputs = result.text ? finalOutputs(state, result, message.payload?.reason || 'flush') : [];
-    state.chunks = [];
-    state.chunkIds.clear();
-    return outputs;
+    try {
+      const result = await transcribe(state);
+      return finalOutputs(state, result, message.payload?.reason || 'flush');
+    } finally {
+      // A failed or empty window must not poison the next queued utterance.
+      state.chunks = [];
+      state.chunkIds.clear();
+    }
   } }
 }, async onReady() {
   if (process.env.ARGUS_SESSION_ROOT) await cleanupAbandonedArtifacts();
@@ -43,12 +48,39 @@ function stateFor(sessionId) {
   return state;
 }
 
+function audioWindowDetails(state) {
+  const first = state.chunks[0];
+  const last = state.chunks.at(-1);
+  return {
+    session_id: first.session_id,
+    audio_window_id: `${first.session_id}-audio-window-${first.sequence}`,
+    first_sequence: first.sequence,
+    last_sequence: last.sequence,
+    chunk_count: state.chunks.length,
+    duration_ms: Math.max(0, parseClock(last.end_time) - parseClock(first.start_time))
+  };
+}
+
+function audioWindowId(state) {
+  return audioWindowDetails(state).audio_window_id;
+}
+
 async function transcribe(state) {
+  const window = audioWindowDetails(state);
   const binary = String(process.env.ARGUS_WHISPER_BINARY || '').trim();
   const model = String(process.env.ARGUS_WHISPER_MODEL || '').trim();
-  if (!binary || !model) throw unavailable('ARGUS_WHISPER_BINARY and ARGUS_WHISPER_MODEL are required; run npm run setup:real');
-  await assertAssetReadable('runtime', binary);
-  await assertAssetReadable('model', model);
+  if (!binary || !model) {
+    const error = unavailable('ARGUS_WHISPER_BINARY and ARGUS_WHISPER_MODEL are required; run npm run setup:real');
+    diagnostics.log('whisper.failed', { ...window, error_code: error.code, error: error.message });
+    throw error;
+  }
+  try {
+    await assertAssetReadable('runtime', binary);
+    await assertAssetReadable('model', model);
+  } catch (error) {
+    diagnostics.log('whisper.failed', { ...window, error_code: error.code, error: error.message });
+    throw error;
+  }
 
   const root = resolveSessionRoot();
   const tempRoot = path.join(root, '.argus-stt');
@@ -58,21 +90,33 @@ async function transcribe(state) {
   const outputBase = path.join(tempRoot, `${id}`);
   const outputJson = `${outputBase}.json`;
   const ownerFile = `${outputBase}.owner.json`;
+  let processResult;
   try {
     await writeFile(ownerFile, JSON.stringify({ pid: process.pid, output_base: outputBase }), { flag: 'wx' });
     const bytes = Buffer.concat(state.chunks.map((chunk) => chunk.bytes));
     await writeFile(wav, createWav(bytes, 16000, 1, 16));
-    const stderr = await runWhisper(binary, model, wav, outputBase);
+    processResult = await runWhisper(binary, model, wav, outputBase, { ...window, byte_count: bytes.byteLength });
     let raw;
     try { raw = JSON.parse(await readFile(outputJson, 'utf8')); }
-    catch (error) { throw malformed(`Whisper returned malformed JSON: ${error.message}`, stderr); }
+    catch (error) { throw malformed(`Whisper returned malformed JSON: ${error.message}`, processResult.stderr); }
     const segments = parseTranscription(raw);
     if (segments.some((segment) => segment.tokens.some((token) => !Number.isFinite(token.probability)))) {
-      throw malformed('Whisper JSON did not provide token probabilities; refusing to invent confidence values. Use a compatible whisper.cpp build.', stderr);
+      throw malformed('Whisper JSON did not provide token probabilities; refusing to invent confidence values. Use a compatible whisper.cpp build.', processResult.stderr);
     }
-    return { text: segments.map((segment) => segment.text).join(' ').replace(/\s+/g, ' ').trim(), segments };
+    const text = segments.map((segment) => segment.text).join(' ').replace(/\s+/g, ' ').trim();
+    const wordCount = countWords(segments);
+    diagnostics.log('whisper.completed', { session_id: window.session_id, audio_window_id: window.audio_window_id, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, transcript_preview: text });
+    if (!segments.length || !wordCount || !text) {
+      diagnostics.log('whisper.empty', { session_id: window.session_id, audio_window_id: window.audio_window_id, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, reason: 'no-speech' });
+    }
+    return { text, segments, process: processResult };
+  } catch (error) {
+    diagnostics.log('whisper.failed', { session_id: window.session_id, audio_window_id: window.audio_window_id, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult?.pid, elapsed_ms: processResult?.elapsed_ms, error_code: error.code, error: error.message });
+    throw error;
   } finally {
-    await Promise.allSettled([rm(wav, { force: true }), rm(outputJson, { force: true }), rm(ownerFile, { force: true })]);
+    const cleanup = await Promise.allSettled([rm(wav, { force: true }), rm(outputJson, { force: true }), rm(ownerFile, { force: true })]);
+    const failures = cleanup.filter((result) => result.status === 'rejected').map((result) => result.reason?.message || String(result.reason));
+    if (failures.length) diagnostics.log('whisper.cleanup-failed', { session_id: window.session_id, audio_window_id: window.audio_window_id, error_count: failures.length, error: failures.join('; ') });
   }
 }
 
@@ -93,7 +137,12 @@ function finalOutputs(state, result, reason = 'flush') {
       } });
     }
   }
-  if (!words.length) return [];
+  if (!words.length) {
+    return [{ messageType: 'transcript.empty', schemaVersion: '1.0.0', identityKey: `transcript.empty:${utteranceId}`, payload: {
+      audio_window_id: audioWindowId(state), session_id: first.session_id, utterance_id: utteranceId, reason: reason === 'pause' ? 'pause' : 'flush', segment_count: result.segments.length, word_count: 0
+    } }];
+  }
+  diagnostics.log('transcript.boundary-emitted', { session_id: first.session_id, audio_window_id: audioWindowId(state), utterance_id: utteranceId, first_word_sequence: words[0].payload.sequence, last_word_sequence: words.at(-1).payload.sequence, reason });
   return [
     ...words,
     { messageType: 'transcript.utterance-boundary', identityKey: `${SERVICE}:boundary:${utteranceId}:${state.nextWordSequence}`, payload: {
@@ -130,14 +179,55 @@ function readTimestamp(value) {
   return (((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3])) * 1000) + Number(match[4]);
 }
 
-function runWhisper(binary, model, wav, outputBase) {
+function runWhisper(binary, model, wav, outputBase, window) {
   return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
+    const delayedMs = positiveEnvironmentNumber('ARGUS_WHISPER_DELAYED_MS', 10000);
+    const timeoutMs = positiveEnvironmentNumber('ARGUS_WHISPER_TIMEOUT_MS', 120000);
     const child = spawn(binary, ['--model', model, '--file', wav, '--output-json-full', '--output-file', outputBase, '--no-prints', '--no-gpu', '--language', 'en'], { windowsHide: true, shell: /\.(?:cmd|bat)$/i.test(binary), stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-    child.once('error', (error) => reject(unavailable(`Unable to start whisper.cpp: ${error.message}`)));
-    child.once('exit', (code) => code === 0 ? resolve(stderr) : reject(unavailable(`whisper.cpp exited with code ${code}: ${stderr.trim() || 'no diagnostic'}`)));
+    let settled = false;
+    let exited = false;
+    let timedOut = false;
+    let delayedTimer;
+    let timeoutTimer;
+    let killTimer;
+    const timeoutError = () => unavailable(`whisper.cpp exceeded its ${timeoutMs} ms hard timeout`, { code: 'STT_TIMEOUT', category: 'timeout', retryable: true });
+    const clearTimers = () => { clearTimeout(delayedTimer); clearTimeout(timeoutTimer); clearTimeout(killTimer); };
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      if (error) reject(error);
+      else resolve(result);
+    };
+    child.stderr.on('data', (chunk) => {
+      if (stderr.length < 4096) stderr += chunk.toString().slice(0, 4096 - stderr.length);
+    });
+    if (child.pid) diagnostics.log('whisper.started', { ...window, byte_count: window.byte_count, process_pid: child.pid });
+    child.once('error', (error) => finish(unavailable(`Unable to start whisper.cpp: ${error.message}`)));
+    child.once('exit', (code, signal) => {
+      exited = true;
+      if (timedOut) return finish(timeoutError());
+      if (code === 0) return finish(undefined, { stderr, pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt) });
+      finish(unavailable(`whisper.cpp exited with code ${code ?? 'none'}${signal ? ` (${signal})` : ''}: ${stderr.trim() || 'no diagnostic'}`, { code: 'STT_PROCESS_EXIT', category: 'dependency', retryable: true }));
+    });
+    delayedTimer = setTimeout(() => {
+      if (!settled && !exited) diagnostics.log('whisper.delayed', { ...window, byte_count: window.byte_count, process_pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt), threshold_ms: delayedMs });
+    }, delayedMs);
+    timeoutTimer = setTimeout(() => {
+      if (settled || exited) return;
+      timedOut = true;
+      diagnostics.log('whisper.timeout', { ...window, byte_count: window.byte_count, process_pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt), timeout_ms: timeoutMs });
+      terminateProcessTree(child);
+      killTimer = setTimeout(() => { if (!exited) terminateProcessTree(child); finish(timeoutError()); }, 1000);
+    }, timeoutMs);
   });
+}
+
+function terminateProcessTree(child) {
+  if (!child?.pid) return;
+  try { child.kill(process.platform === 'win32' ? undefined : 'SIGTERM'); } catch { /* the exit handler still reports the bounded timeout */ }
 }
 
 function createWav(pcm, sampleRate, channels, bits) {
@@ -162,9 +252,21 @@ function parseClock(value) { const match = /^(\d+):(\d+):(\d+)\.(\d{3})$/.exec(v
 function formatClock(value) { const ms = Math.max(0, Math.round(value)); const hours = Math.floor(ms / 3600000); const minutes = Math.floor((ms % 3600000) / 60000); const seconds = Math.floor((ms % 60000) / 1000); return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`; }
 function punctuationHint(text) { return text.trim().endsWith('?') ? 'question' : text.trim().endsWith('!') ? 'exclamation' : 'statement'; }
 function invalid(message) { return new ServiceOperationError(message, { code: 'INVALID_AUDIO_CHUNK', category: 'validation' }); }
-function unavailable(message) { return new ServiceOperationError(message, { code: 'STT_UNAVAILABLE', category: 'dependency', retryable: true }); }
+function unavailable(message, options = {}) { return new ServiceOperationError(message, { code: 'STT_UNAVAILABLE', category: 'dependency', retryable: true, ...options }); }
 function malformed(message, stderr) { return new ServiceOperationError(`${message}${stderr ? ` Diagnostic: ${stderr.trim()}` : ''}`, { code: 'STT_MALFORMED_OUTPUT', category: 'validation', retryable: true }); }
 function boundedAudioWindow() { return new ServiceOperationError(`Whisper audio buffer reached its governed ${MAX_WINDOW_CHUNKS}-chunk limit; stop or pause recording to finalize it before continuing.`, { code: 'AUDIO_WINDOW_LIMIT', category: 'resource' }); }
+
+function countWords(segments) {
+  return segments.reduce((count, segment) => count + segment.tokens.filter((token) => {
+    const text = sanitizeWhisperText(token.text);
+    return text && !isControlToken(text);
+  }).length, 0);
+}
+
+function positiveEnvironmentNumber(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
 
 const CONTROL_TOKEN_PATTERN = /<\|[^|]*\|>|\[\*[^\]]+\*\]|\[_[^\]]+\]/g;
 const CONTROL_TOKEN_EXACT = /^(?:<\|[^|]*\|>|\[\*[^\]]+\*\]|\[_[^\]]+\])$/;

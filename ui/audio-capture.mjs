@@ -41,6 +41,7 @@ export function createAudioCapture({
   sendAudioChunk,
   sendAudioFlush = async () => {},
   reportFailure = () => {},
+  diagnostic = () => {},
   pauseThresholdMs = DEFAULT_PAUSE_THRESHOLD_MS,
   speechRmsThreshold = DEFAULT_SPEECH_RMS_THRESHOLD,
   silenceRmsThreshold = DEFAULT_SILENCE_RMS_THRESHOLD
@@ -68,6 +69,26 @@ export function createAudioCapture({
   let silenceSamples = 0;
   let speechDetected = false;
   let pendingChunkCount = 0;
+  let rmsCount = 0;
+  let rmsSum = 0;
+  let rmsMin = Number.POSITIVE_INFINITY;
+  let rmsMax = 0;
+  let rmsLatest = 0;
+  let lastProgressAt = 0;
+
+  function emitDiagnostic(event, details = {}) {
+    try { diagnostic(event, { session_id: sessionId, ...captureSummary(), ...details }); } catch { /* diagnostics must never stop capture */ }
+  }
+
+  function captureSummary() {
+    return {
+      latest_sequence: Math.max(-1, sequence - 1),
+      audio_duration_ms: Math.round(sampleCount * 1000 / TARGET_RATE),
+      pending_ingress_count: pendingChunkCount,
+      capture_active: Boolean(stream) && !stopping,
+      ...(rmsCount ? { rms_summary: { min: rmsMin, max: rmsMax, average: rmsSum / rmsCount, latest: rmsLatest } } : {})
+    };
+  }
 
   function mediaDevices() {
     if (!navigator.mediaDevices) throw new Error('Microphone media devices are unavailable in this Electron renderer.');
@@ -98,15 +119,24 @@ export function createAudioCapture({
     if (stream) return;
     sessionId = nextSessionId;
     stopping = false;
+    emitDiagnostic('capture.start-requested', { device_selected: Boolean(selectedDeviceId) });
     try {
       stream = await mediaDevices().getUserMedia(getAudioCaptureConstraints(selectedDeviceId));
+      emitDiagnostic('capture.device-ready', { track_count: stream.getTracks?.().length || 0 });
+      for (const track of stream.getTracks?.() || []) track.addEventListener?.('ended', () => {
+        if (stopping) return;
+        failCapture(new Error('The microphone track ended unexpectedly.'), 'capture.renderer-failure');
+      });
       context = new AudioContext({ latencyHint: 'interactive' });
       await context.audioWorklet.addModule(new URL('./audio-worklet.mjs', import.meta.url));
       source = context.createMediaStreamSource(stream);
       worklet = new AudioWorkletNode(context, 'argus-resampler', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 });
       worklet.port.onmessage = (event) => receiveSamples(event.data);
+      worklet.port.onmessageerror = () => failCapture(new Error('The audio worklet returned an unreadable message.'), 'capture.renderer-failure');
+      worklet.onprocessorerror = () => failCapture(new Error('The audio worklet stopped processing microphone samples.'), 'capture.renderer-failure');
       source.connect(worklet);
       startedAt = performance.now();
+      lastProgressAt = startedAt;
       sequence = 0;
       sampleCount = 0;
       ingressTail = Promise.resolve();
@@ -114,10 +144,18 @@ export function createAudioCapture({
       speechSamples = 0;
       silenceSamples = 0;
       speechDetected = false;
+      rmsCount = 0;
+      rmsSum = 0;
+      rmsMin = Number.POSITIVE_INFINITY;
+      rmsMax = 0;
+      rmsLatest = 0;
+      emitDiagnostic('capture.active');
     } catch (error) {
+      const failedSessionId = sessionId;
       await stop();
       const failure = describeCaptureFailure(error, selectedDeviceId);
       const reportedError = Object.assign(new Error(failure.message), { name: error?.name || 'Error', code: failure.code, cause: error });
+      emitDiagnostic('capture.start-failed', { session_id: failedSessionId, error: reportedError.message, error_code: reportedError.code });
       reportFailure(reportedError);
       throw reportedError;
     }
@@ -130,10 +168,21 @@ export function createAudioCapture({
       const next = buffer.splice(0, CHUNK_SAMPLES);
       const energy = analyzeEnergy(next);
       enqueueChunk(next);
-      updateSpeechState(energy.rms, next.length);
+      rmsCount += 1;
+      rmsSum += energy.rms;
+      rmsMin = Math.min(rmsMin, energy.rms);
+      rmsMax = Math.max(rmsMax, energy.rms);
+      rmsLatest = energy.rms;
+      const detected = updateSpeechState(energy.rms, next.length);
+      if (detected) emitDiagnostic('capture.speech-detected', { speech_rms: energy.rms, speech_sequence: sequence - 1 });
       if (speechDetected && silenceSamples >= pauseSamples) enqueuePauseFlush();
+      const now = performance.now();
+      if (sequence === 1 || sequence % 16 === 0 || now - lastProgressAt >= 1000) {
+        lastProgressAt = now;
+        emitDiagnostic('capture.chunk-progress', { rms: energy.rms });
+      }
       if (pendingChunkCount > MAX_PENDING_CHUNKS) {
-        reportFailure(new Error('Audio IPC backpressure exceeded the bounded renderer queue.'));
+        failCapture(new Error('Audio IPC backpressure exceeded the bounded renderer queue.'), 'capture.backpressure');
         void stop();
         return;
       }
@@ -147,7 +196,7 @@ export function createAudioCapture({
     const task = previousChunks
       .then(async () => sendAudioChunk(await chunk))
       .finally(() => { pendingChunkCount -= 1; })
-      .catch(handleFailure);
+      .catch((error) => handleFailure(error, 'capture.chunk-ipc-rejected'));
     ingressTail = task.catch(() => {});
     trackTask(task);
   }
@@ -160,10 +209,11 @@ export function createAudioCapture({
     speechSamples = 0;
     silenceSamples = 0;
     speechDetected = false;
+    emitDiagnostic('capture.boundary-detected', { boundary_sequence: sequence - 1, reason: 'pause' });
     const previousChunks = ingressTail;
     const task = previousChunks
       .then(() => sendAudioFlush({ session_id: sessionId, requested_at: new Date().toISOString(), reason: 'pause' }))
-      .catch(handleFailure);
+      .catch((error) => handleFailure(error, 'capture.flush-ipc-rejected'));
     ingressTail = task.catch(() => {});
     trackTask(task);
   }
@@ -180,17 +230,27 @@ export function createAudioCapture({
       if (speechSamples >= minSpeechSamples) {
         speechDetected = true;
         silenceSamples = 0;
+        return true;
       }
-      return;
+      return false;
     }
     if (rms <= silenceThreshold) silenceSamples += sampleLength;
     else silenceSamples = 0;
+    return false;
   }
 
-  function handleFailure(error) {
+  function handleFailure(error, event = 'capture.failure') {
     stopping = true;
+    emitDiagnostic(event, { error: error?.message || String(error) });
     reportFailure(error);
     throw error;
+  }
+
+  function failCapture(error, event = 'capture.failure') {
+    if (stopping) return;
+    stopping = true;
+    emitDiagnostic(event, { error: error?.message || String(error) });
+    reportFailure(error);
   }
 
   function makeChunk(samples) {
@@ -218,6 +278,8 @@ export function createAudioCapture({
   }
 
   async function stop() {
+    const stoppedSessionId = sessionId;
+    emitDiagnostic('capture.stop-requested');
     if (buffer.length && sessionId && !stopping) {
       const remaining = buffer.splice(0);
       enqueueChunk(remaining);
@@ -228,6 +290,7 @@ export function createAudioCapture({
     stream?.getTracks().forEach((track) => track.stop());
     await Promise.allSettled([...pendingTasks]);
     if (context) await context.close().catch(() => {});
+    emitDiagnostic('capture.stopped', { session_id: stoppedSessionId, capture_active: false, pending_ingress_count: 0 });
     source = undefined; worklet = undefined; stream = undefined; context = undefined; buffer = []; sessionId = undefined; pendingChunkCount = 0;
   }
 

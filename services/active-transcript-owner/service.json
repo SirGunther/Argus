@@ -6,7 +6,8 @@
     "entrypoint": "index.mjs",
     "environment": {
       "allow": [
-        "ARGUS_SESSION_ROOT"
+        "ARGUS_SESSION_ROOT",
+        "ARGUS_DIAGNOSTICS"
       ]
     }
   },

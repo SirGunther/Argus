@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('argus', Object.freeze({
   command: (payload) => ipcRenderer.invoke('argus.command', payload),
   sendAudioChunk: (payload) => ipcRenderer.invoke('argus.audio-chunk', payload),
   sendAudioFlush: (payload) => ipcRenderer.invoke('argus.audio-flush', payload),
+  reportCaptureDiagnostic: (payload) => ipcRenderer.invoke('argus.capture-diagnostic', payload),
   reportCaptureFailure: (message) => ipcRenderer.invoke('argus.capture-failure', String(message || 'Physical microphone capture failed.')),
   shutdownReady: () => ipcRenderer.invoke('argus.shutdown-ready'),
   capabilities: () => ipcRenderer.invoke('argus.capabilities'),

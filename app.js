@@ -36,6 +36,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   const capture = desktop ? createAudioCapture({
     sendAudioChunk: (chunk) => desktop.sendAudioChunk(chunk),
     sendAudioFlush: (payload) => desktop.sendAudioFlush(payload),
+    diagnostic: (event, details) => { void desktop.reportCaptureDiagnostic({ event, ...details }); },
     reportFailure: (error) => { void desktop.reportCaptureFailure(error.message); handleCaptureFailure(error); }
   }) : null;
 
@@ -444,9 +445,11 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     const labels = { idle: 'Idle', queued: 'Queued', transcribing: 'Transcribing', delayed: 'Delayed', error: 'Error' };
     const label = labels[processing.state] || 'Idle';
     const queueDepth = Number(processing.queue_depth) || 0;
+    if (processing.detail === 'No speech recognized; still listening') return processing.detail;
     if (processing.state === 'error' || processing.state === 'delayed') return `${label} · ${processing.detail || 'Audio processing needs attention'}${queueDepth ? ` · ${queueDepth} queued` : ''}`;
     if (processing.state === 'queued') return `${label} · ${queueDepth} utterance${queueDepth === 1 ? '' : 's'} pending`;
     if (processing.state === 'transcribing' && queueDepth > 0) return `${label} · ${queueDepth} queued`;
+    if (processing.state === 'idle' && processing.detail) return processing.detail;
     return label;
   }
 

@@ -1,0 +1,14 @@
+{
+  "$id": "argus.transcript-empty.v1",
+  "type": "object",
+  "required": ["audio_window_id", "session_id", "utterance_id", "reason", "segment_count", "word_count"],
+  "properties": {
+    "audio_window_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "utterance_id": { "type": "string", "minLength": 1 },
+    "reason": { "enum": ["pause", "flush"] },
+    "segment_count": { "type": "integer", "minimum": 0 },
+    "word_count": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

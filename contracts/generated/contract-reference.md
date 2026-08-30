@@ -17,6 +17,7 @@
 | `audio.chunk` | domain | `1.2.0` | `audio/capture` | 32 KiB |
 | `audio.flush` | domain | `1.2.0` | `audio/capture` | 16 KiB |
 | `transcript.partial` | domain | `1.2.0` | `transcript/stt` | 32 KiB |
+| `transcript.empty` | domain | `1.0.0` | `transcript/stt` | 16 KiB |
 | `transcript.word-committed` | domain | `1.2.0` | `transcript/stt` | 32 KiB |
 | `transcript.word-correction-proposed` | domain | `1.2.0` | `transcript/contextual-correction` | 32 KiB |
 | `transcript.utterance-boundary` | domain | `1.2.0` | `transcript/stt` | 16 KiB |
@@ -127,6 +128,24 @@
 | `text` | yes | string | min length 1 |
 | `stability` | yes | number | minimum 0 |
 | `covered_chunk_ids` | yes | array<string> | min items 1 |
+
+## `transcript.empty`
+
+- Plane: `domain`
+- Version: `1.0.0`
+- Owner: `transcript/stt`
+- Schema: [`transcript-empty.schema.json`](../transcript-empty.schema.json)
+- History: [`history/transcript.empty.md`](../history/transcript.empty.md)
+- Maximum payload: 16 KiB (16384 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `audio_window_id` | yes | string | min length 1 |
+| `session_id` | yes | string | min length 1 |
+| `utterance_id` | yes | string | min length 1 |
+| `reason` | yes | any | `pause`, `flush` |
+| `segment_count` | yes | integer | minimum 0 |
+| `word_count` | yes | integer | minimum 0 |
 
 ## `transcript.word-committed`
 

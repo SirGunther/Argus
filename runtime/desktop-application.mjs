@@ -6,8 +6,9 @@ import { createPlatformCapabilities } from '../ui/platform-capabilities.mjs';
 import { InteractiveGraph } from './interactive-graph.mjs';
 import { SessionStorage } from './session-storage.mjs';
 import { calculateRecordingDurationMs } from './session-lifecycle.mjs';
+import { createDiagnosticLogger } from './diagnostics.mjs';
 
-const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL'];
+const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL', 'ARGUS_WHISPER_TIMEOUT_MS', 'ARGUS_WHISPER_DELAYED_MS', 'ARGUS_DIAGNOSTICS'];
 const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'storage-session', 'clipboard', 'folder-opening'];
 const MAX_AUDIO_QUEUE_ITEMS = 256;
 const MAX_AUDIO_UTTERANCES = 16;
@@ -15,11 +16,12 @@ const DELAYED_AUDIO_UTTERANCES = 4;
 const MAX_UTTERANCE_CHUNKS = 120;
 
 export class DesktopApplication {
-  constructor({ root, graphFile, sessionRoot, environment = process.env } = {}) {
+  constructor({ root, graphFile, sessionRoot, environment = process.env, diagnosticsEnabled = false, diagnosticsOutput, diagnosticClock } = {}) {
     this.root = path.resolve(root);
     this.graphFile = path.resolve(graphFile);
     this.sessionRoot = path.resolve(sessionRoot);
     this.environment = environment;
+    this.diagnostics = createDiagnosticLogger({ enabled: diagnosticsEnabled, output: diagnosticsOutput, clock: diagnosticClock, source: 'electron-main' });
     for (const key of ALLOWED_ENVIRONMENT) if (environment[key] !== undefined) process.env[key] = String(environment[key]);
     process.env.ARGUS_SESSION_ROOT = this.sessionRoot;
     this.storage = new SessionStorage({ root: this.sessionRoot });
@@ -46,6 +48,8 @@ export class DesktopApplication {
     this.audioProcessingError = undefined;
     this.audioProcessingOverride = undefined;
     this.audioProcessingLast = undefined;
+    this.audioProcessingNotice = undefined;
+    this.captureActive = false;
     this.shuttingDown = false;
     this.shutdownPromise = undefined;
     this.provisionedManifest = undefined;
@@ -56,13 +60,15 @@ export class DesktopApplication {
   onProjection(listener) { this.projectionListeners.add(listener); return () => this.projectionListeners.delete(listener); }
 
   async start() {
+    this.diagnostics.log('host.starting', { session_id: this.sessionId, graph_file: path.basename(this.graphFile) });
     await this.loadProvisionedConfiguration();
     this.boundary = await createUiContractBoundary(this.root);
     await this.loadLatestSession();
     await this.setInitialCapabilities();
     this.graph = await InteractiveGraph.create(this.graphFile, {
       onMessage: (message) => this.handleGraphMessage(message),
-      onStatus: (status) => this.handleGraphStatus(status)
+      onStatus: (status) => this.handleGraphStatus(status),
+      diagnostics: this.diagnostics
     });
     try {
       await this.graph.start();
@@ -73,6 +79,7 @@ export class DesktopApplication {
       throw error;
     }
     this.started = true;
+    this.diagnostics.log('host.started', { session_id: this.sessionId });
     await this.recoverUncleanRecordings();
     await this.loadLatestSession();
     this.emit('ui.session-status', this.sessionProjection());
@@ -90,7 +97,9 @@ export class DesktopApplication {
         ARGUS_MODEL_ENDPOINT: model.endpoint,
         ARGUS_MODEL_NAME: model.model,
         ARGUS_MODEL_PROTOCOL: model.protocol,
-        ARGUS_MODEL_TIMEOUT_MS: '120000'
+        ARGUS_MODEL_TIMEOUT_MS: '120000',
+        ARGUS_WHISPER_TIMEOUT_MS: '120000',
+        ARGUS_WHISPER_DELAYED_MS: '10000'
       };
       for (const [key, value] of Object.entries(provisioned)) if (value && !process.env[key]) process.env[key] = String(value);
     } catch {
@@ -101,9 +110,11 @@ export class DesktopApplication {
   async shutdown() {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.shuttingDown = true;
+    this.diagnostics.log('shutdown.queue-drain-beginning', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
     this.shutdownPromise = (async () => {
       try {
         await this.waitForAudioIdle();
+        this.diagnostics.log('shutdown.audio-drained', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
         if (this.graph && !this.graph.closed) {
           await this.graph.waitForIdle();
           await this.loadLatestSession(this.sessionId);
@@ -111,9 +122,11 @@ export class DesktopApplication {
             await this.sessionCommand({ command: 'session.stop', command_id: `shutdown-stop-${randomUUID()}`, session_id: this.sessionId }, { allowFlushFailure: true });
             await this.graph.waitForIdle();
           }
+          this.diagnostics.log('shutdown.graph-drained', { session_id: this.sessionId });
         }
       } finally {
         await this.graph?.close();
+        this.diagnostics.log('shutdown.queue-drain-completed', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
       }
     })();
     return this.shutdownPromise;
@@ -128,20 +141,45 @@ export class DesktopApplication {
   capabilitySnapshot() { return this.capabilityProjections().map((message) => message.payload); }
 
   reportCaptureFailure(message) {
+    this.captureActive = false;
+    this.diagnostics.log('capture.failure', { session_id: this.sessionId, error: String(message || 'Physical microphone capture failed.') });
+    this.updateAudioProcessing();
     this.setCapability('microphone', 'unavailable', `Physical microphone capture failed: ${message}`, true);
     return { accepted: true };
   }
 
+  reportCaptureDiagnostic(payload = {}) {
+    const event = typeof payload.event === 'string' && payload.event ? payload.event : 'capture.renderer-diagnostic';
+    this.diagnostics.log(event, payload);
+    if (event === 'capture.active') this.captureActive = true;
+    if (event === 'capture.stopped' || event === 'capture.failure' || event === 'capture.renderer-failure' || event === 'capture.start-failed' || event === 'capture.backpressure') this.captureActive = false;
+    if (event === 'capture.active' || event.startsWith('capture.')) this.updateAudioProcessing();
+    return { accepted: true };
+  }
+
   async acceptAudioChunk(chunk) {
-    if (this.shuttingDown || this.graph?.closed) return this.ignoredAudioResult(chunk?.session_id);
-    if (!this.graph || this.metadata?.state !== 'recording') throw new Error('Audio is accepted only while the governed session is recording');
-    if (chunk?.session_id !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${chunk?.session_id}`), { code: 'SESSION_NOT_FOUND' });
+    if (this.shuttingDown || this.graph?.closed) {
+      this.diagnostics.log('capture.chunk-ignored', { session_id: chunk?.session_id, reason: 'shutdown' });
+      return this.ignoredAudioResult(chunk?.session_id);
+    }
+    if (!this.graph || this.metadata?.state !== 'recording') {
+      this.diagnostics.log('capture.chunk-rejected', { session_id: chunk?.session_id, reason: 'session-not-recording' });
+      throw new Error('Audio is accepted only while the governed session is recording');
+    }
+    if (chunk?.session_id !== this.sessionId) {
+      this.diagnostics.log('capture.chunk-rejected', { session_id: chunk?.session_id, reason: 'session-not-found' });
+      throw Object.assign(new Error(`Unknown active session ${chunk?.session_id}`), { code: 'SESSION_NOT_FOUND' });
+    }
     if (this.audioProcessingError) throw this.audioProcessingError;
-    if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length >= MAX_AUDIO_QUEUE_ITEMS) throw this.audioBackpressure('Audio processing queue is full; capture must pause briefly.');
+    if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length >= MAX_AUDIO_QUEUE_ITEMS) {
+      this.diagnostics.log('capture.chunk-rejected', { session_id: chunk.session_id, sequence: chunk.sequence, reason: 'backpressure' });
+      throw this.audioBackpressure('Audio processing queue is full; capture must pause briefly.');
+    }
     this.audioProcessingOverride = undefined;
+    this.audioProcessingNotice = undefined;
     const snapshot = freezeAudioChunk(chunk);
     if (this.audioCurrentUtterance.length >= MAX_UTTERANCE_CHUNKS) {
-      this.enqueueCurrentUtterance(`${chunk.session_id}:audio.rollover:${this.audioCurrentUtterance[0].sequence}`);
+      this.enqueueCurrentUtterance(`${chunk.session_id}:audio.rollover:${this.audioCurrentUtterance[0].sequence}`, { reason: 'rollover' });
     }
     this.audioCurrentUtterance.push(snapshot);
     this.updateAudioProcessing();
@@ -149,8 +187,14 @@ export class DesktopApplication {
   }
 
   async acceptAudioFlush(payload = {}) {
-    if (this.shuttingDown || this.graph?.closed) return this.ignoredAudioResult(payload.session_id);
-    if (!this.graph || this.metadata?.state !== 'recording') throw new Error('Audio flush is accepted only while the governed session is recording');
+    if (this.shuttingDown || this.graph?.closed) {
+      this.diagnostics.log('capture.flush-ignored', { session_id: payload.session_id, reason: 'shutdown' });
+      return this.ignoredAudioResult(payload.session_id);
+    }
+    if (!this.graph || this.metadata?.state !== 'recording') {
+      this.diagnostics.log('capture.flush-rejected', { session_id: payload.session_id, reason: 'session-not-recording' });
+      throw new Error('Audio flush is accepted only while the governed session is recording');
+    }
     const result = this.enqueueAudioFlush(payload.session_id, {
       session_id: payload.session_id,
       requested_at: payload.requested_at || new Date().toISOString(),
@@ -197,11 +241,14 @@ export class DesktopApplication {
 
   async sessionCommand(payload, { allowFlushFailure = false } = {}) {
     if ((payload.command === 'session.stop' || payload.command === 'session.close') && this.metadata?.state === 'recording') {
+      this.diagnostics.log('shutdown.session-drain-beginning', { session_id: payload.session_id, command: payload.command, ...this.audioQueueDiagnostics() });
       try {
         this.enqueueAudioFlush(payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`, { allowShutdown: true });
         await this.waitForAudioIdle();
         await this.graph.waitForIdle();
+        this.diagnostics.log('shutdown.session-drain-completed', { session_id: payload.session_id, command: payload.command, ...this.audioQueueDiagnostics() });
       } catch (error) {
+        this.diagnostics.log('shutdown.session-drain-failed', { session_id: payload.session_id, command: payload.command, error: error.message, ...this.audioQueueDiagnostics() });
         if (!allowFlushFailure) throw error;
         this.setCapability('stt', 'unavailable', `Final audio flush failed during shutdown: ${error.message}`, true);
       }
@@ -245,11 +292,18 @@ export class DesktopApplication {
   }
 
   enqueueAudioFlush(sessionId, payload, idempotencyKey, { allowShutdown = false } = {}) {
-    if (sessionId !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${sessionId}`), { code: 'SESSION_NOT_FOUND' });
+    if (sessionId !== this.sessionId) {
+      this.diagnostics.log('capture.flush-rejected', { session_id: sessionId, reason: 'session-not-found' });
+      throw Object.assign(new Error(`Unknown active session ${sessionId}`), { code: 'SESSION_NOT_FOUND' });
+    }
     if (this.shuttingDown && !allowShutdown) return this.ignoredAudioResult(sessionId);
     if (this.audioProcessingError) throw this.audioProcessingError;
-    if (!this.audioCurrentUtterance.length) return { accepted: true, session_id: sessionId, queued: false };
+    if (!this.audioCurrentUtterance.length) {
+      this.diagnostics.log('audio-window.flush-empty', { session_id: sessionId, reason: payload.reason || 'flush', ...this.audioQueueDiagnostics() });
+      return { accepted: true, session_id: sessionId, queued: false };
+    }
     this.audioProcessingOverride = undefined;
+    this.audioProcessingNotice = undefined;
     const queued = this.enqueueCurrentUtterance(idempotencyKey, payload);
     return { accepted: true, session_id: sessionId, queued, ...(queued ? { queue_depth: this.audioQueuedUtterances } : {}) };
   }
@@ -257,15 +311,31 @@ export class DesktopApplication {
   enqueueCurrentUtterance(idempotencyKey, payload = {}) {
     if (!this.audioCurrentUtterance.length) return false;
     if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length > MAX_AUDIO_QUEUE_ITEMS || this.audioQueuedUtterances >= MAX_AUDIO_UTTERANCES) throw this.audioBackpressure('Audio utterance queue is full; capture must pause briefly.');
+    const firstChunk = this.audioCurrentUtterance[0];
+    const lastChunk = this.audioCurrentUtterance.at(-1);
     const utterance = Object.freeze({
       session_id: this.sessionId,
+      audio_window_id: `${this.sessionId}-audio-window-${firstChunk.sequence}`,
       chunks: Object.freeze(this.audioCurrentUtterance.slice()),
       requested_at: payload.requested_at || new Date().toISOString(),
-      ...(payload.reason === 'pause' ? { reason: 'pause' } : {})
+      ...(payload.reason ? { reason: payload.reason } : {})
     });
     this.audioCurrentUtterance = [];
     this.audioQueuedUtterances += 1;
     this.audioQueuedChunkCount += utterance.chunks.length;
+    this.diagnostics.log('audio-window.queued', {
+      session_id: utterance.session_id,
+      audio_window_id: utterance.audio_window_id,
+      first_sequence: firstChunk.sequence,
+      last_sequence: lastChunk.sequence,
+      chunk_count: utterance.chunks.length,
+      duration_ms: audioDurationMs(utterance.chunks),
+      reason: payload.reason || 'flush',
+      ...this.audioQueueDiagnostics(),
+      queued_window_count: this.audioUtteranceQueue.length + 1,
+      queued_chunk_count: this.audioQueuedChunkCount,
+      audio_in_flight: this.audioInFlight + 1
+    });
     this.enqueueAudioWork({ utterance, idempotencyKey });
     return true;
   }
@@ -273,6 +343,7 @@ export class DesktopApplication {
   enqueueAudioWork(work) {
     this.audioUtteranceQueue.push(work);
     this.audioInFlight += 1;
+    this.diagnostics.log('audio-queue.snapshot', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
     this.updateAudioProcessing();
     if (!this.audioWorkerPromise) {
       this.audioWorkerPromise = this.processAudioQueue().finally(() => {
@@ -289,6 +360,16 @@ export class DesktopApplication {
       try {
         this.audioQueuedUtterances -= 1;
         this.audioPreparingUtterance = work;
+        this.diagnostics.log('audio-window.transcription-started', {
+          session_id: work.utterance.session_id,
+          audio_window_id: work.utterance.audio_window_id,
+          first_sequence: work.utterance.chunks[0].sequence,
+          last_sequence: work.utterance.chunks.at(-1).sequence,
+          chunk_count: work.utterance.chunks.length,
+          duration_ms: audioDurationMs(work.utterance.chunks),
+          reason: work.utterance.reason || 'flush',
+          ...this.audioQueueDiagnostics()
+        });
         this.updateAudioProcessing();
         for (const chunk of work.utterance.chunks) {
           await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.chunk', chunk.session_id, chunk, `${chunk.session_id}:audio.chunk:${chunk.sequence}`);
@@ -299,21 +380,19 @@ export class DesktopApplication {
         await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', work.utterance.session_id, {
           session_id: work.utterance.session_id,
           requested_at: work.utterance.requested_at,
-          ...(work.utterance.reason ? { reason: work.utterance.reason } : {})
+          ...(work.utterance.reason === 'pause' ? { reason: 'pause' } : {})
         }, work.idempotencyKey);
+        this.diagnostics.log('audio-window.transcription-completed', { session_id: work.utterance.session_id, audio_window_id: work.utterance.audio_window_id, ...this.audioQueueDiagnostics() });
       } catch (error) {
         this.failAudioProcessing(error);
-        this.audioInFlight -= this.audioUtteranceQueue.length;
-        this.audioUtteranceQueue.length = 0;
-        this.audioQueuedUtterances = 0;
-        this.audioQueuedChunkCount = 0;
-        this.audioCurrentUtterance = [];
+        this.clearAudioQueue(error);
         queueAccountingCleared = true;
       } finally {
         this.audioPreparingUtterance = undefined;
         this.audioActiveFlush = undefined;
         if (!queueAccountingCleared) this.audioQueuedChunkCount -= work.utterance.chunks.length;
         this.audioInFlight -= 1;
+        this.diagnostics.log('audio-queue.snapshot', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
         this.updateAudioProcessing();
       }
       if (this.audioProcessingError) break;
@@ -322,6 +401,7 @@ export class DesktopApplication {
 
   failAudioProcessing(error) {
     this.audioProcessingError = Object.assign(error, { retryable: error.retryable ?? true });
+    this.diagnostics.log('audio.processing-failed', { session_id: this.sessionId, error: error.message, error_code: error.code, ...this.audioQueueDiagnostics() });
     this.setCapability('stt', 'unavailable', `Audio processing failed: ${error.message}`, true);
     this.updateAudioProcessing();
   }
@@ -329,8 +409,24 @@ export class DesktopApplication {
   audioBackpressure(message) {
     const error = Object.assign(new Error(message), { code: 'AUDIO_BACKPRESSURE', retryable: true });
     this.audioProcessingOverride = { state: 'delayed', detail: message };
+    this.diagnostics.log('audio.backpressure', { session_id: this.sessionId, error: message, ...this.audioQueueDiagnostics() });
     this.updateAudioProcessing('delayed', message);
     return error;
+  }
+
+  clearAudioQueue(error) {
+    try {
+      const droppedWindowCount = this.audioUtteranceQueue.length;
+      const droppedChunkCount = this.audioUtteranceQueue.reduce((sum, work) => sum + work.utterance.chunks.length, 0);
+      this.audioInFlight -= droppedWindowCount;
+      this.audioUtteranceQueue.length = 0;
+      this.audioQueuedUtterances = 0;
+      this.audioQueuedChunkCount = 0;
+      this.audioCurrentUtterance = [];
+      this.diagnostics.log('audio.queue-cleared', { session_id: this.sessionId, dropped_window_count: droppedWindowCount, dropped_chunk_count: droppedChunkCount, error: error?.message, ...this.audioQueueDiagnostics() });
+    } catch (clearError) {
+      this.diagnostics.log('audio.queue-clearing-failed', { session_id: this.sessionId, error: clearError.message, original_error: error?.message, ...this.audioQueueDiagnostics() });
+    }
   }
 
   updateAudioProcessing(forcedState, detail) {
@@ -342,14 +438,26 @@ export class DesktopApplication {
 
   audioProcessingSnapshot(forcedState, detail) {
     const queueDepth = this.audioQueuedUtterances;
-    const transcriptionState = forcedState || this.audioProcessingOverride?.state || (this.audioProcessingError ? 'error' : this.audioActiveFlush ? 'transcribing' : queueDepth ? (queueDepth >= DELAYED_AUDIO_UTTERANCES ? 'delayed' : 'queued') : 'idle');
-    const captureState = this.metadata?.state === 'recording' && !this.shuttingDown ? 'listening' : 'idle';
+    const transcriptionState = forcedState || this.audioProcessingOverride?.state || (this.audioProcessingError ? 'error' : this.audioActiveFlush || this.audioPreparingUtterance ? 'transcribing' : queueDepth ? (queueDepth >= DELAYED_AUDIO_UTTERANCES ? 'delayed' : 'queued') : 'idle');
+    const captureState = this.captureActive && this.metadata?.state === 'recording' && !this.shuttingDown ? 'listening' : 'idle';
     return {
       state: transcriptionState === 'idle' ? 'listening' : transcriptionState,
       queue_depth: queueDepth,
       capture_state: captureState,
       transcription_state: transcriptionState,
-      ...(detail || this.audioProcessingOverride?.detail || this.audioProcessingError ? { detail: detail || this.audioProcessingOverride?.detail || this.audioProcessingError.message } : {})
+      ...(detail || this.audioProcessingOverride?.detail || this.audioProcessingError?.message || this.audioProcessingNotice ? { detail: detail || this.audioProcessingOverride?.detail || this.audioProcessingError?.message || this.audioProcessingNotice } : {})
+    };
+  }
+
+  audioQueueDiagnostics() {
+    const active = this.audioActiveFlush || this.audioPreparingUtterance;
+    return {
+      capturing_chunk_count: this.audioCurrentUtterance.length,
+      queued_window_count: this.audioUtteranceQueue.length,
+      queued_chunk_count: this.audioQueuedChunkCount,
+      active_window_id: active?.utterance.audio_window_id,
+      active_chunk_count: active?.utterance.chunks.length || 0,
+      audio_in_flight: this.audioInFlight
     };
   }
 
@@ -426,25 +534,43 @@ export class DesktopApplication {
   handleGraphMessage(message) {
     if (!message || this.seenMessages.has(message.message_id)) return;
     this.seenMessages.add(message.message_id);
+    const payload = message.payload || {};
+    if (message.message_type === 'transcript.empty') {
+      this.audioProcessingNotice = 'No speech recognized; still listening';
+      this.diagnostics.log('whisper.empty-observed', { session_id: payload.session_id, utterance_id: payload.utterance_id, reason: payload.reason, segment_count: payload.segment_count, word_count: payload.word_count });
+      this.updateAudioProcessing();
+      return;
+    }
     if (message.message_type === 'transcript.partial') {
-      const partial = message.payload;
+      const partial = payload;
       this.emit('ui.transcript-row', { session_id: partial.session_id, segment_id: `${partial.session_id}-live`, revision: partial.revision, sequence: 0, start_time: partial.start_time, end_time: partial.end_time, text: partial.text, provisional: true, read_only: true, review_flags: [] });
       return;
     }
-    if (message.message_type === 'transcript.segment') { this.emit('ui.transcript-row', this.transcriptRow(message.payload)); return; }
-    if (message.message_type === 'logged-item.stored') { this.emit('ui.logged-item-row', this.loggedItemRow(message.payload)); return; }
+    if (message.message_type === 'transcript.segment') {
+      this.diagnostics.log('transcript.segment-projected', { session_id: payload.session_id, segment_id: payload.segment_id, sequence: payload.sequence, transcript_preview: payload.text });
+      this.emit('ui.transcript-row', this.transcriptRow(payload));
+      return;
+    }
+    if (message.message_type === 'transcript.history-appended') {
+      this.diagnostics.log('transcript.history-appended', { session_id: payload.session_id, history_entry_id: payload.history_entry_id, segment_id: payload.segment_id, revision: payload.segment_revision });
+      return;
+    }
+    if (message.message_type === 'logged-item.stored') { this.emit('ui.logged-item-row', this.loggedItemRow(payload)); return; }
     if (message.message_type === 'session.recorded' || message.message_type === 'session.stopped' || message.message_type === 'session.resumed' || message.message_type === 'session.closed') {
       this.loadLatestSession(message.payload?.session_id).then(() => this.emit('ui.session-status', this.sessionProjection())).catch(() => {});
       return;
     }
     if (message.message_type === 'service.failure') {
       const service = message.payload.service || '';
+      this.diagnostics.log('service.failure', { session_id: message.correlation_id, correlation_id: message.correlation_id, service, operation: message.payload.operation, input_message_id: message.payload.input_message_id, error_code: message.payload.error?.code, error: message.payload.error?.message });
       if (service.includes('speech') || service.includes('stt')) this.setCapability('stt', 'unavailable', message.payload.error?.message || 'The real Whisper transcription dependency failed.', true);
       if (service.includes('model')) this.setCapability('model', 'unavailable', message.payload.error?.message || 'The configured local model dependency failed.', true);
     }
   }
 
   handleGraphStatus(status) {
+    const event = status.type === 'service-failure' ? 'service.failure' : status.type === 'service-exit' ? 'graph.service-exited' : status.type === 'graph-failure' ? 'graph.failure' : status.type === 'operation-rejected' ? 'operation.rejected' : undefined;
+    if (event) this.diagnostics.log(event, { session_id: status.correlation_id || this.sessionId, correlation_id: status.correlation_id || this.sessionId, service: status.service, operation: status.operation, input_message_id: status.input_message_id, code: status.code, error: status.message, pid: status.pid, signal: status.signal, expected: status.expected });
     if (status.type === 'graph-ready') this.setCapability('orchestration', 'available', 'Production Argus graph is supervised and ready.', false);
     if (status.type === 'graph-failure') this.setCapability('orchestration', 'unavailable', status.message, true);
     if (status.type === 'service-failure') {
@@ -497,6 +623,15 @@ function ownerFor(command) { if (command === 'transcript.edit') return 'transcri
 
 function freezeAudioChunk(chunk) {
   return Object.freeze({ ...chunk, format: Object.freeze({ ...(chunk.format || {}) }) });
+}
+
+function audioDurationMs(chunks) {
+  if (!chunks?.length) return 0;
+  const clockMs = (value) => {
+    const match = /^(\d+):(\d+):(\d+)\.(\d{3})$/.exec(String(value || ''));
+    return match ? (((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3])) * 1000) + Number(match[4]) : 0;
+  };
+  return Math.max(0, clockMs(chunks.at(-1).end_time) - clockMs(chunks[0].start_time));
 }
 
 function resolveProvisionedPath(root, absolutePath, relativePath) {

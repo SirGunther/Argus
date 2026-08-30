@@ -52,12 +52,16 @@ async function start() {
   configurePermissions();
   const sessionRoot = process.env.ARGUS_SESSION_ROOT || path.join(app.getPath('userData'), 'sessions');
   process.env.ARGUS_SESSION_ROOT = sessionRoot;
+  const diagnosticsEnabled = shouldEnableDiagnostics();
+  process.env.ARGUS_DIAGNOSTICS = diagnosticsEnabled ? '1' : '0';
   application = new DesktopApplication({
     root: ROOT,
     graphFile: path.join(ROOT, 'wiring', 'production-electron.json'),
     sessionRoot,
-    environment: process.env
+    environment: process.env,
+    diagnosticsEnabled
   });
+  application.diagnostics.log('electron.starting', { packaged: app.isPackaged, session_root_configured: Boolean(sessionRoot) });
   application.onProjection((message) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('argus.projection', message);
@@ -68,6 +72,7 @@ async function start() {
   ipcMain.handle('argus.command', (_event, payload) => application.handleCommand(payload));
   ipcMain.handle('argus.audio-chunk', (_event, payload) => application.acceptAudioChunk(payload));
   ipcMain.handle('argus.audio-flush', (_event, payload) => application.acceptAudioFlush(payload));
+  ipcMain.handle('argus.capture-diagnostic', (_event, payload) => application.reportCaptureDiagnostic(payload));
   ipcMain.handle('argus.capture-failure', (_event, message) => application.reportCaptureFailure(message));
   ipcMain.handle('argus.shutdown-ready', () => completeShutdown('renderer-ready'));
   ipcMain.handle('argus.capabilities', () => application.capabilitySnapshot());
@@ -116,3 +121,9 @@ app.on('before-quit', (event) => {
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (!mainWindow) createWindow(); });
+
+function shouldEnableDiagnostics() {
+  const explicit = String(process.env.ARGUS_DIAGNOSTICS || '').trim().toLowerCase();
+  if (app.isPackaged) return ['1', 'true', 'yes', 'on'].includes(explicit);
+  return !['0', 'false', 'no', 'off'].includes(explicit);
+}

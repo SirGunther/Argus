@@ -47,6 +47,9 @@ export const SUPPORTED_ENVIRONMENT_KEYS = Object.freeze(new Map([
   ['ARGUS_SESSION_ROOT', Object.freeze({})],
   ['ARGUS_WHISPER_BINARY', Object.freeze({})],
   ['ARGUS_WHISPER_MODEL', Object.freeze({})],
+  ['ARGUS_WHISPER_TIMEOUT_MS', Object.freeze({})],
+  ['ARGUS_WHISPER_DELAYED_MS', Object.freeze({})],
+  ['ARGUS_DIAGNOSTICS', Object.freeze({})],
   ['ARGUS_MODEL_API_KEY', Object.freeze({ credential: true })]
 ]));
 

@@ -40,6 +40,14 @@
       "max_payload_bytes": 32768,
       "changelog": "history/transcript.partial.md"
     },
+    "transcript.empty": {
+      "plane": "domain",
+      "version": "1.0.0",
+      "owner": "transcript/stt",
+      "schema": "transcript-empty.schema.json",
+      "max_payload_bytes": 16384,
+      "changelog": "history/transcript.empty.md"
+    },
     "transcript.word-committed": {
       "plane": "domain",
       "version": "1.2.0",

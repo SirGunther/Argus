@@ -2,6 +2,7 @@ import { runLineService, ServiceOperationError } from '../../runtime/service-pro
 import { fingerprintValue } from '../../runtime/message-identity.mjs';
 import { OrderedStreamError, OrderedStreamGuard } from '../../runtime/ordered-stream.mjs';
 import { SessionStorage, SessionStorageError } from '../../runtime/session-storage.mjs';
+import { createDiagnosticLogger } from '../../runtime/diagnostics.mjs';
 
 const SERVICE = 'active-transcript-owner';
 const partialByUtterance = new Map();
@@ -15,6 +16,8 @@ const committedWords = new Map();
 const finalizedUtterances = new Set();
 const storage = process.env.ARGUS_SESSION_ROOT ? new SessionStorage() : null;
 const loadedSessions = new Set();
+const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS !== '0', source: SERVICE });
+const wordReceiptCountBySession = new Map();
 
 runLineService({ service: SERVICE, operations: {
   'transcript.partial': { name: 'project-partial', handle: async (message) => {
@@ -41,12 +44,16 @@ runLineService({ service: SERVICE, operations: {
     const words = wordsByUtterance.get(word.utterance_id) || [];
     words.push(word); wordsByUtterance.set(word.utterance_id, words);
     committedWords.set(word.word_id, { fingerprint: fingerprintValue(word) });
+    const receiptCount = (wordReceiptCountBySession.get(word.session_id) || 0) + 1;
+    wordReceiptCountBySession.set(word.session_id, receiptCount);
+    diagnostics.log('transcript.word-committed.received', { session_id: word.session_id, utterance_id: word.utterance_id, word_id: word.word_id, sequence: word.sequence, receipt_count: receiptCount });
     return maybeRequestCorrection(word.utterance_id);
   } },
   'transcript.utterance-boundary': { name: 'prepare-finalization', handle: async (message) => {
     await loadSession(message.payload.session_id);
     if (finalizedUtterances.has(message.payload.utterance_id)) throw rejected('LATE_BOUNDARY', `Utterance ${message.payload.utterance_id} is already finalized`);
     boundaryByUtterance.set(message.payload.utterance_id, message.payload);
+    diagnostics.log('transcript.boundary-emitted', { session_id: message.payload.session_id, utterance_id: message.payload.utterance_id, boundary_id: message.payload.boundary_id, first_word_sequence: message.payload.first_word_sequence, last_word_sequence: message.payload.last_word_sequence, reason: message.payload.reason });
     return maybeRequestCorrection(message.payload.utterance_id);
   } },
   'transcript.correction-resolved': { name: 'finalize-transcript-segment', handle: async (message) => {
@@ -90,6 +97,7 @@ runLineService({ service: SERVICE, operations: {
     };
     segmentById.set(segmentId, stored);
     await persistSession(resolution.session_id);
+    diagnostics.log('transcript.segment-projected', { session_id: stored.session_id, segment_id: stored.segment_id, sequence: stored.sequence, transcript_preview: stored.text });
     finalizedUtterances.add(resolution.utterance_id);
     partialByUtterance.delete(resolution.utterance_id);
     wordsByUtterance.delete(resolution.utterance_id);
@@ -164,6 +172,7 @@ async function persistSession(sessionId) {
   if (!storage) return;
   try {
     await storage.writeActiveSnapshot(sessionId, 'transcript', { schema_version: '1.0.0', session_id: sessionId, saved_at: new Date().toISOString(), segments: [...segmentById.values()].filter((segment) => segment.session_id === sessionId) });
+    diagnostics.log('transcript.active-storage-completed', { session_id: sessionId, segment_count: [...segmentById.values()].filter((segment) => segment.session_id === sessionId).length });
   } catch (error) {
     if (error instanceof SessionStorageError) throw new ServiceOperationError(error.message, { code: error.code, category: 'conflict', details: error.details });
     throw error;
