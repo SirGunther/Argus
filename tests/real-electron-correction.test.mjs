@@ -1,0 +1,151 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { DesktopApplication } from '../runtime/desktop-application.mjs';
+import { SessionLifecycle } from '../runtime/session-lifecycle.mjs';
+import { SessionStorage } from '../runtime/session-storage.mjs';
+import { createSessionTimer } from '../ui/session-timer.mjs';
+import { runServiceBatches } from './helpers/process-harness.mjs';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const whisperManifest = path.join(root, 'services', 'whisper-cpp-stt', 'service.json');
+
+test('session timer ticks only while recording and resumes from authoritative accumulated time', () => {
+  let now = 0;
+  const timer = createSessionTimer({ clock: () => now });
+  timer.applyProjection({ session_id: 'timer-session', state: 'recording', elapsed_seconds: 0 });
+  assert.equal(timer.current(), 0);
+  now = 2100;
+  assert.equal(timer.current(), 2);
+  timer.applyProjection({ session_id: 'timer-session', state: 'stopped', elapsed_seconds: 2 });
+  now += 10000;
+  assert.equal(timer.current(), 2, 'stopped time must not accumulate');
+  timer.applyProjection({ session_id: 'timer-session', state: 'recording', elapsed_seconds: 2 });
+  now += 1100;
+  assert.equal(timer.current(), 3, 'resume must continue from the stopped accumulation');
+  timer.pause();
+  now += 10000;
+  assert.equal(timer.current(), 3, 'Stop/Close pause the visible timer');
+});
+
+test('New Session emits an authoritative recording projection for its new identity', async () => {
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-new-session-${Date.now()}`) });
+  application.metadata = { session_id: 'closed-session', state: 'closed' };
+  application.sessionId = 'closed-session';
+  application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+  application.graph = { dispatchFrom: async () => {}, closed: false };
+  const createdAt = new Date().toISOString();
+  application.loadLatestSession = async (sessionId) => {
+    application.sessionId = sessionId;
+    application.metadata = {
+      session_id: sessionId, state: 'recording', revision: 1, created_at: createdAt, started_at: createdAt,
+      operations: { record: { operation: 'session.record', outcome: { completed_at: createdAt } } }
+    };
+    application.transcript = [];
+    application.loggedItems = [];
+  };
+  const projections = [];
+  application.onProjection((message) => projections.push(message));
+  const result = await application.newSessionCommand({ command: 'session.new', command_id: 'new-session-command', session_id: 'closed-session' });
+  assert.equal(result.command, 'session.new');
+  assert.equal(result.status, 'accepted');
+  assert.equal(result.session_id, application.sessionId);
+  assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0 } });
+});
+
+test('startup recovery routes an unclean recording through the lifecycle owner and preserves duration', async () => {
+  const sessionRoot = await mkdtemp(path.join(os.tmpdir(), 'argus-recovery-correction-'));
+  const sessionId = 'unclean-recording-session';
+  const times = ['2026-08-30T00:00:00.000Z', '2026-08-30T00:00:06.656Z'];
+  const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: sessionRoot }), clock: () => times.shift() || '2026-08-30T00:00:06.656Z' });
+  await lifecycle.record({ operation_id: 'record-unclean', session_id: sessionId, requested_at: '2026-08-30T00:00:00.000Z' });
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot });
+  const calls = [];
+  application.graph = {
+    async dispatchFrom(_from, plane, type, _correlationId, payload) { calls.push(`${plane}:${type}`); if (type === 'session.stop') await lifecycle.stop(payload); },
+    async waitForIdle() {}
+  };
+  await application.recoverUncleanRecordings();
+  assert.deepEqual(calls, ['control:session.stop']);
+  await application.loadLatestSession(sessionId);
+  assert.equal(application.metadata.state, 'stopped');
+  assert.equal(application.sessionProjection().elapsed_seconds, 6);
+  await rm(sessionRoot, { recursive: true, force: true });
+});
+
+test('Whisper buffers many chunks without launching and launches exactly once on flush', async () => {
+  const sessionRoot = await mkdtemp(path.join(os.tmpdir(), 'argus-whisper-correction-'));
+  const tempRoot = path.join(sessionRoot, '.argus-stt');
+  const probeRoot = await mkdtemp(path.join(os.tmpdir(), 'argus-whisper-probe-'));
+  const binary = path.join(probeRoot, 'whisper-probe.cmd');
+  const model = path.join(probeRoot, 'model.bin');
+  const counter = path.join(probeRoot, 'launches.txt');
+  await mkdir(tempRoot, { recursive: true });
+  await writeFile(path.join(tempRoot, '99999-1-dead.wav'), 'abandoned');
+  await writeFile(path.join(tempRoot, '99999-1-dead.json'), '{}');
+  await writeFile(model, 'model');
+  await writeFile(binary, '@echo off\r\nif not "%ARGUS_PROBE_COUNTER%"=="" echo launch>>"%ARGUS_PROBE_COUNTER%"\r\n> "%~7.json" echo {"transcription":[{"text":"[*BEG*] Okay . [_TT_250].","offsets":{"from":0,"to":6656},"tokens":[{"text":"[*BEG*]","p":0.99,"offsets":{"from":0,"to":0}},{"text":"Okay","p":0.91,"offsets":{"from":0,"to":6000}},{"text":".","p":0.92,"offsets":{"from":6000,"to":6656}},{"text":"[_TT_250]","p":0.99,"offsets":{"from":6656,"to":6656}}]}]}\r\n');
+  const sessionId = 'whisper-correction-session';
+  const chunks = Array.from({ length: 12 }, (_, sequence) => whisperChunk(sequence, sessionId));
+  const flush = envelope('audio.flush', `${sessionId}:flush`, { session_id: sessionId, requested_at: '2026-08-30T00:00:00.000Z', reason: 'flush' });
+  try {
+    const result = await runServiceBatches(whisperManifest, [
+      { inputs: chunks, expectedOutputCount: chunks.length },
+      { inputs: [flush], expectedOutputCount: 4 }
+    ], 10000, { env: { ARGUS_SESSION_ROOT: sessionRoot, ARGUS_WHISPER_BINARY: binary, ARGUS_WHISPER_MODEL: model, ARGUS_PROBE_COUNTER: counter } });
+    assert.equal((await readFile(counter, 'utf8')).trim().split(/\r?\n/).filter(Boolean).length, 1);
+    const words = result.outputs.filter((message) => message.message_type === 'transcript.word-committed');
+    assert.deepEqual(words.map((message) => message.payload.text), ['Okay', '.']);
+    assert.equal(JSON.stringify(words).includes('[*BEG*]'), false);
+    assert.equal(JSON.stringify(words).includes('[_TT_250]'), false);
+    assert.equal(JSON.stringify(result.outputs).includes('<|'), false);
+    await assert.rejects(readFile(path.join(tempRoot, '99999-1-dead.wav')), /ENOENT/);
+    await assert.rejects(readFile(path.join(tempRoot, '99999-1-dead.json')), /ENOENT/);
+  } finally {
+    await rm(sessionRoot, { recursive: true, force: true });
+    await rm(probeRoot, { recursive: true, force: true });
+  }
+});
+
+test('shutdown waits for audio, routes stop before graph drain, and ignores late audio stably', async () => {
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-shutdown-${Date.now()}`) });
+  application.sessionId = 'shutdown-session';
+  application.metadata = { session_id: application.sessionId, state: 'recording', revision: 1, created_at: '2026-08-30T00:00:00.000Z', started_at: '2026-08-30T00:00:00.000Z', operations: { record: { operation: 'session.record', outcome: { completed_at: '2026-08-30T00:00:00.000Z' } } } };
+  application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+  const calls = [];
+  application.graph = {
+    closed: false,
+    async dispatchFrom(_from, plane, type) { calls.push(`${plane}:${type}`); },
+    async waitForIdle() { calls.push('waitForIdle'); },
+    async close() { calls.push('close'); this.closed = true; }
+  };
+  application.loadLatestSession = async () => {};
+  application.audioInFlight = 1;
+  const shutdown = application.shutdown();
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await application.acceptAudioChunk({ session_id: application.sessionId }), { accepted: false, ignored: true, code: 'SHUTDOWN_IN_PROGRESS', session_id: application.sessionId, reason: 'Application shutdown is in progress.' });
+  application.audioInFlight = 0;
+  application.resolveAudioIdleWaiters();
+  await shutdown;
+  assert.ok(calls.indexOf('domain:audio.flush') < calls.indexOf('control:session.stop'));
+  assert.equal(calls.at(-1), 'close');
+});
+
+function whisperChunk(sequence, sessionId) {
+  return envelope('audio.chunk', `${sessionId}:chunk:${sequence}`, {
+    chunk_id: `${sessionId}-chunk-${sequence}`, session_id: sessionId, sequence,
+    start_time: '00:00:00.000', end_time: '00:00:00.256',
+    format: { encoding: 'pcm-signed-integer', sample_rate_hz: 16000, channels: 1, bits_per_sample: 16, byte_order: 'little-endian' },
+    sample_count: 2, byte_length: 4, audio_base64: 'AAABAA==', checksum: 'sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93'
+  });
+}
+
+function envelope(messageType, idempotencyKey, payload) {
+  return {
+    message_id: idempotencyKey, idempotency_key: idempotencyKey, plane: 'domain', message_type: messageType,
+    timestamp: '2026-08-30T00:00:00.000Z', producer: 'correction-test', correlation_id: payload.session_id, schema_version: '1.2.0', payload
+  };
+}

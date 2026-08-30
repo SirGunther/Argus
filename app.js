@@ -4,6 +4,7 @@ import {
   resolveSourceRangeIds, selectionCount, setAllSelected, toggleSelected
 } from './ui/ui-state.mjs';
 import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from './ui/audio-capture.mjs';
+import { createSessionTimer } from './ui/session-timer.mjs';
 
 (() => {
   'use strict';
@@ -11,11 +12,14 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
   const AUDIO_INPUT_STORAGE_KEY = 'argus.selected-audio-input-device';
   const ui = createUiState();
   const desktop = window.argus || null;
-  const state = { session: null, transcript: [], derived: [], services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false };
+  const state = { session: null, transcript: [], derived: [], services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null };
+  const timer = createSessionTimer();
+  const STARTING_TIMEOUT_MS = 15000;
   const audioInput = { devices: [], selectedDeviceId: readRememberedAudioInput(), refreshing: false, initialized: false, ready: false, message: 'Checking microphone access...', tone: '' };
   let events;
   let unsubscribeProjection;
   let unsubscribeAudioDeviceChange;
+  let timerInterval;
 
   const els = {
     template: document.querySelector('#rowTemplate'), transcriptList: document.querySelector('#transcriptList'), derivedList: document.querySelector('#derivedList'),
@@ -179,7 +183,15 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
   function receive(message, { bootstrap = false } = {}) {
     if (!message || typeof message.message_type !== 'string' || !message.payload) return;
     switch (message.message_type) {
-      case 'ui.session-status': state.session = message.payload; renderSession(); break;
+      case 'ui.session-status':
+        timer.applyProjection(message.payload);
+        state.session = message.payload;
+        if (state.sessionAction === 'session.stop' && state.session.state !== 'recording') state.sessionAction = null;
+        if (state.sessionAction === 'session.close' && state.session.state === 'closed') state.sessionAction = null;
+        if (state.sessionAction === 'session.stop' || state.sessionAction === 'session.close') timer.pause();
+        renderSession();
+        maybeStartCapture();
+        break;
       case 'ui.transcript-row': upsert('transcript', message.payload, bootstrap); break;
       case 'ui.logged-item-row': upsert('derived', message.payload, bootstrap); break;
       case 'ui.service-status':
@@ -193,6 +205,7 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
   }
 
   function upsert(kind, item, bootstrap) {
+    if (state.session?.session_id && item.session_id !== state.session.session_id) return;
     const id = kind === 'transcript' ? item.segment_id : item.item_id;
     const collection = state[kind];
     if (kind === 'transcript' && !item.provisional) {
@@ -403,19 +416,22 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
     if (!state.session) return;
     const recording = state.session.state === 'recording';
     const closed = state.session.state === 'closed';
+    const processing = state.sessionAction === 'session.stop' || state.sessionAction === 'session.close';
+    const starting = state.starting;
     els.sessionIdentity.textContent = `Session ${state.session.session_id}`;
     els.recordButton.classList.toggle('active', recording);
-    els.recordButton.disabled = recording;
-    els.stopButton.disabled = !recording || closed;
-    els.closeSessionButton.disabled = closed;
-    els.recordButton.title = closed ? 'Start a new session' : recording ? 'Recording from the physical microphone' : 'Start recording for this session';
-    els.recordButton.querySelector('span:last-child').textContent = recording ? 'Recording' : closed ? 'New Session' : (desktop && !state.newSession ? 'Resume' : 'Record');
-    els.captureStatus.className = `capture-status ${recording ? 'recording' : closed ? 'closed' : ''}`;
-    els.captureStatusText.textContent = recording ? 'Listening · Processing live audio' : closed ? 'Session finalized' : 'Session stopped · Ready to resume';
+    els.recordButton.disabled = recording || starting || processing;
+    els.stopButton.disabled = !recording || closed || processing;
+    els.closeSessionButton.disabled = closed || starting || processing;
+    els.recordButton.title = starting ? 'Waiting for the new recording session to be accepted' : closed ? 'Start a new session' : recording ? 'Recording from the physical microphone' : 'Start recording for this session';
+    els.recordButton.querySelector('span:last-child').textContent = starting ? 'Starting' : recording ? 'Recording' : closed ? 'New Session' : (desktop && !state.newSession ? 'Resume' : 'Record');
+    els.captureStatus.className = `capture-status ${starting ? 'starting' : recording ? 'recording' : closed ? 'closed' : ''}`;
+    els.captureStatusText.textContent = starting ? 'Starting · Waiting for command acceptance' : processing ? 'Processing final audio…' : recording ? 'Listening · Processing finalized audio' : closed ? 'Session finalized' : 'Session stopped · Ready to resume';
     els.sessionStateDot.className = `session-state-dot ${recording ? 'recording' : closed ? 'closed' : ''}`;
-    els.drawerState.textContent = recording ? 'Recording · Live' : closed ? 'Finalized · Complete' : 'Stopped · Ready to resume';
-    els.elapsedTime.textContent = formatElapsed(state.session.elapsed_seconds);
-    els.drawerDuration.textContent = formatDuration(state.session.duration_seconds);
+    els.drawerState.textContent = starting ? 'Starting · Awaiting acceptance' : recording ? 'Recording · Live' : closed ? 'Finalized · Complete' : 'Stopped · Ready to resume';
+    const elapsed = timer.current();
+    els.elapsedTime.textContent = formatElapsed(elapsed);
+    els.drawerDuration.textContent = formatDuration(recording ? elapsed : state.session.duration_seconds);
     renderAudioInput();
   }
 
@@ -459,18 +475,60 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
     try {
       if (desktop) {
         const result = await desktop.command(payload);
-        if (result?.message_type) handleCommandResult(result.payload);
+        if (result?.message_type) { handleCommandResult(result.payload); return result.payload; }
         else showToast('Electron host rejected the command', 'error');
-        return;
+        return undefined;
       }
       const response = await fetch('/api/commands', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
-      if (result.message_type) handleCommandResult(result.payload);
+      if (result.message_type) { handleCommandResult(result.payload); return result.payload; }
       else showToast(result.error || 'Bridge rejected the command', 'error');
+      return undefined;
     } catch (error) {
       showToast(`Bridge unavailable · ${error.message}`, 'error');
       renderAll();
+      return undefined;
     } finally { if (button) setTimeout(() => button.classList.remove('pending'), 600); }
+  }
+
+  function beginStarting() {
+    clearTimeout(state.startingTimer);
+    state.starting = true;
+    state.sessionAction = 'starting';
+    state.startingTimer = setTimeout(() => {
+      if (!state.starting) return;
+      state.starting = false;
+      state.sessionAction = null;
+      state.pendingCaptureSessionId = null;
+      timer.resume();
+      renderSession();
+      showToast('Recording start timed out before command acceptance.', 'error');
+    }, STARTING_TIMEOUT_MS);
+    renderSession();
+  }
+
+  function finishStarting() {
+    clearTimeout(state.startingTimer);
+    state.startingTimer = null;
+    state.starting = false;
+    if (state.sessionAction === 'starting') state.sessionAction = null;
+  }
+
+  function cancelSessionAction() {
+    if (state.starting) finishStarting();
+    state.sessionAction = null;
+    state.pendingCaptureSessionId = null;
+    timer.resume();
+    renderSession();
+  }
+
+  function maybeStartCapture() {
+    const sessionId = state.pendingCaptureSessionId;
+    if (!sessionId || !state.session || state.session.session_id !== sessionId || state.session.state !== 'recording') return;
+    state.pendingCaptureSessionId = null;
+    finishStarting();
+    renderSession();
+    state.captureStartPromise = startCapture(sessionId).finally(() => { state.captureStartPromise = null; });
   }
 
   function handleCommandResult(result) {
@@ -481,6 +539,7 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
       state.pending.delete(`${kind}:${result.resource_id}`);
       if (result.status === 'rejected') renderRows(kind);
     }
+    if (result.command?.startsWith('session.') && result.status === 'rejected') cancelSessionAction();
     els.saveStatus.classList.remove('saving');
     els.saveStatusText.textContent = result.status === 'accepted' ? 'Owner accepted change' : 'Owner rejected change';
     showToast(result.message, result.status === 'accepted' ? 'success' : 'error');
@@ -494,12 +553,14 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
       ui.panes.transcript = { followingLive: true, unseen: 0 };
       ui.panes.derived = { followingLive: true, unseen: 0 };
       state.newSession = false;
+      state.pendingCaptureSessionId = result.session_id;
       renderAll();
       showToast('New session started', 'success');
-      void startCapture(result.session_id);
+      maybeStartCapture();
     } else if (result.status === 'accepted' && desktop && (result.command === 'session.record' || result.command === 'session.resume')) {
       state.newSession = false;
-      void startCapture(result.session_id);
+      state.pendingCaptureSessionId = result.session_id;
+      maybeStartCapture();
     }
   }
 
@@ -507,9 +568,25 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
     if (!state.session) return;
     const requestedCommand = desktop && command === 'session.record' && state.session.state === 'closed' ? 'session.new' : command;
     const actualCommand = desktop && requestedCommand === 'session.record' && !state.newSession ? 'session.resume' : requestedCommand;
-    if (desktop && (actualCommand === 'session.new' || actualCommand === 'session.record' || actualCommand === 'session.resume') && !(await ensureAudioInputReady())) return;
-    if (desktop && (actualCommand === 'session.stop' || actualCommand === 'session.close')) await capture.stop();
-    await postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: actualCommand });
+    const startsRecording = desktop && ['session.new', 'session.record', 'session.resume'].includes(actualCommand);
+    if (startsRecording) beginStarting();
+    if (desktop && (actualCommand === 'session.stop' || actualCommand === 'session.close')) {
+      state.sessionAction = actualCommand;
+      timer.pause();
+      renderSession();
+    }
+    try {
+      if (startsRecording && !(await ensureAudioInputReady())) { cancelSessionAction(); return; }
+      if (desktop && (actualCommand === 'session.stop' || actualCommand === 'session.close')) {
+        await state.captureStartPromise;
+        await capture.stop();
+      }
+      const result = await postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: actualCommand });
+      if (!result && state.sessionAction === actualCommand) cancelSessionAction();
+    } catch (error) {
+      cancelSessionAction();
+      showToast(`Session command failed · ${error.message}`, 'error');
+    }
   }
 
   function showSourceContext(item) {
@@ -637,7 +714,19 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
   els.copyPathButton.addEventListener('click', () => postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: 'copy-session-path' }));
   els.confirmCloseButton.addEventListener('click', () => { closeCloseModal(); sendSessionCommand('session.close'); });
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeDrawer(); closeCloseModal(); } });
-  window.addEventListener('beforeunload', () => { events?.close(); unsubscribeProjection?.(); unsubscribeAudioDeviceChange?.(); void capture?.stop(); });
+  timerInterval = setInterval(() => { if (state.session?.state === 'recording' && !['session.stop', 'session.close'].includes(state.sessionAction)) renderSession(); }, 1000);
+  if (desktop) desktop.onShutdown(async () => {
+    try {
+      events?.close();
+      unsubscribeProjection?.();
+      unsubscribeAudioDeviceChange?.();
+      await state.captureStartPromise;
+      await capture?.stop();
+    } finally {
+      await desktop.shutdownReady();
+    }
+  });
+  window.addEventListener('beforeunload', () => { clearInterval(timerInterval); events?.close(); unsubscribeProjection?.(); unsubscribeAudioDeviceChange?.(); });
   if (capture) {
     unsubscribeAudioDeviceChange = capture.onDeviceChange(() => { void refreshAudioInput(); });
     void refreshAudioInput();

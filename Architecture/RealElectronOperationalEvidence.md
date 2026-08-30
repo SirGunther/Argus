@@ -6,10 +6,11 @@ This record covers the operational completion slice after the Electron host and 
 
 ## Operationally implemented
 
-- `ui/audio-capture.mjs` measures captured Float32 audio energy, requires a bounded period of genuine speech before a pause can finalize, and queues a governed `audio.flush` after a configurable 1,200 ms pause threshold. Capture continues after the flush and Stop/Close remain governed flush paths.
-- `services/whisper-cpp-stt` preserves Whisper full-JSON token probabilities and offsets, deletes temporary WAV/JSON inference files, advances utterance IDs monotonically, and preserves word sequence identity across flushes.
-- `session.new` is a governed desktop command. The trusted Electron/Node boundary creates a fresh UUID-backed session ID, routes its `session.record` operation through the lifecycle owner, and leaves the closed session sealed and reviewable. The production graph remains alive for the new session.
-- The closed-state primary control is `New Session`; the renderer clears old projections only after the new command is accepted and treats closed rows as read-only.
+- `ui/audio-capture.mjs` measures captured Float32 audio energy, requires a bounded period of genuine speech before a pause can finalize, queues a governed `audio.flush` after a configurable 1,200 ms pause threshold, and bounds pending audio IPC. Capture continues after the flush; Stop, Close, and pause remain governed flush paths.
+- `services/whisper-cpp-stt` buffers bounded PCM without inference on `audio.chunk`, invokes Whisper once on each accepted `audio.flush`, preserves full-JSON token probabilities and offsets, filters control/timestamp tokens before word commitment, and cleans temporary WAV/JSON files with process-ownership checks.
+- `session.new` is a governed desktop command. The trusted Electron/Node boundary creates a fresh UUID-backed session ID, routes its `session.record` operation through the lifecycle owner, and emits an authoritative `recording` UI projection before capture can begin. The renderer shows bounded Starting feedback, switches identity, enables Stop, and leaves the closed session sealed and reviewable.
+- Recording duration is calculated from lifecycle-owned record/stop/resume/close operations, so the renderer timer starts at zero for a new session, ticks once per second only while recording, freezes on Stop/Close, resumes from accumulated duration, and excludes stopped time.
+- Startup routes sessions left `recording` by an unclean exit through governed `session.stop`, leaving them explicitly resumable. Window close uses a renderer-to-main handshake; capture and pending audio IPC settle, remaining audio flushes once, a recording session stops, and only then does graph drain begin. Late audio receives a stable shutdown-ignored result.
 - `scripts/setup-real-dependencies.mjs` is idempotent and fail-closed. It writes `runtime-output/real-dependencies.json` only after Whisper and Ollama both pass real probes.
 - The Windows package bundles the final Whisper executable, its required DLLs, and the model under `runtime-output/real-runtime/`; the source/build cache is excluded from the Electron package. Packaged startup rebases manifest-relative asset paths to the installed application root.
 
@@ -31,7 +32,7 @@ The successful setup manifest was generated on 2026-08-24:
 
 ## Validation boundary
 
-Narrow checks passed: JavaScript syntax checks for changed runtime files; contract generation/check; contract governance; production DesktopApplication startup with real STT/model capabilities available; and Record → Stop → Close → New Session lifecycle with distinct session IDs. Physical microphone permission, real pauses, recognition quality, latency, and logged-item accuracy remain awaiting actual spoken input. Optional classification remains deferred and is not represented as available.
+Narrow checks passed: JavaScript syntax checks; the complete 148-test suite; contract governance; the focused real-Electron corrective checks; production source launch with `npm.cmd start`; and governed startup recovery, timer, Whisper flush, token filtering, and shutdown ordering. No installer was rebuilt. Physical microphone permission, real pauses, recognition quality, latency, and logged-item accuracy remain awaiting actual spoken input. Optional classification remains deferred and is not represented as available.
 
 No fake audio, fake STT, deterministic extraction, generated projections, demo-state, or simulated fallback participates in the packaged Electron path.
 

@@ -363,6 +363,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .capture-status, .save-status, .folder-button, .timestamp-toggle { gap: 7px; }
 .status-pulse { width: 7px; height: 7px; border: 1px solid var(--amber); border-radius: 50%; }
 .capture-status.recording { color: #ffaaa4; }
+.capture-status.starting { color: var(--amber); }
 .capture-status.recording .status-pulse { border: 0; background: var(--red); box-shadow: 0 0 0 4px rgba(255, 101, 92, .1); animation: pulseRing 1.8s ease infinite; }
 .capture-status.closed .status-pulse { border-color: var(--text-muted); background: var(--text-muted); }
 .save-status svg { width: 13px; height: 13px; color: var(--accent); }

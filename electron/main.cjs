@@ -5,6 +5,8 @@ const ROOT = path.resolve(__dirname, '..');
 let mainWindow;
 let application;
 let quitting = false;
+let shutdownPromise;
+let rendererShutdownTimer;
 
 // Keep the standalone host usable on Windows images where Chromium's GPU helper
 // cannot load its optional graphics dependency. Audio capture and all Argus
@@ -37,6 +39,11 @@ async function createWindow() {
   });
   mainWindow.removeMenu();
   await mainWindow.loadFile(path.join(ROOT, 'index.html'));
+  mainWindow.on('close', (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    requestRendererShutdown();
+  });
   mainWindow.on('closed', () => { mainWindow = undefined; });
 }
 
@@ -62,16 +69,39 @@ async function start() {
   ipcMain.handle('argus.audio-chunk', (_event, payload) => application.acceptAudioChunk(payload));
   ipcMain.handle('argus.audio-flush', (_event, payload) => application.acceptAudioFlush(payload));
   ipcMain.handle('argus.capture-failure', (_event, message) => application.reportCaptureFailure(message));
+  ipcMain.handle('argus.shutdown-ready', () => completeShutdown('renderer-ready'));
   ipcMain.handle('argus.capabilities', () => application.capabilitySnapshot());
 
   await createWindow();
 }
 
 async function shutdown() {
-  if (quitting) return;
-  quitting = true;
-  try { await application?.shutdown(); }
-  catch (error) { console.error(`Argus shutdown failed: ${error.stack || error.message}`); }
+  return completeShutdown('before-quit');
+}
+
+function requestRendererShutdown() {
+  if (shutdownPromise) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void completeShutdown('renderer-unavailable');
+    return;
+  }
+  mainWindow.webContents.send('argus.shutdown-request');
+  rendererShutdownTimer = setTimeout(() => void completeShutdown('renderer-timeout'), 15000);
+}
+
+function completeShutdown(reason) {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    clearTimeout(rendererShutdownTimer);
+    try { await application?.shutdown(); }
+    catch (error) { console.error(`Argus shutdown failed (${reason}): ${error.stack || error.message}`); }
+    finally {
+      quitting = true;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+      if (app.isReady()) app.quit();
+    }
+  })();
+  return shutdownPromise;
 }
 
 app.whenReady().then(start).catch((error) => {
@@ -82,7 +112,7 @@ app.whenReady().then(start).catch((error) => {
 app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
-  shutdown().finally(() => app.quit());
+  requestRendererShutdown();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (!mainWindow) createWindow(); });

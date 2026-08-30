@@ -248,6 +248,7 @@ test('a service without stt-runtime cannot read the provisioned Whisper assets',
       );
     });
     for (let sequence = 0; sequence < 8; sequence += 1) await handle.write(whisperChunkInput(sequence));
+    await handle.write(whisperFlushInput());
     const serviceFailure = await Promise.race([
       failure,
       new Promise((_, reject) => setTimeout(() => reject(new Error(`Whisper permission probe timed out: ${diagnostics.join(' | ')}`)), 3000))
@@ -275,8 +276,8 @@ test('a service without stt-runtime cannot read the provisioned Whisper assets',
 test('missing Whisper assets remain a clear STT_UNAVAILABLE failure', async () => {
   const result = await runService(
     path.join(root, 'services', 'whisper-cpp-stt', 'service.json'),
-    Array.from({ length: 8 }, (_, sequence) => whisperChunkInput(sequence)),
-    8,
+    [...Array.from({ length: 8 }, (_, sequence) => whisperChunkInput(sequence)), whisperFlushInput()],
+    9,
     3000,
     { env: { ARGUS_WHISPER_BINARY: '', ARGUS_WHISPER_MODEL: '' } }
   );
@@ -557,6 +558,20 @@ function whisperChunkInput(sequence) {
       audio_base64: 'AAABAA==',
       checksum: 'sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93'
     }
+  };
+}
+
+function whisperFlushInput() {
+  return {
+    message_id: 'phase8-whisper-missing-flush',
+    idempotency_key: 'phase8-whisper-missing-flush',
+    plane: 'domain',
+    message_type: 'audio.flush',
+    timestamp: '2026-08-29T00:00:00.000Z',
+    producer: 'phase8-permission-test',
+    correlation_id: 'phase8-whisper-missing',
+    schema_version: '1.2.0',
+    payload: { session_id: 'phase8-whisper-missing', requested_at: '2026-08-29T00:00:00.000Z', reason: 'flush' }
   };
 }
 

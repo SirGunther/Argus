@@ -41,7 +41,7 @@ npm.cmd run package:win
 
 The installer, zip, and unpacked executable are written under `out/`.
 
-The **Stop** button flushes the real audio pipeline and preserves the session for Resume. **Close** flushes, finalizes, and releases the session through the lifecycle owner.
+The **Stop** button stops capture, waits for pending audio IPC, flushes the real audio pipeline once, and preserves the session for Resume. **Close** follows the same flush path, then finalizes and releases the session through the lifecycle owner. A window close uses an explicit renderer-to-main handshake so capture is stopped before the supervised graph drains.
 
 ## Real Electron operational status
 
@@ -49,7 +49,9 @@ The **Stop** button flushes the real audio pipeline and preserves the session fo
 
 The packaged path bundles `runtime-output/real-runtime/whisper-cli.exe`, its four required Whisper DLLs, and `ggml-base.en.bin`; the source/build cache is excluded. Ollama remains a separately installed local runtime at `http://127.0.0.1:11434`.
 
-After Close, the primary control becomes **New Session**. The trusted Electron/Node boundary creates a new session identity and routes creation through the real lifecycle owner; the closed session remains persisted and read-only for review. Real audio energy, not a timer, gates the 1,200 ms bounded pause flush. Capture continues after a pause flush while recording.
+After Close, the primary control becomes **New Session**. The trusted Electron/Node boundary creates a new session identity, emits its authoritative `recording` projection, and routes creation through the real lifecycle owner; the closed session remains persisted and read-only for review. The renderer shows a bounded **Starting** state until that projection arrives, switches to the new session, and enables Stop immediately. The lifecycle-owned recording duration accumulates across Resume and excludes stopped time; the visible timer ticks once per second only while recording. Real audio energy, not a timer, gates the 1,200 ms bounded pause flush. Capture continues after a pause flush while recording.
+
+The real Whisper adapter buffers bounded PCM without inference during `audio.chunk` handling and runs one inference only for each accepted `audio.flush` from pause, Stop, or Close. Whisper control/timestamp tokens are removed before committed words and provenance are persisted. A startup recovery pass routes any session left `recording` by an unclean exit through the lifecycle owner into `stopped`, so the user must explicitly Resume it. Abandoned `.argus-stt` WAV/JSON artifacts are removed only when their process ownership is no longer live.
 
 The source Electron/runtime path and real dependency provisioning are operational, but final packaged launch is currently blocked on this Windows machine by the packaged Chromium GPU helper: it exits with `0xC0000135`, followed by Electron `0x80000003`. Do not treat this as a corrupt installer or attempt physical-input acceptance until that host packaging blocker is resolved. Optional classification remains deferred and is not available in the packaged path.
 
@@ -63,7 +65,7 @@ npm.cmd run demo:ui:smoke
 
 ## Current validation status
 
-The focused Phase 7 corrections are agent-verified and user-revalidated: D1 through D4 passed in [`docs/review/v0.1.0-phase-7-corrective-revalidation-validation-review.md`](docs/review/v0.1.0-phase-7-corrective-revalidation-validation-review.md). The newly observed editor-position movement during live arrival is a deferred Phase 7A bug and is unchanged.
+The focused real-Electron corrective checks are agent-verified: New Session projection/control ordering, timer tick/freeze/resume behavior, zero Whisper launches before flush, exactly one launch per flush, control-token filtering, startup recovery, and shutdown ordering all pass in `tests/real-electron-correction.test.mjs`. The source application was launched with `npm.cmd start`; no physical-microphone acceptance is claimed here.
 
 The original browser/Node POC gates remain available, while the standalone Electron integration adds a supervised production graph, real audio/STT/model adapters, and Windows packaging. Native and OCI execution remain unproven and evidence-triggered; physical-device/model acceptance and credential choices remain evidence-driven.
 
@@ -73,7 +75,7 @@ The production Electron graph validates with 12 supervised components and 19 exp
 
 ## Included interactions
 
-- Record, stop/resume, and explicit close/finalization states
+- Record, stop/resume, and explicit close/finalization states with startup recovery after an unclean exit
 - Deterministic transcript and neutral logged-item projection events while recording
 - Finalized transcript and logged-item edits routed through their owning boundaries with optimistic revision checks
 - UI-owned row selection, select-all, individual copy, and ordered batch copy
@@ -87,7 +89,7 @@ The production Electron graph validates with 12 supervised components and 19 exp
 
 The architecture decision record in `Architecture/DesignDecisions.md` explains why extraction and optional classification are separate operations, how idle-time enrichment should work, and which transcript context belongs in each payload.
 
-Copy and open-folder controls are host commands. Copy uses a replaceable operating-system adapter when available; folder opening accepts only a session identity and is visibly unavailable when no authorized desktop/session-root capability is configured. The preload exposes only bootstrap, governed command, audio-chunk, capture-failure, capability, and projection channels; it does not expose Node, filesystem, or process access to the renderer.
+Copy and open-folder controls are host commands. Copy uses a replaceable operating-system adapter when available; folder opening accepts only a session identity and is visibly unavailable when no authorized desktop/session-root capability is configured. The preload exposes only bootstrap, governed command, audio-chunk, capture-failure, shutdown-handshake, capability, and projection channels; it does not expose Node, filesystem, or process access to the renderer.
 
 ## Executable architecture experiment
 

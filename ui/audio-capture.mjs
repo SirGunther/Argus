@@ -1,5 +1,6 @@
 const TARGET_RATE = 16000;
 const CHUNK_SAMPLES = 4096;
+const MAX_PENDING_CHUNKS = 8;
 const DEFAULT_PAUSE_THRESHOLD_MS = 1200;
 const MIN_PAUSE_THRESHOLD_MS = 250;
 const MAX_PAUSE_THRESHOLD_MS = 5000;
@@ -66,6 +67,7 @@ export function createAudioCapture({
   let speechSamples = 0;
   let silenceSamples = 0;
   let speechDetected = false;
+  let pendingChunkCount = 0;
 
   function mediaDevices() {
     if (!navigator.mediaDevices) throw new Error('Microphone media devices are unavailable in this Electron renderer.');
@@ -129,8 +131,7 @@ export function createAudioCapture({
       enqueueChunk(next);
       updateSpeechState(energy.rms, next.length);
       if (speechDetected && silenceSamples >= pauseSamples) enqueuePauseFlush();
-      if (buffer.length > CHUNK_SAMPLES * 6) {
-        stopping = true;
+      if (pendingChunkCount > MAX_PENDING_CHUNKS) {
         reportFailure(new Error('Audio IPC backpressure exceeded the bounded renderer queue.'));
         void stop();
         return;
@@ -139,8 +140,9 @@ export function createAudioCapture({
   }
 
   function enqueueChunk(samples) {
+    pendingChunkCount += 1;
     const chunk = makeChunk(samples);
-    pending = pending.then(async () => sendAudioChunk(await chunk)).catch(handleFailure);
+    pending = pending.then(async () => sendAudioChunk(await chunk)).catch(handleFailure).finally(() => { pendingChunkCount -= 1; });
   }
 
   function enqueuePauseFlush() {
@@ -210,7 +212,7 @@ export function createAudioCapture({
     stream?.getTracks().forEach((track) => track.stop());
     await pending.catch(() => {});
     if (context) await context.close().catch(() => {});
-    source = undefined; worklet = undefined; stream = undefined; context = undefined; buffer = [];
+    source = undefined; worklet = undefined; stream = undefined; context = undefined; buffer = []; sessionId = undefined; pendingChunkCount = 0;
   }
 
   return Object.freeze({ start, stop, enumerateAudioInputs, requestPermission, onDeviceChange, get active() { return Boolean(stream); } });

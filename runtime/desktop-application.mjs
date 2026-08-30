@@ -5,6 +5,7 @@ import { createUiContractBoundary } from '../ui/bridge-contracts.mjs';
 import { createPlatformCapabilities } from '../ui/platform-capabilities.mjs';
 import { InteractiveGraph } from './interactive-graph.mjs';
 import { SessionStorage } from './session-storage.mjs';
+import { calculateRecordingDurationMs } from './session-lifecycle.mjs';
 
 const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL'];
 const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'storage-session', 'clipboard', 'folder-opening'];
@@ -30,6 +31,9 @@ export class DesktopApplication {
     this.capabilityState = new Map();
     this.seenMessages = new Set();
     this.audioInFlight = 0;
+    this.audioIdleWaiters = new Set();
+    this.shuttingDown = false;
+    this.shutdownPromise = undefined;
     this.provisionedManifest = undefined;
     this.started = false;
     this.startError = undefined;
@@ -55,6 +59,9 @@ export class DesktopApplication {
       throw error;
     }
     this.started = true;
+    await this.recoverUncleanRecordings();
+    await this.loadLatestSession();
+    this.emit('ui.session-status', this.sessionProjection());
   }
 
   async loadProvisionedConfiguration() {
@@ -77,7 +84,26 @@ export class DesktopApplication {
     }
   }
 
-  async shutdown() { await this.graph?.close(); }
+  async shutdown() {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.shuttingDown = true;
+    this.shutdownPromise = (async () => {
+      try {
+        await this.waitForAudioIdle();
+        if (this.graph && !this.graph.closed) {
+          await this.graph.waitForIdle();
+          await this.loadLatestSession(this.sessionId);
+          if (this.metadata?.state === 'recording') {
+            await this.sessionCommand({ command: 'session.stop', command_id: `shutdown-stop-${randomUUID()}`, session_id: this.sessionId }, { allowFlushFailure: true });
+            await this.graph.waitForIdle();
+          }
+        }
+      } finally {
+        await this.graph?.close();
+      }
+    })();
+    return this.shutdownPromise;
+  }
 
   async bootstrap() {
     await this.loadLatestSession();
@@ -93,19 +119,23 @@ export class DesktopApplication {
   }
 
   async acceptAudioChunk(chunk) {
+    if (this.shuttingDown || this.graph?.closed) return this.ignoredAudioResult(chunk?.session_id);
     if (!this.graph || this.metadata?.state !== 'recording') throw new Error('Audio is accepted only while the governed session is recording');
     if (this.audioInFlight >= 4) throw Object.assign(new Error('Audio backpressure capacity reached; capture must pause.'), { code: 'AUDIO_BACKPRESSURE', retryable: true });
     this.audioInFlight += 1;
     try {
       await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.chunk', chunk.session_id, chunk, `${chunk.session_id}:audio.chunk:${chunk.sequence}`);
       return { accepted: true, sequence: chunk.sequence };
-    } finally { this.audioInFlight -= 1; }
+    } finally {
+      this.audioInFlight -= 1;
+      this.resolveAudioIdleWaiters();
+    }
   }
 
   async acceptAudioFlush(payload = {}) {
+    if (this.shuttingDown || this.graph?.closed) return this.ignoredAudioResult(payload.session_id);
     if (!this.graph || this.metadata?.state !== 'recording') throw new Error('Audio flush is accepted only while the governed session is recording');
-    if (payload.session_id !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${payload.session_id}`), { code: 'SESSION_NOT_FOUND' });
-    await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', payload.session_id, {
+    await this.dispatchAudioFlush(payload.session_id, {
       session_id: payload.session_id,
       requested_at: payload.requested_at || new Date().toISOString(),
       ...(payload.reason === 'pause' ? { reason: 'pause' } : {})
@@ -149,16 +179,18 @@ export class DesktopApplication {
     }
   }
 
-  async sessionCommand(payload) {
-    if (payload.command === 'session.stop') {
-      await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`);
-      await this.graph.waitForIdle();
-    }
-    if (payload.command === 'session.close') {
-      await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`);
-      await this.graph.waitForIdle();
+  async sessionCommand(payload, { allowFlushFailure = false } = {}) {
+    if ((payload.command === 'session.stop' || payload.command === 'session.close') && this.metadata?.state === 'recording') {
+      try {
+        await this.dispatchAudioFlush(payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`);
+        await this.graph.waitForIdle();
+      } catch (error) {
+        if (!allowFlushFailure) throw error;
+        this.setCapability('stt', 'unavailable', `Final audio flush failed during shutdown: ${error.message}`, true);
+      }
     }
     const output = await this.graph.dispatchFrom('@desktop-controller', 'control', payload.command, payload.session_id, { operation_id: payload.command_id, session_id: payload.session_id, requested_at: new Date().toISOString() }, payload.command_id);
+    await this.graph.waitForIdle();
     await this.loadLatestSession(payload.session_id);
     this.emit('ui.session-status', this.sessionProjection());
     const state = this.metadata?.state || (payload.command === 'session.record' ? 'recording' : 'stopped');
@@ -176,8 +208,27 @@ export class DesktopApplication {
     await this.loadLatestSession(sessionId);
     this.transcript = [];
     this.loggedItems = [];
+    this.emit('ui.session-status', this.sessionProjection());
     return this.accepted({ ...payload, session_id: sessionId }, 'runtime/session-lifecycle', sessionId, this.metadata?.revision, 'New Session accepted by the session lifecycle owner.');
   }
+
+  async dispatchAudioFlush(sessionId, payload, idempotencyKey) {
+    if (sessionId !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${sessionId}`), { code: 'SESSION_NOT_FOUND' });
+    return this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', sessionId, payload, idempotencyKey);
+  }
+
+  async waitForAudioIdle() {
+    if (this.audioInFlight === 0) return;
+    await new Promise((resolve) => this.audioIdleWaiters.add(resolve));
+  }
+
+  resolveAudioIdleWaiters() {
+    if (this.audioInFlight !== 0) return;
+    for (const resolve of this.audioIdleWaiters) resolve();
+    this.audioIdleWaiters.clear();
+  }
+
+  ignoredAudioResult(sessionId) { return { accepted: false, ignored: true, code: 'SHUTDOWN_IN_PROGRESS', session_id: sessionId, reason: 'Application shutdown is in progress.' }; }
 
   async copyCommand(payload) {
     const { transcriptSegments, loggedItems } = await this.storageProjections();
@@ -219,13 +270,31 @@ export class DesktopApplication {
     } else { this.transcript = []; this.loggedItems = []; }
   }
 
+  async recoverUncleanRecordings() {
+    const entries = await readdir(this.sessionRoot, { withFileTypes: true }).catch(() => []);
+    const recordings = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const metadata = await this.storage.readMetadata(entry.name).catch(() => undefined);
+      if (metadata?.state === 'recording') recordings.push(metadata.session_id);
+    }
+    for (const sessionId of recordings) {
+      await this.graph.dispatchFrom('@desktop-controller', 'control', 'session.stop', sessionId, {
+        operation_id: `startup-recovery-${sessionId}-${randomUUID()}`,
+        session_id: sessionId,
+        requested_at: new Date().toISOString()
+      }, `startup-recovery:${sessionId}:${randomUUID()}`);
+    }
+    if (recordings.length) await this.graph.waitForIdle();
+  }
+
   sessionProjection() {
     const metadata = this.metadata;
     const state = metadata?.state || 'stopped';
     const createdAt = metadata?.created_at || new Date().toISOString();
-    const end = metadata?.closed_at || metadata?.stopped_at || new Date().toISOString();
-    const duration = Math.max(0, Math.floor((Date.parse(end) - Date.parse(createdAt)) / 1000));
-    const elapsed = state === 'recording' ? Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 1000)) : duration;
+    const elapsedMs = calculateRecordingDurationMs(metadata, Date.now());
+    const duration = Math.max(0, Math.floor(elapsedMs / 1000));
+    const elapsed = duration;
     return { session_id: this.sessionId, state, elapsed_seconds: elapsed, created_at: createdAt, duration_seconds: duration, transcript_count: this.transcript.length, logged_item_count: this.loggedItems.length };
   }
 

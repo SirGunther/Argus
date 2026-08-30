@@ -3,6 +3,24 @@ import { fingerprintValue, FINALIZATION_PHASES, SessionStorage, SessionStorageEr
 export const SESSION_METADATA_VERSION = '1.0.0';
 const ACTIVE_CACHE_LIMIT = 32;
 
+export function calculateRecordingDurationMs(metadata, nowMs = Date.now()) {
+  let total = 0;
+  let activeStartMs = Date.parse(metadata?.started_at || metadata?.created_at);
+  const operations = Object.values(metadata?.operations || {}).sort((a, b) => Date.parse(a.outcome?.completed_at) - Date.parse(b.outcome?.completed_at));
+  for (const operation of operations) {
+    const completedMs = Date.parse(operation.outcome?.completed_at);
+    if (!Number.isFinite(completedMs)) continue;
+    if (operation.operation === 'session.stop' || operation.operation === 'session.close') {
+      if (Number.isFinite(activeStartMs)) total += Math.max(0, completedMs - activeStartMs);
+      activeStartMs = undefined;
+    } else if (operation.operation === 'session.resume') {
+      activeStartMs = completedMs;
+    }
+  }
+  if (metadata?.state === 'recording' && Number.isFinite(activeStartMs)) total += Math.max(0, nowMs - activeStartMs);
+  return total;
+}
+
 export class SessionLifecycleError extends Error {
   constructor(code, message, { retryable = false, rejected = false, details } = {}) {
     super(message);

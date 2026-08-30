@@ -1,27 +1,24 @@
 import { createHash } from 'node:crypto';
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
 import { resolveSessionRoot } from '../../runtime/session-storage.mjs';
 
 const SERVICE = 'whisper-cpp-stt';
-const WINDOW_CHUNKS = 8;
 const MAX_WINDOW_CHUNKS = 120;
 const stateBySession = new Map();
 
 runLineService({ service: SERVICE, operations: {
-  'audio.chunk': { name: 'transcribe-whisper-window', async handle(message) {
+  'audio.chunk': { name: 'buffer-whisper-audio', async handle(message) {
     const chunk = message.payload;
     validateChunk(chunk);
     const state = stateFor(chunk.session_id);
     if (state.chunkIds.has(chunk.chunk_id)) return [];
+    if (state.chunks.length >= MAX_WINDOW_CHUNKS) throw boundedAudioWindow();
     state.chunkIds.add(chunk.chunk_id);
     state.chunks.push({ ...chunk, bytes: Buffer.from(chunk.audio_base64, 'base64') });
-    while (state.chunks.length > MAX_WINDOW_CHUNKS) state.chunks.shift();
-    if (state.chunks.length < WINDOW_CHUNKS) return [];
-    const result = await transcribe(state);
-    return result.text ? partialOutputs(state, result) : [];
+    return [];
   } },
   'audio.flush': { name: 'finalize-whisper-window', async handle(message) {
     const sessionId = message.payload?.session_id;
@@ -31,27 +28,17 @@ runLineService({ service: SERVICE, operations: {
     const result = await transcribe(state);
     const outputs = result.text ? finalOutputs(state, result, message.payload?.reason || 'flush') : [];
     state.chunks = [];
-    state.lastText = '';
-    state.partialRevision = -1;
     state.chunkIds.clear();
     return outputs;
   } }
-}, async onDrain() {
-  const outputs = [];
-  for (const state of stateBySession.values()) {
-    if (!state.chunks.length) continue;
-    const result = await transcribe(state);
-    if (result.text) outputs.push(...finalOutputs(state, result));
-    state.chunks = [];
-    state.lastText = '';
-    state.partialRevision = -1;
-    state.chunkIds.clear();
-  }
-  return outputs;
+}, async onReady() {
+  if (process.env.ARGUS_SESSION_ROOT) await cleanupAbandonedArtifacts();
+}, onDrain() {
+  return [];
 } });
 
 function stateFor(sessionId) {
-  const state = stateBySession.get(sessionId) || { chunks: [], chunkIds: new Set(), partialRevision: -1, nextWordSequence: 0, nextUtteranceSequence: 0, lastText: '' };
+  const state = stateBySession.get(sessionId) || { chunks: [], chunkIds: new Set(), nextWordSequence: 0, nextUtteranceSequence: 0 };
   stateBySession.set(sessionId, state);
   return state;
 }
@@ -70,7 +57,9 @@ async function transcribe(state) {
   const wav = path.join(tempRoot, `${id}.wav`);
   const outputBase = path.join(tempRoot, `${id}`);
   const outputJson = `${outputBase}.json`;
+  const ownerFile = `${outputBase}.owner.json`;
   try {
+    await writeFile(ownerFile, JSON.stringify({ pid: process.pid, output_base: outputBase }), { flag: 'wx' });
     const bytes = Buffer.concat(state.chunks.map((chunk) => chunk.bytes));
     await writeFile(wav, createWav(bytes, 16000, 1, 16));
     const stderr = await runWhisper(binary, model, wav, outputBase);
@@ -83,23 +72,8 @@ async function transcribe(state) {
     }
     return { text: segments.map((segment) => segment.text).join(' ').replace(/\s+/g, ' ').trim(), segments };
   } finally {
-    await Promise.allSettled([rm(wav, { force: true }), rm(outputJson, { force: true })]);
+    await Promise.allSettled([rm(wav, { force: true }), rm(outputJson, { force: true }), rm(ownerFile, { force: true })]);
   }
-}
-
-function partialOutputs(state, result) {
-  const first = state.chunks[0];
-  const last = state.chunks.at(-1);
-  const revision = state.partialRevision + 1;
-  state.partialRevision = revision;
-  const stable = state.lastText === result.text ? 1 : 0;
-  state.lastText = result.text;
-  return [{ messageType: 'transcript.partial', identityKey: `${SERVICE}:partial:${first.session_id}:${revision}`, payload: {
-    projection_id: `${first.session_id}-whisper-live`, session_id: first.session_id,
-    utterance_id: `${first.session_id}-utterance-${state.nextUtteranceSequence}`, revision,
-    ...(revision ? { replaces_revision: revision - 1 } : {}), start_time: first.start_time, end_time: last.end_time,
-    text: result.text, stability: stable, covered_chunk_ids: state.chunks.map((chunk) => chunk.chunk_id)
-  } }];
 }
 
 function finalOutputs(state, result, reason = 'flush') {
@@ -109,8 +83,8 @@ function finalOutputs(state, result, reason = 'flush') {
   const words = [];
   for (const segment of result.segments) {
     for (const token of segment.tokens) {
-      const text = token.text.trim();
-      if (!text || /^<\|.*\|>$/.test(text)) continue;
+      const text = sanitizeWhisperText(token.text);
+      if (!text || isControlToken(text)) continue;
       const sequence = state.nextWordSequence++;
       words.push({ messageType: 'transcript.word-committed', identityKey: `${SERVICE}:word:${first.session_id}:${sequence}`, payload: {
         word_id: `${first.session_id}-word-${sequence}`, session_id: first.session_id, utterance_id: utteranceId, sequence,
@@ -134,7 +108,7 @@ function parseTranscription(raw) {
   const source = Array.isArray(raw?.transcription) ? raw.transcription : Array.isArray(raw?.segments) ? raw.segments : [];
   if (!source.length) return [];
   return source.map((segment) => {
-    const text = String(segment.text || '').trim();
+    const text = sanitizeWhisperText(segment.text);
     const tokens = (Array.isArray(segment.tokens) ? segment.tokens : []).map((token) => ({
       text: String(token.text || ''), probability: Number(token.p ?? token.probability),
       fromMs: readTimestamp(token.offsets?.from ?? token.timestamps?.from),
@@ -158,7 +132,7 @@ function readTimestamp(value) {
 
 function runWhisper(binary, model, wav, outputBase) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, ['--model', model, '--file', wav, '--output-json-full', '--output-file', outputBase, '--no-prints', '--no-gpu', '--language', 'en'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(binary, ['--model', model, '--file', wav, '--output-json-full', '--output-file', outputBase, '--no-prints', '--no-gpu', '--language', 'en'], { windowsHide: true, shell: /\.(?:cmd|bat)$/i.test(binary), stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.once('error', (error) => reject(unavailable(`Unable to start whisper.cpp: ${error.message}`)));
@@ -190,6 +164,44 @@ function punctuationHint(text) { return text.trim().endsWith('?') ? 'question' :
 function invalid(message) { return new ServiceOperationError(message, { code: 'INVALID_AUDIO_CHUNK', category: 'validation' }); }
 function unavailable(message) { return new ServiceOperationError(message, { code: 'STT_UNAVAILABLE', category: 'dependency', retryable: true }); }
 function malformed(message, stderr) { return new ServiceOperationError(`${message}${stderr ? ` Diagnostic: ${stderr.trim()}` : ''}`, { code: 'STT_MALFORMED_OUTPUT', category: 'validation', retryable: true }); }
+function boundedAudioWindow() { return new ServiceOperationError(`Whisper audio buffer reached its governed ${MAX_WINDOW_CHUNKS}-chunk limit; stop or pause recording to finalize it before continuing.`, { code: 'AUDIO_WINDOW_LIMIT', category: 'resource' }); }
+
+const CONTROL_TOKEN_PATTERN = /<\|[^|]*\|>|\[\*[^\]]+\*\]|\[_[^\]]+\]/g;
+const CONTROL_TOKEN_EXACT = /^(?:<\|[^|]*\|>|\[\*[^\]]+\*\]|\[_[^\]]+\])$/;
+function sanitizeWhisperText(text) { return String(text || '').replace(CONTROL_TOKEN_PATTERN, '').replace(/\s+/g, ' ').trim(); }
+function isControlToken(text) { return CONTROL_TOKEN_EXACT.test(String(text || '').trim()); }
+
+async function cleanupAbandonedArtifacts() {
+  const root = resolveSessionRoot();
+  const tempRoot = path.join(root, '.argus-stt');
+  try {
+    const info = await lstat(tempRoot);
+    if (info.isSymbolicLink() || !info.isDirectory()) return;
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  const entries = await readdir(tempRoot, { withFileTypes: true });
+  const owned = new Set();
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.owner.json')) continue;
+    const ownerPath = path.join(tempRoot, entry.name);
+    let owner;
+    try { owner = JSON.parse(await readFile(ownerPath, 'utf8')); } catch { owner = undefined; }
+    if (owner?.pid && processAlive(owner.pid)) owned.add(String(owner.output_base || '').trim());
+    else await rm(ownerPath, { force: true });
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^[0-9]+-[0-9]+-[0-9a-f]+\.(?:wav|json)$/.test(entry.name)) continue;
+    const filePath = path.join(tempRoot, entry.name);
+    const outputBase = filePath.replace(/\.(?:wav|json)$/, '');
+    if (!owned.has(outputBase)) await rm(filePath, { force: true });
+  }
+}
+
+function processAlive(pid) {
+  try { process.kill(Number(pid), 0); return true; } catch (error) { return error.code === 'EPERM'; }
+}
 
 async function assertAssetReadable(label, assetPath) {
   try {
