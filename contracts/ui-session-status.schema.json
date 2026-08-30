@@ -16,6 +16,8 @@
       "properties": {
         "state": { "enum": ["listening", "queued", "transcribing", "delayed", "error"] },
         "queue_depth": { "type": "integer", "minimum": 0 },
+        "capture_state": { "enum": ["idle", "listening"] },
+        "transcription_state": { "enum": ["idle", "queued", "transcribing", "delayed", "error"] },
         "detail": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false

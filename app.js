@@ -24,7 +24,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   const els = {
     template: document.querySelector('#rowTemplate'), transcriptList: document.querySelector('#transcriptList'), derivedList: document.querySelector('#derivedList'),
     transcriptScroll: document.querySelector('#transcriptScroll'), derivedScroll: document.querySelector('#derivedScroll'), transcriptCount: document.querySelector('#transcriptCount'), derivedCount: document.querySelector('#derivedCount'),
-    recordButton: document.querySelector('#recordButton'), stopButton: document.querySelector('#stopButton'), closeSessionButton: document.querySelector('#closeSessionButton'), captureStatus: document.querySelector('#captureStatus'), captureStatusText: document.querySelector('#captureStatusText'), sessionStateDot: document.querySelector('#sessionStateDot'), elapsedTime: document.querySelector('#elapsedTime'), sessionIdentity: document.querySelector('#sessionIdentity'),
+    recordButton: document.querySelector('#recordButton'), stopButton: document.querySelector('#stopButton'), closeSessionButton: document.querySelector('#closeSessionButton'), captureStatus: document.querySelector('#captureStatus'), captureStatusText: document.querySelector('#captureStatusText'), transcriptionStatus: document.querySelector('#transcriptionStatus'), transcriptionStatusText: document.querySelector('#transcriptionStatusText'), sessionStateDot: document.querySelector('#sessionStateDot'), elapsedTime: document.querySelector('#elapsedTime'), sessionIdentity: document.querySelector('#sessionIdentity'),
     saveStatus: document.querySelector('#saveStatus'), saveStatusText: document.querySelector('#saveStatusText'), transcriptJump: document.querySelector('#transcriptJump'), derivedJump: document.querySelector('#derivedJump'), transcriptNewCount: document.querySelector('#transcriptNewCount'), derivedNewCount: document.querySelector('#derivedNewCount'),
     sessionDrawer: document.querySelector('#sessionDrawer'), closeModal: document.querySelector('#closeModal'), drawerState: document.querySelector('#drawerState'), drawerDuration: document.querySelector('#drawerDuration'), drawerEntries: document.querySelector('#drawerEntries'), finalTranscriptCount: document.querySelector('#finalTranscriptCount'), finalDerivedCount: document.querySelector('#finalDerivedCount'), toastRegion: document.querySelector('#toastRegion'), serviceStatusList: document.querySelector('#serviceStatusList'),
     audioInputControl: document.querySelector('#audioInputControl'), audioInputSelect: document.querySelector('#audioInputSelect'), audioInputRefresh: document.querySelector('#audioInputRefresh'), audioInputStatus: document.querySelector('#audioInputStatus'),
@@ -419,7 +419,8 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     const processing = state.sessionAction === 'session.stop' || state.sessionAction === 'session.close';
     const starting = state.starting;
     const audioProcessing = state.session.audio_processing || { state: 'listening', queue_depth: 0 };
-    const audioLabel = formatAudioProcessing(audioProcessing);
+    const captureState = processing ? 'idle' : audioProcessing.capture_state || (recording ? 'listening' : 'idle');
+    const transcriptionState = audioProcessing.transcription_state || (audioProcessing.state === 'listening' ? 'idle' : audioProcessing.state || 'idle');
     els.sessionIdentity.textContent = `Session ${state.session.session_id}`;
     els.recordButton.classList.toggle('active', recording);
     els.recordButton.disabled = recording || starting || processing;
@@ -427,8 +428,10 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     els.closeSessionButton.disabled = closed || starting || processing;
     els.recordButton.title = starting ? 'Waiting for the new recording session to be accepted' : closed ? 'Start a new session' : recording ? 'Recording from the physical microphone' : 'Start recording for this session';
     els.recordButton.querySelector('span:last-child').textContent = starting ? 'Starting' : recording ? 'Recording' : closed ? 'New Session' : (desktop && !state.newSession ? 'Resume' : 'Record');
-    els.captureStatus.className = `capture-status ${starting ? 'starting' : recording ? `recording ${audioProcessing.state}` : closed ? 'closed' : ''}`.trim();
-    els.captureStatusText.textContent = starting ? 'Starting · Waiting for command acceptance' : processing ? `Finishing accepted audio · ${audioLabel}` : recording ? audioLabel : closed ? 'Session finalized' : 'Session stopped · Ready to resume';
+    els.captureStatus.className = `capture-status ${starting ? 'starting' : captureState === 'listening' ? 'listening' : closed ? 'closed' : 'idle'}`.trim();
+    els.captureStatusText.textContent = starting ? 'Starting · Waiting for command acceptance' : closed ? 'Session finalized' : captureState === 'listening' ? 'Listening' : 'Idle';
+    els.transcriptionStatus.className = `transcription-status ${transcriptionState}`;
+    els.transcriptionStatusText.textContent = formatTranscriptionProcessing({ ...audioProcessing, state: transcriptionState });
     els.sessionStateDot.className = `session-state-dot ${recording ? 'recording' : closed ? 'closed' : ''}`;
     els.drawerState.textContent = starting ? 'Starting · Awaiting acceptance' : recording ? 'Recording · Live' : closed ? 'Finalized · Complete' : 'Stopped · Ready to resume';
     const elapsed = timer.current();
@@ -437,11 +440,11 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     renderAudioInput();
   }
 
-  function formatAudioProcessing(processing) {
-    const labels = { listening: 'Listening', queued: 'Queued', transcribing: 'Transcribing', delayed: 'Delayed', error: 'Error' };
-    const label = labels[processing.state] || 'Listening';
+  function formatTranscriptionProcessing(processing) {
+    const labels = { idle: 'Idle', queued: 'Queued', transcribing: 'Transcribing', delayed: 'Delayed', error: 'Error' };
+    const label = labels[processing.state] || 'Idle';
     const queueDepth = Number(processing.queue_depth) || 0;
-    if (processing.state === 'error' || processing.state === 'delayed') return `${label} · ${processing.detail || 'Audio processing needs attention'}`;
+    if (processing.state === 'error' || processing.state === 'delayed') return `${label} · ${processing.detail || 'Audio processing needs attention'}${queueDepth ? ` · ${queueDepth} queued` : ''}`;
     if (processing.state === 'queued') return `${label} · ${queueDepth} utterance${queueDepth === 1 ? '' : 's'} pending`;
     if (processing.state === 'transcribing' && queueDepth > 0) return `${label} · ${queueDepth} queued`;
     return label;

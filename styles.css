@@ -62,7 +62,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 }
 
 .brand-block, .brand-line, .capture-controls, .pane-title-line, .pane-actions,
-.status-cluster, .footer-actions, .capture-status, .save-status, .folder-button,
+.status-cluster, .footer-actions, .capture-status, .transcription-status, .save-status, .folder-button,
 .timestamp-toggle, .session-card-top { display: flex; align-items: center; }
 
 .brand-block { gap: 13px; }
@@ -360,15 +360,17 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .audio-input-status.error { color: #f19a93; }
 .audio-input-status.ready { color: #b5d887; }
 .status-cluster, .footer-actions { height: 100%; gap: 13px; }
-.capture-status, .save-status, .folder-button, .timestamp-toggle { gap: 7px; }
+.capture-status, .transcription-status, .save-status, .folder-button, .timestamp-toggle { gap: 7px; }
 .status-pulse { width: 7px; height: 7px; border: 1px solid var(--amber); border-radius: 50%; }
-.capture-status.recording { color: #ffaaa4; }
-.capture-status.recording.queued { color: var(--amber); }
-.capture-status.recording.transcribing { color: #b9d5ff; }
-.capture-status.recording.delayed, .capture-status.recording.error { color: #f19a93; }
+.capture-status.listening { color: #ffaaa4; }
 .capture-status.starting { color: var(--amber); }
-.capture-status.recording .status-pulse { border: 0; background: var(--red); box-shadow: 0 0 0 4px rgba(255, 101, 92, .1); animation: pulseRing 1.8s ease infinite; }
+.capture-status.listening .status-pulse { border: 0; background: var(--red); box-shadow: 0 0 0 4px rgba(255, 101, 92, .1); animation: pulseRing 1.8s ease infinite; }
 .capture-status.closed .status-pulse { border-color: var(--text-muted); background: var(--text-muted); }
+.transcription-label { color: var(--text-muted); font: 500 8px/1 var(--mono); letter-spacing: .08em; }
+.transcription-status.idle { color: var(--text-muted); }
+.transcription-status.queued { color: var(--amber); }
+.transcription-status.transcribing { color: #b9d5ff; }
+.transcription-status.delayed, .transcription-status.error { color: #f19a93; }
 .save-status svg { width: 13px; height: 13px; color: var(--accent); }
 .save-status.saving svg { animation: saveSpin .7s linear infinite; }
 .status-divider { width: 1px; height: 16px; background: var(--line); }

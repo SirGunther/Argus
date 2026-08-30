@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.9.0`
+- Catalog version: `1.10.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -64,7 +64,7 @@
 | `session.folder-located` | control | `1.2.0` | `runtime/session-folder-locator` | 16 KiB |
 | `ui.command` | control | `1.0.0` | `ui/bridge` | 32 KiB |
 | `ui.command-result` | control | `1.0.0` | `ui/bridge` | 16 KiB |
-| `ui.session-status` | domain | `1.1.0` | `ui/projection` | 16 KiB |
+| `ui.session-status` | domain | `1.2.0` | `ui/projection` | 16 KiB |
 | `ui.transcript-row` | domain | `1.0.0` | `ui/projection` | 32 KiB |
 | `ui.logged-item-row` | domain | `1.0.0` | `ui/projection` | 32 KiB |
 | `ui.service-status` | control | `1.0.0` | `ui/projection` | 16 KiB |
@@ -980,7 +980,7 @@
 ## `ui.session-status`
 
 - Plane: `domain`
-- Version: `1.1.0`
+- Version: `1.2.0`
 - Owner: `ui/projection`
 - Schema: [`ui-session-status.schema.json`](../ui-session-status.schema.json)
 - History: [`history/ui.session-status.md`](../history/ui.session-status.md)

@@ -5,7 +5,7 @@ import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from 
 
 const root = new URL('..', import.meta.url);
 
-function installRendererAudioStubs(getUserMedia) {
+function installRendererAudioStubs(getUserMedia, { onWorklet } = {}) {
   const original = {
     navigator: globalThis.navigator,
     AudioContext: globalThis.AudioContext,
@@ -18,6 +18,7 @@ function installRendererAudioStubs(getUserMedia) {
     async close() {}
   } });
   Object.defineProperty(globalThis, 'AudioWorkletNode', { configurable: true, writable: true, value: class {
+    constructor() { onWorklet?.(this); }
     port = { onmessage: null };
     connect() {}
     disconnect() {}
@@ -31,6 +32,48 @@ function installRendererAudioStubs(getUserMedia) {
     else Object.defineProperty(globalThis, 'AudioWorkletNode', { configurable: true, writable: true, value: original.AudioWorkletNode });
   };
 }
+
+test('pause closes the renderer boundary before delayed flush acceptance and resumes a new boundary', async () => {
+  let worklet;
+  let releaseFirstFlush;
+  let firstFlushStarted;
+  const flushStarted = new Promise((resolve) => { firstFlushStarted = resolve; });
+  const chunks = [];
+  const flushes = [];
+  const restore = installRendererAudioStubs(async () => ({ getTracks: () => [{ stop() {} }] }), { onWorklet: (value) => { worklet = value; } });
+  try {
+    let first = true;
+    const capture = createAudioCapture({
+      pauseThresholdMs: 250,
+      sendAudioChunk: async (chunk) => { chunks.push(chunk.sequence); },
+      sendAudioFlush: async (payload) => {
+        flushes.push(payload);
+        if (!first) return;
+        first = false;
+        firstFlushStarted();
+        await new Promise((resolve) => { releaseFirstFlush = resolve; });
+      }
+    });
+    await capture.start('boundary-reset-session');
+    const samples = (value) => worklet.port.onmessage({ data: new Float32Array(4096).fill(value) });
+
+    samples(0.1);
+    samples(0);
+    await flushStarted;
+    // The first flush is deliberately held. Resumed speech must be recognized
+    // as a new boundary and queue a second flush instead of being suppressed.
+    samples(0.1);
+    samples(0);
+    releaseFirstFlush();
+    await capture.stop();
+
+    assert.deepEqual(chunks, [0, 1, 2, 3]);
+    assert.equal(flushes.length, 2);
+    assert.deepEqual(flushes.map((flush) => flush.reason), ['pause', 'pause']);
+  } finally {
+    restore();
+  }
+});
 
 test('the selected device ID reaches getUserMedia with the governed PCM capture settings', async () => {
   const calls = [];

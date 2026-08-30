@@ -138,9 +138,11 @@ export class DesktopApplication {
     if (chunk?.session_id !== this.sessionId) throw Object.assign(new Error(`Unknown active session ${chunk?.session_id}`), { code: 'SESSION_NOT_FOUND' });
     if (this.audioProcessingError) throw this.audioProcessingError;
     if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length >= MAX_AUDIO_QUEUE_ITEMS) throw this.audioBackpressure('Audio processing queue is full; capture must pause briefly.');
-    if (this.audioCurrentUtterance.length >= MAX_UTTERANCE_CHUNKS) throw this.audioBackpressure('The current utterance reached its governed 120-chunk limit; pause to finalize it before continuing.');
     this.audioProcessingOverride = undefined;
     const snapshot = freezeAudioChunk(chunk);
+    if (this.audioCurrentUtterance.length >= MAX_UTTERANCE_CHUNKS) {
+      this.enqueueCurrentUtterance(`${chunk.session_id}:audio.rollover:${this.audioCurrentUtterance[0].sequence}`);
+    }
     this.audioCurrentUtterance.push(snapshot);
     this.updateAudioProcessing();
     return { accepted: true, sequence: chunk.sequence };
@@ -247,10 +249,16 @@ export class DesktopApplication {
     if (this.shuttingDown && !allowShutdown) return this.ignoredAudioResult(sessionId);
     if (this.audioProcessingError) throw this.audioProcessingError;
     if (!this.audioCurrentUtterance.length) return { accepted: true, session_id: sessionId, queued: false };
-    if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length > MAX_AUDIO_QUEUE_ITEMS || this.audioQueuedUtterances >= MAX_AUDIO_UTTERANCES) throw this.audioBackpressure('Audio utterance queue is full; capture must pause briefly.');
     this.audioProcessingOverride = undefined;
+    const queued = this.enqueueCurrentUtterance(idempotencyKey, payload);
+    return { accepted: true, session_id: sessionId, queued, ...(queued ? { queue_depth: this.audioQueuedUtterances } : {}) };
+  }
+
+  enqueueCurrentUtterance(idempotencyKey, payload = {}) {
+    if (!this.audioCurrentUtterance.length) return false;
+    if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length > MAX_AUDIO_QUEUE_ITEMS || this.audioQueuedUtterances >= MAX_AUDIO_UTTERANCES) throw this.audioBackpressure('Audio utterance queue is full; capture must pause briefly.');
     const utterance = Object.freeze({
-      session_id: sessionId,
+      session_id: this.sessionId,
       chunks: Object.freeze(this.audioCurrentUtterance.slice()),
       requested_at: payload.requested_at || new Date().toISOString(),
       ...(payload.reason === 'pause' ? { reason: 'pause' } : {})
@@ -259,7 +267,7 @@ export class DesktopApplication {
     this.audioQueuedUtterances += 1;
     this.audioQueuedChunkCount += utterance.chunks.length;
     this.enqueueAudioWork({ utterance, idempotencyKey });
-    return { accepted: true, session_id: sessionId, queued: true, queue_depth: this.audioQueuedUtterances };
+    return true;
   }
 
   enqueueAudioWork(work) {
@@ -333,11 +341,14 @@ export class DesktopApplication {
   }
 
   audioProcessingSnapshot(forcedState, detail) {
-    const queueDepth = this.audioQueuedUtterances + (this.audioPreparingUtterance ? 1 : 0);
-    const state = forcedState || this.audioProcessingOverride?.state || (this.audioProcessingError ? 'error' : this.audioActiveFlush ? 'transcribing' : queueDepth ? (queueDepth >= DELAYED_AUDIO_UTTERANCES ? 'delayed' : 'queued') : 'listening');
+    const queueDepth = this.audioQueuedUtterances;
+    const transcriptionState = forcedState || this.audioProcessingOverride?.state || (this.audioProcessingError ? 'error' : this.audioActiveFlush ? 'transcribing' : queueDepth ? (queueDepth >= DELAYED_AUDIO_UTTERANCES ? 'delayed' : 'queued') : 'idle');
+    const captureState = this.metadata?.state === 'recording' && !this.shuttingDown ? 'listening' : 'idle';
     return {
-      state,
+      state: transcriptionState === 'idle' ? 'listening' : transcriptionState,
       queue_depth: queueDepth,
+      capture_state: captureState,
+      transcription_state: transcriptionState,
       ...(detail || this.audioProcessingOverride?.detail || this.audioProcessingError ? { detail: detail || this.audioProcessingOverride?.detail || this.audioProcessingError.message } : {})
     };
   }

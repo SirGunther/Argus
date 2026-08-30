@@ -64,7 +64,6 @@ export function createAudioCapture({
   const pendingTasks = new Set();
   let buffer = [];
   let stopping = false;
-  let flushQueued = false;
   let speechSamples = 0;
   let silenceSamples = 0;
   let speechDetected = false;
@@ -112,7 +111,6 @@ export function createAudioCapture({
       sampleCount = 0;
       ingressTail = Promise.resolve();
       pendingTasks.clear();
-      flushQueued = false;
       speechSamples = 0;
       silenceSamples = 0;
       speechDetected = false;
@@ -155,16 +153,17 @@ export function createAudioCapture({
   }
 
   function enqueuePauseFlush() {
-    if (flushQueued || !sessionId) return;
-    flushQueued = true;
+    if (!sessionId) return;
+    // Close this boundary before awaiting the ordered IPC tail. New speech can
+    // therefore form the next immutable host utterance while Whisper drains
+    // the snapshot represented by this flush.
+    speechSamples = 0;
+    silenceSamples = 0;
+    speechDetected = false;
     const previousChunks = ingressTail;
-    const task = previousChunks.then(async () => {
-      await sendAudioFlush({ session_id: sessionId, requested_at: new Date().toISOString(), reason: 'pause' });
-      speechSamples = 0;
-      silenceSamples = 0;
-      speechDetected = false;
-      flushQueued = false;
-    }).catch(handleFailure);
+    const task = previousChunks
+      .then(() => sendAudioFlush({ session_id: sessionId, requested_at: new Date().toISOString(), reason: 'pause' }))
+      .catch(handleFailure);
     ingressTail = task.catch(() => {});
     trackTask(task);
   }

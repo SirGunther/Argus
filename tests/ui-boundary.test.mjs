@@ -21,6 +21,23 @@ test('Phase 7 projection contracts accept valid messages and reject missing exac
   assert.throws(() => boundary.assertProjection(missing), /Contract validation failed/);
 });
 
+test('session status keeps legacy fields and exposes independent capture/transcription state', async () => {
+  const boundary = await createUiContractBoundary(root);
+  const message = boundary.projection('ui.session-status', {
+    session_id: 'ui-audio-session', state: 'recording', elapsed_seconds: 2, created_at: '2026-08-30T00:00:00.000Z',
+    duration_seconds: 2, transcript_count: 0, logged_item_count: 0,
+    audio_processing: { state: 'transcribing', queue_depth: 1, capture_state: 'listening', transcription_state: 'transcribing' }
+  }, 'ui-audio-session');
+  assert.equal(message.schema_version, '1.2.0');
+  assert.deepEqual(boundary.registry.validateEnvelope(message), []);
+  assert.equal(message.payload.audio_processing.capture_state, 'listening');
+  assert.equal(message.payload.audio_processing.transcription_state, 'transcribing');
+  const legacy = structuredClone(message);
+  legacy.schema_version = '1.0.0';
+  delete legacy.payload.audio_processing;
+  assert.deepEqual(boundary.registry.validateEnvelope(legacy), []);
+});
+
 test('UI command validation is closed over supported commands and rejects arbitrary paths', async () => {
   const boundary = await createUiContractBoundary(root);
   assert.doesNotThrow(() => boundary.assertCommand({ command_id: 'cmd-1', session_id: 'ui-test-session', command: 'open-folder' }));

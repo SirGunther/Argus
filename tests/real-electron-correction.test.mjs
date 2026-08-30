@@ -53,7 +53,7 @@ test('New Session emits an authoritative recording projection for its new identi
   assert.equal(result.command, 'session.new');
   assert.equal(result.status, 'accepted');
   assert.equal(result.session_id, application.sessionId);
-  assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0, audio_processing: { state: 'listening', queue_depth: 0 } } });
+  assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0, audio_processing: { state: 'listening', queue_depth: 0, capture_state: 'listening', transcription_state: 'idle' } } });
 });
 
 test('delayed transcription accepts later chunks and completes FIFO without mixing utterances', async () => {
@@ -120,6 +120,61 @@ test('delayed transcription accepts later chunks and completes FIFO without mixi
   assert.deepEqual(completedUtterances, [[0, 1], [2, 3]]);
   assert.equal(maxConcurrentTranscriptions, 1);
   assert.ok(projections.some((message) => message.payload.audio_processing?.state === 'queued' || message.payload.audio_processing?.queue_depth > 0));
+});
+
+test('sustained capture rolls over after 120 chunks without dropping or mixing audio', async () => {
+  const sessionId = 'size-rollover-session';
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-rollover-${Date.now()}`) });
+  application.sessionId = sessionId;
+  application.metadata = { session_id: sessionId, state: 'recording', revision: 1, created_at: '2026-08-30T00:00:00.000Z', started_at: '2026-08-30T00:00:00.000Z' };
+  const serviceChunks = [];
+  const completedUtterances = [];
+  let activeTranscriptions = 0;
+  let maxConcurrentTranscriptions = 0;
+  let releaseFirstFlush;
+  let firstFlushStarted;
+  const firstFlush = new Promise((resolve) => { firstFlushStarted = resolve; });
+  application.graph = {
+    closed: false,
+    async dispatchFrom(_from, _plane, type, _correlationId, payload) {
+      if (type === 'audio.chunk') {
+        serviceChunks.push(payload.sequence);
+        return;
+      }
+      if (type !== 'audio.flush') return;
+      const utterance = serviceChunks.splice(0);
+      activeTranscriptions += 1;
+      maxConcurrentTranscriptions = Math.max(maxConcurrentTranscriptions, activeTranscriptions);
+      try {
+        if (!releaseFirstFlush) {
+          firstFlushStarted();
+          await new Promise((resolve) => { releaseFirstFlush = resolve; });
+        }
+        completedUtterances.push(utterance);
+      } finally {
+        activeTranscriptions -= 1;
+      }
+    }
+  };
+
+  const chunk = (sequence) => ({
+    chunk_id: `${sessionId}-chunk-${sequence}`, session_id: sessionId, sequence,
+    start_time: '00:00:00.000', end_time: '00:00:00.256',
+    format: { encoding: 'pcm-signed-integer', sample_rate_hz: 16000, channels: 1, bits_per_sample: 16, byte_order: 'little-endian' },
+    sample_count: 2, byte_length: 4, audio_base64: 'AAABAA==', checksum: 'sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93'
+  });
+
+  // Deterministic delayed-Whisper coverage only; no physical microphone is simulated.
+  for (let sequence = 0; sequence <= 120; sequence += 1) await application.acceptAudioChunk(chunk(sequence));
+  await firstFlush;
+  assert.equal(application.audioCurrentUtterance.length, 1);
+  assert.equal((await application.acceptAudioFlush({ session_id: sessionId, reason: 'pause' })).queued, true);
+  releaseFirstFlush();
+  await application.waitForAudioIdle();
+
+  assert.deepEqual(completedUtterances, [Array.from({ length: 120 }, (_, sequence) => sequence), [120]]);
+  assert.equal(maxConcurrentTranscriptions, 1);
+  assert.equal(application.audioProcessingError, undefined);
 });
 
 test('startup recovery routes an unclean recording through the lifecycle owner and preserves duration', async () => {
