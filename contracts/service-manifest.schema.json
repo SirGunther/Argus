@@ -53,7 +53,7 @@
         "filesystem": {
           "type": "object",
           "properties": {
-            "read": { "type": "array", "uniqueItems": true, "items": { "enum": ["session-root"] } },
+            "read": { "type": "array", "uniqueItems": true, "items": { "enum": ["session-root", "stt-runtime"] } },
             "write": { "type": "array", "uniqueItems": true, "items": { "enum": ["session-root"] } }
           },
           "additionalProperties": false
@@ -144,5 +144,54 @@
       "items": { "type": "string", "minLength": 1 }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["permissions", "runtime"],
+        "properties": {
+          "runtime": {
+            "type": "object",
+            "properties": { "kind": { "const": "node" } }
+          },
+          "permissions": {
+            "type": "object",
+            "required": ["filesystem"],
+            "properties": {
+              "filesystem": {
+                "type": "object",
+                "required": ["read"],
+                "properties": {
+                  "read": { "type": "array", "contains": { "const": "stt-runtime" } }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "runtime": {
+            "type": "object",
+            "required": ["environment"],
+            "properties": {
+              "environment": {
+                "type": "object",
+                "required": ["allow"],
+                "properties": {
+                  "allow": {
+                    "type": "array",
+                    "allOf": [
+                      { "contains": { "const": "ARGUS_WHISPER_BINARY" } },
+                      { "contains": { "const": "ARGUS_WHISPER_MODEL" } }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": false
 }

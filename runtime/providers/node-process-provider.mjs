@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import readline from 'node:readline';
+import path from 'node:path';
 import {
   CREDENTIAL_KEY_PATTERN,
   DENIED_PERMISSIONS,
@@ -15,10 +17,15 @@ export function createNodeProcessProvider() {
     /** Flags this provider can honor, published so an enforcement claim can be checked against reality. */
     enforcedRestrictions: Object.freeze(['filesystem-read', 'filesystem-write', 'child-process', 'worker', 'addons', 'wasi', 'heap-ceiling', 'environment-allowlist']),
     plan(instance, environment = process.env) {
-      return resolveNodePermissionPlan({ manifest: instance.manifest, directory: instance.directory, environment });
+      return resolveNodePermissionPlan({
+        manifest: instance.manifest,
+        directory: instance.directory,
+        environment,
+        sttRuntimePaths: resolveNodeSttRuntimePaths(instance.manifest, environment)
+      });
     },
     start(instance, events) {
-      const plan = resolveNodePermissionPlan({ manifest: instance.manifest, directory: instance.directory, environment: process.env });
+      const plan = this.plan(instance, process.env);
       const runtime = resolveNodeRuntime();
       const childEnvironment = buildNodeEnvironment(process.env, instance.manifest.runtime.environment?.allow || [], instance.id, instance.restartCount, plan.permissions);
       if (runtime.runAsNode) childEnvironment.ELECTRON_RUN_AS_NODE = '1';
@@ -66,6 +73,15 @@ export function createNodeProcessProvider() {
   };
 }
 
+/** Map the host-neutral STT scope to only the two canonical provisioned asset files. */
+export function resolveNodeSttRuntimePaths(manifest, environment = process.env) {
+  const allowed = manifest.runtime?.environment?.allow || [];
+  if (!allowed.includes('ARGUS_WHISPER_BINARY') || !allowed.includes('ARGUS_WHISPER_MODEL')) return [];
+  const binary = canonicalConfiguredFile(environment.ARGUS_WHISPER_BINARY);
+  const model = canonicalConfiguredFile(environment.ARGUS_WHISPER_MODEL);
+  return binary && model ? [binary, model] : [];
+}
+
 /**
  * Electron's main process reports its own executable as process.execPath. The packaged app still
  * uses the same governed Node services, so ask the packaged Electron binary to run its embedded
@@ -106,4 +122,10 @@ export function buildNodeEnvironment(baseEnvironment, allowedKeys, instanceId, r
   environment[instanceKey] = instanceId;
   environment[restartKey] = String(restartCount || 0);
   return environment;
+}
+
+function canonicalConfiguredFile(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const resolved = path.resolve(value.trim());
+  try { return realpathSync.native(resolved); } catch { return resolved; }
 }

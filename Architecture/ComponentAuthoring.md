@@ -54,7 +54,7 @@ The runtime validates this against `contracts/service-manifest.schema.json`. Acc
 
 | Class | Shape | Notes |
 | --- | --- | --- |
-| `filesystem` | `{ "read": ["session-root"], "write": ["session-root"] }` | `session-root` is the only declarable scope. Raw host paths are never accepted, so a manifest cannot express traversal. Requires `ARGUS_SESSION_ROOT` in `runtime.environment.allow`. |
+| `filesystem` | `{ "read": ["session-root", "stt-runtime"], "write": ["session-root"] }` | `session-root` is read/write; `stt-runtime` is read-only and maps to the provisioned Whisper executable and model. Raw host paths are never accepted, so a manifest cannot express traversal. Requires the matching environment variables in `runtime.environment.allow`. |
 | `network` | `{ "outbound": ["loopback-http"] }` | Required before `ARGUS_MODEL_ENDPOINT` may be allowlisted. `listen` is refused. |
 | `process`, `worker`, `addons`, `wasi` | `{ "granted": true }` | Mapped to real Node permission flags. |
 | `microphone`, `clipboard`, `model_credentials` | `{ "granted": true }` | **Refused** — no installed provider or host adapter can honor them (`AUD-002`, ADR-017, `SEC-001`). |

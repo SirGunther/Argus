@@ -31,7 +31,8 @@ export const PERMISSION_CLASSES = Object.freeze([
 ]);
 
 /** Only host-neutral named scopes are declarable; raw host paths are never accepted from a manifest. */
-export const FILESYSTEM_SCOPES = Object.freeze(['session-root']);
+export const FILESYSTEM_SCOPES = Object.freeze(['session-root', 'stt-runtime']);
+export const FILESYSTEM_WRITE_SCOPES = Object.freeze(['session-root']);
 export const NETWORK_OUTBOUND_SCOPES = Object.freeze(['loopback-http']);
 
 /**
@@ -136,18 +137,30 @@ export function assertPermissionPolicy({ manifest, manifestPath = '<manifest>' }
   const permissions = normalizePermissions(manifest.permissions);
   const resources = normalizeResources(manifest.resources);
   const kind = manifest.runtime?.kind;
-  const allowedEnvironment = manifest.runtime?.environment?.allow || [];
+  const declaredEnvironment = manifest.runtime?.environment?.allow;
+  const allowedEnvironment = Array.isArray(declaredEnvironment) ? declaredEnvironment : [];
+  if (declaredEnvironment !== undefined && !Array.isArray(declaredEnvironment)) {
+    violations.push('runtime.environment.allow must be an array of environment variable names');
+  }
 
   for (const direction of ['read', 'write']) {
     for (const scope of permissions.filesystem[direction]) {
-      if (!FILESYSTEM_SCOPES.includes(scope)) {
-        violations.push(`filesystem.${direction} scope ${scope} is not a declarable authority; supported scopes are ${FILESYSTEM_SCOPES.join(', ')}`);
+      const supportedScopes = direction === 'read' ? FILESYSTEM_SCOPES : FILESYSTEM_WRITE_SCOPES;
+      if (!supportedScopes.includes(scope)) {
+        violations.push(`filesystem.${direction} scope ${scope} is not a declarable authority; supported scopes are ${supportedScopes.join(', ')}`);
       }
     }
   }
   const sessionScoped = permissions.filesystem.read.includes('session-root') || permissions.filesystem.write.includes('session-root');
   if (sessionScoped && !allowedEnvironment.includes('ARGUS_SESSION_ROOT')) {
     violations.push('filesystem session-root authority requires ARGUS_SESSION_ROOT in runtime.environment.allow; without it the component cannot learn which root it was granted');
+  }
+  if (permissions.filesystem.read.includes('stt-runtime')) {
+    for (const key of ['ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL']) {
+      if (!allowedEnvironment.includes(key)) {
+        violations.push(`filesystem stt-runtime authority requires ${key} in runtime.environment.allow; without it the provider cannot map the named scope to its exact asset`);
+      }
+    }
   }
 
   if (permissions.microphone.granted) {
@@ -218,10 +231,10 @@ export function resolveNodePermissionPlan({
   manifest,
   directory,
   environment = process.env,
-  sharedReadRoots = SHARED_COMPONENT_LIBRARY_ROOTS
+  sharedReadRoots = SHARED_COMPONENT_LIBRARY_ROOTS,
+  sttRuntimePaths = []
 }) {
-  const permissions = normalizePermissions(manifest.permissions);
-  const resources = normalizeResources(manifest.resources);
+  const { permissions, resources } = assertPermissionPolicy({ manifest });
   const allowedEnvironment = manifest.runtime?.environment?.allow || [];
   const reads = [path.resolve(directory), ...sharedReadRoots.map((root) => path.resolve(root))];
   const writes = [];
@@ -235,6 +248,7 @@ export function resolveNodePermissionPlan({
   const sessionRoot = configuredSessionRoot ? canonicalExistingPath(configuredSessionRoot) : null;
   if (permissions.filesystem.read.includes('session-root') && sessionRoot) reads.push(configuredSessionRoot, sessionRoot, path.dirname(configuredSessionRoot), path.dirname(sessionRoot));
   if (permissions.filesystem.write.includes('session-root') && sessionRoot) writes.push(configuredSessionRoot, sessionRoot);
+  if (permissions.filesystem.read.includes('stt-runtime')) reads.push(...sttRuntimePaths);
 
   const execArgv = ['--permission'];
   for (const grantedPath of unique(reads)) execArgv.push(`--allow-fs-read=${grantedPath}`);
@@ -266,7 +280,7 @@ export function resolveNodePermissionPlan({
  * provider can enforce it, so the capability is refused at declaration time instead of simulated.
  */
 export const ENFORCEMENT_MATRIX = Object.freeze([
-  Object.freeze({ capability: 'filesystem.read', enforcement: 'node', mechanism: 'Node --permission with --allow-fs-read limited to the component directory, the shared component libraries, and a granted session root' }),
+  Object.freeze({ capability: 'filesystem.read', enforcement: 'node', mechanism: 'Node --permission with --allow-fs-read limited to the component directory, the shared component libraries, a granted session root, and exact files in a granted stt-runtime scope' }),
   Object.freeze({ capability: 'filesystem.write', enforcement: 'node', mechanism: 'Node --permission with --allow-fs-write; a component with no write grant cannot write anywhere, including its own directory' }),
   Object.freeze({ capability: 'process', enforcement: 'node', mechanism: 'Node --permission denies child processes unless --allow-child-process is granted' }),
   Object.freeze({ capability: 'worker', enforcement: 'node', mechanism: 'Node --permission denies worker threads unless --allow-worker is granted' }),

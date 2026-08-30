@@ -60,8 +60,8 @@ async function transcribe(state) {
   const binary = String(process.env.ARGUS_WHISPER_BINARY || '').trim();
   const model = String(process.env.ARGUS_WHISPER_MODEL || '').trim();
   if (!binary || !model) throw unavailable('ARGUS_WHISPER_BINARY and ARGUS_WHISPER_MODEL are required; run npm run setup:real');
-  try { await access(binary); await access(model); }
-  catch (error) { throw unavailable(`Whisper runtime or model is unavailable: ${error.message}`); }
+  await assertAssetReadable('runtime', binary);
+  await assertAssetReadable('model', model);
 
   const root = resolveSessionRoot();
   const tempRoot = path.join(root, '.argus-stt');
@@ -190,3 +190,16 @@ function punctuationHint(text) { return text.trim().endsWith('?') ? 'question' :
 function invalid(message) { return new ServiceOperationError(message, { code: 'INVALID_AUDIO_CHUNK', category: 'validation' }); }
 function unavailable(message) { return new ServiceOperationError(message, { code: 'STT_UNAVAILABLE', category: 'dependency', retryable: true }); }
 function malformed(message, stderr) { return new ServiceOperationError(`${message}${stderr ? ` Diagnostic: ${stderr.trim()}` : ''}`, { code: 'STT_MALFORMED_OUTPUT', category: 'validation', retryable: true }); }
+
+async function assertAssetReadable(label, assetPath) {
+  try {
+    await access(assetPath);
+  } catch (error) {
+    const reason = error?.code === 'ERR_ACCESS_DENIED'
+      ? 'read permission was denied'
+      : error?.code === 'ENOENT'
+        ? 'the file was not found'
+        : 'the file could not be read';
+    throw unavailable(`Whisper runtime or model is unavailable: provisioned ${label} ${reason} (${assetPath}).`);
+  }
+}

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +26,7 @@ import {
 import { loadGraphDefinition, prepareGraph } from '../runtime/orchestrator.mjs';
 import { RuntimeProviderUnavailableError, createRuntimeProviderRegistry } from '../runtime/runtime-providers.mjs';
 import { buildNodeEnvironment, createNodeProcessProvider } from '../runtime/providers/node-process-provider.mjs';
+import { runService } from './helpers/process-harness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const graphFile = path.join(root, 'wiring/demo.concise.json');
@@ -41,7 +43,7 @@ const EXPECTED_SHIPPED_GRANTS = {
   'permanent-transcript-history': { filesystem: { read: ['session-root'], write: ['session-root'] } },
   'session-lifecycle-controller': { filesystem: { read: ['session-root'], write: ['session-root'] } },
   'session-folder-locator': { filesystem: { read: ['session-root'], write: [] } },
-  'whisper-cpp-stt': { filesystem: { read: ['session-root'], write: ['session-root'] }, process: { granted: true } },
+  'whisper-cpp-stt': { filesystem: { read: ['session-root', 'stt-runtime'], write: ['session-root'] }, process: { granted: true } },
   'serial-ai-model-lane': { network: { outbound: ['loopback-http'], listen: false } }
 };
 
@@ -128,6 +130,35 @@ test('configuration a component is not permitted to use is refused before it is 
     }
   );
   assert.throws(
+    () => assertPermissionPolicy({ manifest: nodeManifest({ permissions: { filesystem: { read: ['stt-runtime'] } } }), manifestPath: 'stt-runtime-missing-environment/service.json' }),
+    (error) => {
+      assert.match(error.message, /filesystem stt-runtime authority requires ARGUS_WHISPER_BINARY/);
+      assert.match(error.message, /filesystem stt-runtime authority requires ARGUS_WHISPER_MODEL/);
+      return true;
+    }
+  );
+  assert.throws(
+    () => assertPermissionPolicy({ manifest: nodeManifest({ permissions: { filesystem: { write: ['stt-runtime'] } }, environment: { allow: ['ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL'] } }), manifestPath: 'stt-runtime-write/service.json' }),
+    (error) => {
+      assert.match(error.message, /filesystem\.write scope stt-runtime is not a declarable authority/);
+      return true;
+    }
+  );
+  assert.throws(
+    () => assertPermissionPolicy({ manifest: nodeManifest({ permissions: { filesystem: { read: ['runtime-output'] } } }), manifestPath: 'stt-runtime-unknown-scope/service.json' }),
+    (error) => {
+      assert.match(error.message, /filesystem\.read scope runtime-output is not a declarable authority/);
+      return true;
+    }
+  );
+  assert.throws(
+    () => assertPermissionPolicy({ manifest: nodeManifest({ environment: { allow: 'ARGUS_WHISPER_BINARY' } }), manifestPath: 'invalid-environment/service.json' }),
+    (error) => {
+      assert.match(error.message, /runtime\.environment\.allow must be an array/);
+      return true;
+    }
+  );
+  assert.throws(
     () => assertPermissionPolicy({ manifest: nodeManifest({ environment: { allow: ['ARGUS_MODEL_API_KEY'] } }), manifestPath: 'credential/service.json' }),
     (error) => {
       assert.equal(error.code, 'PERMISSION_DECLARATION_INVALID');
@@ -142,6 +173,117 @@ test('configuration a component is not permitted to use is refused before it is 
       return true;
     }
   );
+});
+
+test('the Node provider maps stt-runtime to exactly the canonical Whisper asset files', async () => {
+  const assetDirectory = await mkdtemp(path.join(os.tmpdir(), 'argus-stt-assets-'));
+  const binary = path.join(assetDirectory, 'whisper-cli.exe');
+  const model = path.join(assetDirectory, 'ggml-base.en.bin');
+  await writeFile(binary, 'binary');
+  await writeFile(model, 'model');
+  try {
+    const manifest = nodeManifest({
+      permissions: { filesystem: { read: ['stt-runtime'] } },
+      environment: { allow: ['ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL'] }
+    });
+    const provider = createNodeProcessProvider();
+    const plan = provider.plan(
+      { manifest, directory: path.join(root, 'services', 'whisper-cpp-stt') },
+      { ARGUS_WHISPER_BINARY: binary, ARGUS_WHISPER_MODEL: model }
+    );
+    const canonicalBinary = realpathSync.native(binary);
+    const canonicalModel = realpathSync.native(model);
+    assert.deepEqual(plan.grantedReadPaths.filter((grantedPath) => grantedPath.startsWith(assetDirectory)), [canonicalBinary, canonicalModel]);
+    assert.ok(plan.grantedReadPaths.includes(canonicalBinary));
+    assert.ok(plan.grantedReadPaths.includes(canonicalModel));
+    assert.ok(!plan.grantedReadPaths.includes(realpathSync.native(assetDirectory)));
+    assert.ok(!plan.grantedReadPaths.includes(path.join(root, 'runtime-output')));
+    assert.deepEqual(plan.grantedWritePaths, []);
+  } finally {
+    await rm(assetDirectory, { recursive: true, force: true });
+  }
+});
+
+test('a service without stt-runtime cannot read the provisioned Whisper assets', async () => {
+  const assetDirectory = await mkdtemp(path.join(os.tmpdir(), 'argus-stt-assets-'));
+  const sessionParent = await mkdtemp(path.join(os.tmpdir(), 'argus-stt-session-parent-'));
+  const sessionRoot = path.join(sessionParent, 'session');
+  await mkdir(sessionRoot);
+  const binary = path.join(assetDirectory, 'whisper-cli.exe');
+  const model = path.join(assetDirectory, 'ggml-base.en.bin');
+  await writeFile(binary, 'binary');
+  await writeFile(model, 'model');
+  const previous = new Map();
+  for (const [key, value] of [['ARGUS_SESSION_ROOT', sessionRoot], ['ARGUS_WHISPER_BINARY', binary], ['ARGUS_WHISPER_MODEL', model]]) {
+    previous.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  let handle;
+  try {
+    const manifestPath = path.join(root, 'services', 'whisper-cpp-stt', 'service.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.permissions.filesystem.read = ['session-root'];
+    const provider = createNodeProcessProvider();
+    const lines = [];
+    const diagnostics = [];
+    let failureResolve;
+    let failureReject;
+    const failure = new Promise((resolve, reject) => {
+      failureResolve = resolve;
+      failureReject = reject;
+    });
+    const exited = new Promise((resolve) => {
+      handle = provider.start(
+        { id: 'stt-probe-without-scope', manifest, directory: path.dirname(manifestPath), entrypoint: path.join(path.dirname(manifestPath), manifest.runtime.entrypoint), restartCount: 0 },
+        {
+          onMessage: (line) => {
+            lines.push(line);
+            const message = JSON.parse(line);
+            if (message.message_type === 'service.failure') failureResolve(message);
+          },
+          onDiagnostic: (line) => diagnostics.push(line),
+          onError: failureReject,
+          onExit: resolve
+        }
+      );
+    });
+    for (let sequence = 0; sequence < 8; sequence += 1) await handle.write(whisperChunkInput(sequence));
+    const serviceFailure = await Promise.race([
+      failure,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`Whisper permission probe timed out: ${diagnostics.join(' | ')}`)), 3000))
+    ]);
+    assert.equal(serviceFailure.payload.error.code, 'STT_UNAVAILABLE');
+    assert.match(serviceFailure.payload.error.message, /Whisper runtime or model is unavailable/);
+    assert.doesNotMatch(serviceFailure.payload.error.message, /Promise\.prototype\.then called on incompatible receiver/);
+    handle.closeInput();
+    await exited;
+    handle.dispose();
+  } finally {
+    if (handle && !handle.isExited()) {
+      handle.closeInput();
+      handle.terminate();
+    }
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(sessionParent, { recursive: true, force: true });
+    await rm(assetDirectory, { recursive: true, force: true });
+  }
+});
+
+test('missing Whisper assets remain a clear STT_UNAVAILABLE failure', async () => {
+  const result = await runService(
+    path.join(root, 'services', 'whisper-cpp-stt', 'service.json'),
+    Array.from({ length: 8 }, (_, sequence) => whisperChunkInput(sequence)),
+    8,
+    3000,
+    { env: { ARGUS_WHISPER_BINARY: '', ARGUS_WHISPER_MODEL: '' } }
+  );
+  const failure = result.outputs.find((message) => message.message_type === 'service.failure');
+  assert.equal(failure?.payload?.error?.code, 'STT_UNAVAILABLE');
+  assert.match(failure?.payload?.error?.message || '', /ARGUS_WHISPER_BINARY and ARGUS_WHISPER_MODEL are required/);
+  assert.doesNotMatch(failure?.payload?.error?.message || '', /Promise\.prototype\.then called on incompatible receiver/);
 });
 
 test('a credential-shaped manifest is rejected before the graph reaches any process', async () => {
@@ -391,6 +533,31 @@ function nodeManifest({ permissions = {}, resources, environment } = {}) {
   };
   if (resources) manifest.resources = resources;
   return manifest;
+}
+
+function whisperChunkInput(sequence) {
+  return {
+    message_id: `phase8-whisper-missing-${sequence}`,
+    idempotency_key: `phase8-whisper-missing-${sequence}`,
+    plane: 'domain',
+    message_type: 'audio.chunk',
+    timestamp: '2026-08-29T00:00:00.000Z',
+    producer: 'phase8-permission-test',
+    correlation_id: 'phase8-whisper-missing',
+    schema_version: '1.2.0',
+    payload: {
+      chunk_id: `phase8-whisper-chunk-${sequence}`,
+      session_id: 'phase8-whisper-missing',
+      sequence,
+      start_time: '00:00:00.000',
+      end_time: '00:00:00.000',
+      format: { encoding: 'pcm-signed-integer', sample_rate_hz: 16000, channels: 1, bits_per_sample: 16, byte_order: 'little-endian' },
+      sample_count: 2,
+      byte_length: 4,
+      audio_base64: 'AAABAA==',
+      checksum: 'sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93'
+    }
+  };
 }
 
 async function manifestFor(fixtureName) {

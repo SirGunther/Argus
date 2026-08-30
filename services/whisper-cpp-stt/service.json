@@ -9,7 +9,7 @@
     }
   },
   "permissions": {
-    "filesystem": { "read": ["session-root"], "write": ["session-root"] },
+    "filesystem": { "read": ["session-root", "stt-runtime"], "write": ["session-root"] },
     "process": { "granted": true }
   },
   "ports": {
