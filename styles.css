@@ -269,6 +269,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 
 .data-row time { padding-top: 2px; color: var(--text-muted); font: 400 10px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
 .row-main { min-width: 0; }
+#transcriptList .data-row:not(.live-preview) > .row-main { margin-left: 4px; }
 .editable-text { min-height: 20px; outline: none; color: #dce1dd; font-size: 12px; line-height: 1.6; caret-color: var(--accent); white-space: pre-wrap; overflow-wrap: anywhere; }
 .editable-text:focus { color: var(--text); }
 .editable-text:focus::selection { background: rgba(217, 255, 112, .22); }

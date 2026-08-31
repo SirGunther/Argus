@@ -18,6 +18,7 @@ test('compact Electron viewport contract keeps primary controls visible and seco
   assert.match(electron, /width:\s*1180,\s*height:\s*800,\s*minWidth:\s*760,\s*minHeight:\s*600/);
   assert.match(css, /body\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?overflow-x:\s*hidden;/);
   assert.match(css, /\.app-shell\s*\{[\s\S]*?grid-template-rows:\s*64px minmax\(0, 1fr\) 42px;[\s\S]*?min-height:\s*0;/);
+  assert.match(css, /#transcriptList \.data-row:not\(\.live-preview\) > \.row-main \{\s*margin-left:\s*4px;\s*\}/, 'finalized transcript rows must keep a 4px timestamp/text inset');
   assert.doesNotMatch(css, /min-width:\s*760px|min-height:\s*850px|select\s*\{\s*width:\s*190px/);
   assert.doesNotMatch(css, /\.product-label, \.elapsed-block\s*\{\s*display:\s*none/);
   assert.match(html, /id="elapsedTime"/);
