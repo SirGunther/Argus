@@ -8,6 +8,7 @@ import { SessionStorage } from './session-storage.mjs';
 import { calculateRecordingDurationMs } from './session-lifecycle.mjs';
 import { createDiagnosticLogger } from './diagnostics.mjs';
 import { createAudioPreviewScheduler } from './audio-preview-scheduler.mjs';
+import { canonicalJson } from './message-identity.mjs';
 
 const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL', 'ARGUS_WHISPER_TIMEOUT_MS', 'ARGUS_WHISPER_DELAYED_MS', 'ARGUS_WHISPER_PREVIEW_CADENCE_MS', 'ARGUS_DIAGNOSTICS'];
 const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'storage-session', 'clipboard', 'folder-opening'];
@@ -42,6 +43,9 @@ export class DesktopApplication {
     this.audioUtteranceQueue = [];
     this.audioCurrentUtterance = [];
     this.audioCurrentUtteranceId = undefined;
+    this.audioIdentitySessionId = undefined;
+    this.audioNextChunkSequence = 0;
+    this.audioChunkIdentities = new Map();
     this.audioQueuedUtterances = 0;
     this.audioQueuedChunkCount = 0;
     this.audioPreparingUtterance = undefined;
@@ -181,21 +185,42 @@ export class DesktopApplication {
       throw Object.assign(new Error(`Unknown active session ${chunk?.session_id}`), { code: 'SESSION_NOT_FOUND' });
     }
     if (this.audioProcessingError) throw this.audioProcessingError;
+    this.prepareAudioIdentitySession(chunk.session_id);
+    const sourceIdentity = audioChunkSourceIdentity(chunk);
+    const knownIdentity = this.audioChunkIdentities.get(sourceIdentity);
+    if (knownIdentity) {
+      this.diagnostics.log('capture.chunk-duplicate', { session_id: chunk.session_id, sequence: knownIdentity.sequence, chunk_id: knownIdentity.chunk_id });
+      return { accepted: true, duplicate: true, sequence: knownIdentity.sequence };
+    }
     if (this.audioQueuedChunkCount + this.audioCurrentUtterance.length >= MAX_AUDIO_QUEUE_ITEMS) {
       this.diagnostics.log('capture.chunk-rejected', { session_id: chunk.session_id, sequence: chunk.sequence, reason: 'backpressure' });
       throw this.audioBackpressure('Audio processing queue is full; capture must pause briefly.');
     }
     this.audioProcessingOverride = undefined;
     this.audioProcessingNotice = undefined;
-    const snapshot = freezeAudioChunk(chunk);
+    const snapshot = this.canonicalAudioChunk(chunk);
     if (this.audioCurrentUtterance.length >= MAX_UTTERANCE_CHUNKS) {
       this.enqueueCurrentUtterance(`${chunk.session_id}:audio.rollover:${this.audioCurrentUtterance[0].sequence}`, { reason: 'rollover' });
     }
     if (!this.audioCurrentUtteranceId) this.audioCurrentUtteranceId = `${chunk.session_id}-utterance-${randomUUID()}`;
     this.audioCurrentUtterance.push(snapshot);
+    this.audioChunkIdentities.set(sourceIdentity, snapshot);
+    this.audioNextChunkSequence += 1;
     this.audioPreviewScheduler.observe(this.audioCurrentUtteranceId);
     this.updateAudioProcessing();
-    return { accepted: true, sequence: chunk.sequence };
+    return { accepted: true, sequence: snapshot.sequence };
+  }
+
+  canonicalAudioChunk(chunk) {
+    this.prepareAudioIdentitySession(chunk.session_id);
+    return freezeAudioChunk({ ...chunk, chunk_id: `${chunk.session_id}-chunk-${this.audioNextChunkSequence}`, sequence: this.audioNextChunkSequence });
+  }
+
+  prepareAudioIdentitySession(sessionId) {
+    if (this.audioIdentitySessionId === sessionId) return;
+    this.audioIdentitySessionId = sessionId;
+    this.audioNextChunkSequence = 0;
+    this.audioChunkIdentities.clear();
   }
 
   async acceptAudioFlush(payload = {}) {
@@ -667,6 +692,21 @@ function ownerFor(command) { if (command === 'transcript.edit') return 'transcri
 
 function freezeAudioChunk(chunk) {
   return Object.freeze({ ...chunk, format: Object.freeze({ ...(chunk.format || {}) }) });
+}
+
+function audioChunkSourceIdentity(chunk) {
+  return createHash('sha256').update(canonicalJson({
+    chunk_id: chunk?.chunk_id,
+    session_id: chunk?.session_id,
+    sequence: chunk?.sequence,
+    start_time: chunk?.start_time,
+    end_time: chunk?.end_time,
+    format: chunk?.format,
+    sample_count: chunk?.sample_count,
+    byte_length: chunk?.byte_length,
+    audio_base64: chunk?.audio_base64,
+    checksum: chunk?.checksum
+  })).digest('hex');
 }
 
 function audioDurationMs(chunks) {

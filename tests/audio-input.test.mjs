@@ -75,6 +75,29 @@ test('pause closes the renderer boundary before delayed flush acceptance and res
   }
 });
 
+test('same-session Stop/Resume preserves renderer chunk identity and the sample clock', async () => {
+  let worklet;
+  const chunks = [];
+  const restore = installRendererAudioStubs(async () => ({ getTracks: () => [{ stop() {} }] }), { onWorklet: (value) => { worklet = value; } });
+  try {
+    const capture = createAudioCapture({ sendAudioChunk: async (chunk) => { chunks.push(chunk); } });
+    await capture.start('stop-resume-identity-session');
+    worklet.port.onmessage({ data: new Float32Array(4096).fill(0.1) });
+    await capture.stop();
+
+    await capture.start('stop-resume-identity-session');
+    worklet.port.onmessage({ data: new Float32Array(4096).fill(0.2) });
+    await capture.stop();
+
+    assert.deepEqual(chunks.map((chunk) => [chunk.chunk_id, chunk.sequence, chunk.start_time, chunk.end_time]), [
+      ['stop-resume-identity-session-chunk-0', 0, '00:00:00.000', '00:00:00.256'],
+      ['stop-resume-identity-session-chunk-1', 1, '00:00:00.256', '00:00:00.512']
+    ]);
+  } finally {
+    restore();
+  }
+});
+
 test('the selected device ID reaches getUserMedia with the governed PCM capture settings', async () => {
   const calls = [];
   let trackStopped = false;

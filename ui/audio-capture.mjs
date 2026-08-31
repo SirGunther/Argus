@@ -58,6 +58,7 @@ export function createAudioCapture({
   let source;
   let worklet;
   let sessionId;
+  let identitySessionId;
   let sequence = 0;
   let sampleCount = 0;
   let startedAt;
@@ -117,6 +118,7 @@ export function createAudioCapture({
 
   async function start(nextSessionId, selectedDeviceId) {
     if (stream) return;
+    const continuingSession = identitySessionId === nextSessionId;
     sessionId = nextSessionId;
     stopping = false;
     emitDiagnostic('capture.start-requested', { device_selected: Boolean(selectedDeviceId) });
@@ -137,8 +139,11 @@ export function createAudioCapture({
       source.connect(worklet);
       startedAt = performance.now();
       lastProgressAt = startedAt;
-      sequence = 0;
-      sampleCount = 0;
+      if (!continuingSession) {
+        sequence = 0;
+        sampleCount = 0;
+      }
+      identitySessionId = nextSessionId;
       ingressTail = Promise.resolve();
       pendingTasks.clear();
       speechSamples = 0;
