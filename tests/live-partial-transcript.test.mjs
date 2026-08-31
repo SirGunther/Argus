@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { createAudioPreviewScheduler } from '../runtime/audio-preview-scheduler.mjs';
 import { DesktopApplication } from '../runtime/desktop-application.mjs';
 import { createSerialWhisperLane } from '../services/whisper-cpp-stt/preview-scheduler.mjs';
+import { acceptLiveTranscript, createLiveTranscriptState, finalizeLiveTranscript, resetLiveTranscriptState } from '../ui/live-transcript.mjs';
+import { createUiContractBoundary } from '../ui/bridge-contracts.mjs';
 import { runServiceBatches } from './helpers/process-harness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -66,6 +68,90 @@ test('final Whisper work cancels active preview work and prevents late provision
   assert.equal(lane.pending, false);
   assert.ok(events.includes('preview-started'));
   assert.ok(events.includes('final-started'));
+});
+
+test('renderer live projection replaces revisions, ignores stale updates, and finalizes only the matching utterance', () => {
+  const live = createLiveTranscriptState();
+  const provisional = (utteranceId, revision, text) => ({
+    session_id: 'renderer-live-session', utterance_id: utteranceId, segment_id: 'renderer-live', revision,
+    sequence: 0, start_time: '00:00:00.000', end_time: '00:00:01.000', text, provisional: true, read_only: true, review_flags: []
+  });
+  const finalized = (utteranceId, segmentId, text) => ({
+    session_id: 'renderer-live-session', utterance_id: utteranceId, segment_id: segmentId, revision: 0,
+    sequence: 0, start_time: '00:00:00.000', end_time: '00:00:01.000', text, provisional: false, read_only: false, review_flags: []
+  });
+
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-1', 1, 'First guess')).changed, true);
+  assert.equal(live.current.item.text, 'First guess');
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-1', 2, 'Revised guess')).changed, true);
+  assert.equal(live.current.item.text, 'Revised guess');
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-1', 2, 'Duplicate guess')).changed, false);
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-1', 1, 'Stale guess')).changed, false);
+  assert.equal(live.current.item.text, 'Revised guess');
+
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-2', 1, 'New utterance')).changed, true);
+  assert.equal(live.current.item.text, 'New utterance');
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-1', 3, 'Late old utterance')).changed, false);
+  assert.equal(live.current.item.text, 'New utterance');
+
+  assert.equal(finalizeLiveTranscript(live, finalized('utterance-1', 'segment-1', 'First final')).cleared, false);
+  assert.equal(live.current.item.text, 'New utterance', 'an older final cannot clear a newer live utterance');
+  assert.equal(finalizeLiveTranscript(live, finalized('utterance-2', 'segment-2', 'New final')).cleared, true);
+  assert.equal(live.current, null);
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-2', 2, 'Late revision')).reason, 'finalized');
+
+  resetLiveTranscriptState(live);
+  assert.equal(live.current, null);
+  assert.equal(live.records.size, 0);
+});
+
+test('renderer keeps provisional content out of finalized rows, counts, selection, and copy paths', async () => {
+  const [app, html] = await Promise.all([
+    readFile(path.join(root, 'app.js'), 'utf8'),
+    readFile(path.join(root, 'index.html'), 'utf8')
+  ]);
+  assert.match(app, /if \(kind === 'transcript' && item\.provisional\) \{\s+upsertLiveTranscript\(item, bootstrap\);\s+return;/);
+  assert.match(app, /const transcriptCount = state\.transcript\.length/);
+  assert.match(app, /const ids = state\[kind\]\.map/);
+  assert.match(app, /return state\[kind\]\.filter\(\(item\) => isSelected/);
+  assert.doesNotMatch(app, /state\.transcript\.push\(\{ \.\.\.item, provisional: true/);
+  assert.match(html, /<div class="rows-scroll" id="transcriptScroll">[\s\S]*<div class="rows-list" id="transcriptList"><\/div>[\s\S]*<div class="live-transcript" id="liveTranscript"/);
+  assert.match(html, /class="live-transcript"[^>]*hidden[^>]*aria-live="polite"/);
+  assert.match(html, /class="live-transcript-kicker">LIVE<\/span>[\s\S]*PROVISIONAL · READ-ONLY/);
+  const liveBlock = html.match(/<div class="live-transcript"[\s\S]*?<p id="liveTranscriptText"><\/p>\s*<\/div>/)?.[0] || '';
+  assert.doesNotMatch(liveBlock, /checkbox|timestamp|copy|contenteditable/i);
+});
+
+test('desktop UI projections carry utterance identity from provisional through final segment', () => {
+  const sessionId = 'desktop-ui-correlation-session';
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-ui-correlation-${Date.now()}`) });
+  application.sessionId = sessionId;
+  application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+  const emitted = [];
+  application.onProjection((message) => emitted.push(message));
+  application.handleGraphMessage({ message_id: 'partial-1', message_type: 'transcript.partial', payload: {
+    session_id: sessionId, utterance_id: 'utterance-1', revision: 1, start_time: '00:00:00.000', end_time: '00:00:02.000', text: 'Live text'
+  } });
+  application.handleGraphMessage({ message_id: 'boundary-1', message_type: 'transcript.utterance-boundary', payload: {
+    session_id: sessionId, utterance_id: 'utterance-1', start_time: '00:00:00.100', end_time: '00:00:01.900'
+  } });
+  application.handleGraphMessage({ message_id: 'segment-1', message_type: 'transcript.segment', payload: {
+    session_id: sessionId, segment_id: 'segment-1', sequence: 0, revision: 0, start_time: '00:00:00.100', end_time: '00:00:01.900', text: 'Final text', boundary: 'pause'
+  } });
+  assert.equal(emitted[0].payload.utterance_id, 'utterance-1');
+  assert.equal(emitted[0].payload.provisional, true);
+  assert.equal(emitted[1].payload.utterance_id, 'utterance-1');
+  assert.equal(emitted[1].payload.provisional, false);
+});
+
+test('the UI projection contract accepts optional utterance correlation metadata', async () => {
+  const boundary = await createUiContractBoundary(root);
+  const message = boundary.projection('ui.transcript-row', {
+    session_id: 'contract-correlation-session', utterance_id: 'utterance-1', segment_id: 'segment-1', revision: 0, sequence: 0,
+    start_time: '00:00:00.000', end_time: '00:00:01.000', text: 'Final text', provisional: false, read_only: false, review_flags: []
+  }, 'contract-correlation-session');
+  assert.equal(message.schema_version, '1.1.0');
+  assert.deepEqual(boundary.registry.validateEnvelope(message), []);
 });
 
 test('desktop capture accepts new chunks while preview dispatch is unresolved and final flush remains independent', async () => {
@@ -155,7 +241,8 @@ test('source wiring uses real preview projection semantics and no browser speech
   const wiring = await readFile(path.join(root, 'wiring', 'production-electron.json'), 'utf8');
   assert.doesNotMatch(app, /SpeechRecognition/);
   assert.match(app, /item\.provisional/);
-  assert.match(app, /item\.revision <= collection\[index\]\.revision/);
+  assert.match(app, /acceptLiveTranscript/);
+  assert.match(app, /finalizeLiveTranscript/);
   assert.match(wiring, /"audio\.preview"/);
 });
 

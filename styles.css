@@ -221,6 +221,25 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .rows-scroll::-webkit-scrollbar { width: 8px; }
 .rows-scroll::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: #39433f; background-clip: padding-box; }
 .rows-list { min-height: 100%; }
+.rows-scroll.has-live-transcript { display: flex; flex-direction: column; }
+.rows-scroll.has-live-transcript .rows-list { flex: 1 0 auto; min-height: 0; }
+
+.live-transcript {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 18px 14px;
+  padding: 9px 11px 10px;
+  border: 1px solid rgba(217, 255, 112, .18);
+  border-left: 2px solid rgba(217, 255, 112, .48);
+  border-radius: 3px;
+  background: rgba(217, 255, 112, .035);
+}
+.live-transcript[hidden] { display: none; }
+.live-transcript-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-muted); font: 500 8px/1.1 var(--mono); letter-spacing: .1em; }
+.live-transcript-kicker { color: var(--accent); }
+.live-transcript p { min-width: 0; margin: 0; color: #aeb9b3; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .data-row {
   position: relative;

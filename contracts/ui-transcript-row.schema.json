@@ -5,6 +5,7 @@
   "properties": {
     "session_id": { "type": "string", "minLength": 1 },
     "segment_id": { "type": "string", "minLength": 1 },
+    "utterance_id": { "type": "string", "minLength": 1 },
     "revision": { "type": "integer", "minimum": 0 },
     "sequence": { "type": "integer", "minimum": 0 },
     "start_time": { "type": "string", "minLength": 1 },

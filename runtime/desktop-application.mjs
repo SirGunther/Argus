@@ -33,6 +33,8 @@ export class DesktopApplication {
     this.metadata = undefined;
     this.transcript = [];
     this.loggedItems = [];
+    this.transcriptPartials = new Map();
+    this.transcriptBoundaries = new Map();
     this.projectionListeners = new Set();
     this.commandResults = new Map();
     this.capabilityState = new Map();
@@ -289,6 +291,8 @@ export class DesktopApplication {
     await this.loadLatestSession(sessionId);
     this.transcript = [];
     this.loggedItems = [];
+    this.transcriptPartials.clear();
+    this.transcriptBoundaries.clear();
     this.emit('ui.session-status', this.sessionProjection());
     return this.accepted({ ...payload, session_id: sessionId }, 'runtime/session-lifecycle', sessionId, this.metadata?.revision, 'New Session accepted by the session lifecycle owner.');
   }
@@ -587,12 +591,22 @@ export class DesktopApplication {
     }
     if (message.message_type === 'transcript.partial') {
       const partial = payload;
-      this.emit('ui.transcript-row', { session_id: partial.session_id, segment_id: `${partial.session_id}-live`, revision: partial.revision, sequence: 0, start_time: partial.start_time, end_time: partial.end_time, text: partial.text, provisional: true, read_only: true, review_flags: [] });
+      this.transcriptPartials.set(partial.utterance_id, partial);
+      this.emit('ui.transcript-row', { session_id: partial.session_id, utterance_id: partial.utterance_id, segment_id: `${partial.session_id}-live`, revision: partial.revision, sequence: 0, start_time: partial.start_time, end_time: partial.end_time, text: partial.text, provisional: true, read_only: true, review_flags: [] });
+      return;
+    }
+    if (message.message_type === 'transcript.utterance-boundary') {
+      this.transcriptBoundaries.set(payload.utterance_id, payload);
       return;
     }
     if (message.message_type === 'transcript.segment') {
       this.diagnostics.log('transcript.segment-projected', { session_id: payload.session_id, segment_id: payload.segment_id, sequence: payload.sequence, transcript_preview: payload.text });
-      this.emit('ui.transcript-row', this.transcriptRow(payload));
+      const utteranceId = this.correlateTranscriptSegment(payload);
+      this.emit('ui.transcript-row', this.transcriptRow(payload, utteranceId));
+      if (utteranceId) {
+        this.transcriptPartials.delete(utteranceId);
+        this.transcriptBoundaries.delete(utteranceId);
+      }
       return;
     }
     if (message.message_type === 'transcript.history-appended') {
@@ -654,7 +668,16 @@ export class DesktopApplication {
   }
 
   capabilityProjections() { return [...this.capabilityState.values()].map((value) => this.ui('ui.service-status', value)); }
-  transcriptRow(item) { return { session_id: item.session_id, segment_id: item.segment_id, revision: item.revision || 0, sequence: item.sequence, start_time: item.start_time, end_time: item.end_time, text: item.text, provisional: false, read_only: false, review_flags: item.review_flags || [] }; }
+  correlateTranscriptSegment(segment) {
+    for (const [utteranceId, boundary] of this.transcriptBoundaries) {
+      if (boundary.session_id === segment.session_id && boundary.start_time === segment.start_time && boundary.end_time === segment.end_time) return utteranceId;
+    }
+    for (const [utteranceId, partial] of this.transcriptPartials) {
+      if (partial.session_id === segment.session_id && partial.start_time === segment.start_time && partial.end_time === segment.end_time) return utteranceId;
+    }
+    return undefined;
+  }
+  transcriptRow(item, utteranceId) { return { session_id: item.session_id, ...(utteranceId ? { utterance_id: utteranceId } : {}), segment_id: item.segment_id, revision: item.revision || 0, sequence: item.sequence, start_time: item.start_time, end_time: item.end_time, text: item.text, provisional: false, read_only: false, review_flags: item.review_flags || [] }; }
   loggedItemRow(item) { return { session_id: item.session_id, item_id: item.item_id, revision: item.revision, revision_id: item.revision_id, logged_at: item.stored_at || item.created_at, text: item.text, source: item.source, classification_suggestion: item.classification_suggestion || null }; }
   accepted(payload, owner, resourceId, revision, message) { return { command_id: payload.command_id, session_id: payload.session_id, command: payload.command, status: 'accepted', owner, ...(resourceId ? { resource_id: resourceId } : {}), ...(revision === undefined ? {} : { revision }), message }; }
   rejected(payload = {}, code, message, owner, pending = false) { return { command_id: payload.command_id || 'invalid-command', session_id: payload.session_id || this.sessionId, command: payload.command || 'unknown', status: 'rejected', owner, code, message, ...(pending ? { pending: true } : {}) }; }
