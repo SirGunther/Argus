@@ -100,6 +100,11 @@ test('renderer live projection replaces revisions, ignores stale updates, and fi
   assert.equal(live.current, null);
   assert.equal(acceptLiveTranscript(live, provisional('utterance-2', 2, 'Late revision')).reason, 'finalized');
 
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-3', 1, 'Possible speech')).changed, true);
+  assert.equal(acceptLiveTranscript(live, { ...provisional('utterance-3', 2, 'Possible speech'), dismissed: true }).cleared, true);
+  assert.equal(live.current, null, 'an authoritative empty result clears its provisional display');
+  assert.equal(acceptLiveTranscript(live, provisional('utterance-3', 3, 'Late empty revision')).reason, 'finalized');
+
   resetLiveTranscriptState(live);
   assert.equal(live.current, null);
   assert.equal(live.records.size, 0);
@@ -144,11 +149,32 @@ test('desktop UI projections carry utterance identity from provisional through f
   assert.equal(emitted[1].payload.provisional, false);
 });
 
+test('desktop empty final dismisses only its provisional projection and releases correlation state', () => {
+  const sessionId = 'desktop-ui-empty-session';
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-ui-empty-${Date.now()}`) });
+  application.sessionId = sessionId;
+  application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+  const emitted = [];
+  application.onProjection((message) => emitted.push(message));
+  application.handleGraphMessage({ message_id: 'empty-partial-1', message_type: 'transcript.partial', payload: {
+    session_id: sessionId, utterance_id: 'empty-utterance-1', revision: 1, start_time: '00:00:00.000', end_time: '00:00:02.000', text: 'Possible speech'
+  } });
+  application.handleGraphMessage({ message_id: 'empty-final-1', message_type: 'transcript.empty', payload: {
+    session_id: sessionId, utterance_id: 'empty-utterance-1', audio_window_id: 'empty-window-1', reason: 'pause', segment_count: 0, word_count: 0
+  } });
+  assert.equal(emitted.length, 2);
+  assert.equal(emitted[1].payload.utterance_id, 'empty-utterance-1');
+  assert.equal(emitted[1].payload.provisional, true);
+  assert.equal(emitted[1].payload.dismissed, true);
+  assert.equal(application.transcriptPartials.size, 0);
+  assert.equal(application.transcriptBoundaries.size, 0);
+});
+
 test('the UI projection contract accepts optional utterance correlation metadata', async () => {
   const boundary = await createUiContractBoundary(root);
   const message = boundary.projection('ui.transcript-row', {
     session_id: 'contract-correlation-session', utterance_id: 'utterance-1', segment_id: 'segment-1', revision: 0, sequence: 0,
-    start_time: '00:00:00.000', end_time: '00:00:01.000', text: 'Final text', provisional: false, read_only: false, review_flags: []
+    start_time: '00:00:00.000', end_time: '00:00:01.000', text: 'Final text', provisional: false, read_only: false, dismissed: false, review_flags: []
   }, 'contract-correlation-session');
   assert.equal(message.schema_version, '1.1.0');
   assert.deepEqual(boundary.registry.validateEnvelope(message), []);

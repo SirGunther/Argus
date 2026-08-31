@@ -155,6 +155,7 @@ test('same-session audio identities survive pause/flush reuse and exact chunk re
   await application.acceptAudioChunk(first);
   const duplicate = await application.acceptAudioChunk(structuredClone(first));
   assert.deepEqual(duplicate, { accepted: true, duplicate: true, sequence: 0 });
+  assert.deepEqual([...application.audioChunkIdentities.values()], [{ chunk_id: `${sessionId}-chunk-0`, sequence: 0 }], 'replay metadata must not retain raw PCM or base64 audio');
   assert.deepEqual(application.audioPreviewSnapshot(application.audioCurrentUtteranceId, 1).covered_chunk_ids, [`${sessionId}-chunk-0`]);
   assert.equal((await application.acceptAudioFlush({ session_id: sessionId, reason: 'pause' })).queued, true);
   await application.waitForAudioIdle();

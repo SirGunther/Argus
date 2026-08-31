@@ -1063,6 +1063,7 @@
 | `text` | yes | string | min length 1 |
 | `provisional` | yes | boolean | — |
 | `read_only` | yes | boolean | — |
+| `dismissed` | no | boolean | — |
 | `review_flags` | yes | array<object> | — |
 
 ## `ui.logged-item-row`

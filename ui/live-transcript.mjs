@@ -10,10 +10,13 @@ export function createLiveTranscriptState() {
 }
 
 export function acceptLiveTranscript(state, item) {
-  if (!item?.provisional || typeof item.text !== 'string' || !item.text.trim()) return result(false, false, 'invalid');
+  if (!item?.provisional) return result(false, false, 'invalid');
   const identity = primaryIdentity(item);
   const revision = Number(item.revision);
   if (!identity || !Number.isInteger(revision) || revision < 0) return result(false, false, 'invalid');
+
+  if (item.dismissed) return dismissLiveTranscript(state, identity, revision);
+  if (typeof item.text !== 'string' || !item.text.trim()) return result(false, false, 'invalid');
 
   let record = state.records.get(identity);
   if (!record) {
@@ -31,6 +34,20 @@ export function acceptLiveTranscript(state, item) {
   state.current = record;
   state.displayedOrder = record.order;
   return { accepted: true, changed: true, newUtterance: !isCurrent, reason: 'displayed', item: record.item };
+}
+
+function dismissLiveTranscript(state, identity, revision) {
+  let record = state.records.get(identity);
+  if (!record) {
+    record = { identity, order: ++state.nextOrder, revision, item: null, finalized: true };
+    state.records.set(identity, record);
+    return result(true, false, 'finalized');
+  }
+  record.revision = Math.max(record.revision, revision);
+  record.finalized = true;
+  const cleared = state.current?.identity === identity;
+  if (cleared) state.current = null;
+  return { accepted: true, changed: cleared, cleared, newUtterance: false, reason: 'finalized', item: record.item };
 }
 
 export function finalizeLiveTranscript(state, item) {

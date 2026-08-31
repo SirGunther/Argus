@@ -206,7 +206,12 @@ export class DesktopApplication {
     }
     if (!this.audioCurrentUtteranceId) this.audioCurrentUtteranceId = `${chunk.session_id}-utterance-${randomUUID()}`;
     this.audioCurrentUtterance.push(snapshot);
-    this.audioChunkIdentities.set(sourceIdentity, snapshot);
+    // Retain only replay identity metadata. PCM/base64 remains bounded to the
+    // active/queued utterance and is released after transcription.
+    this.audioChunkIdentities.set(sourceIdentity, Object.freeze({
+      chunk_id: snapshot.chunk_id,
+      sequence: snapshot.sequence
+    }));
     this.audioNextChunkSequence += 1;
     this.audioPreviewScheduler.observe(this.audioCurrentUtteranceId);
     this.updateAudioProcessing();
@@ -609,6 +614,25 @@ export class DesktopApplication {
     this.seenMessages.add(message.message_id);
     const payload = message.payload || {};
     if (message.message_type === 'transcript.empty') {
+      const partial = this.transcriptPartials.get(payload.utterance_id);
+      if (partial) {
+        this.emit('ui.transcript-row', {
+          session_id: partial.session_id,
+          utterance_id: partial.utterance_id,
+          segment_id: `${partial.session_id}-live`,
+          revision: partial.revision + 1,
+          sequence: 0,
+          start_time: partial.start_time,
+          end_time: partial.end_time,
+          text: partial.text,
+          provisional: true,
+          read_only: true,
+          dismissed: true,
+          review_flags: []
+        });
+      }
+      this.transcriptPartials.delete(payload.utterance_id);
+      this.transcriptBoundaries.delete(payload.utterance_id);
       this.audioProcessingNotice = 'No speech recognized; still listening';
       this.diagnostics.log('whisper.empty-observed', { session_id: payload.session_id, utterance_id: payload.utterance_id, reason: payload.reason, segment_count: payload.segment_count, word_count: payload.word_count });
       this.updateAudioProcessing();

@@ -13,6 +13,7 @@
     "text": { "type": "string", "minLength": 1 },
     "provisional": { "type": "boolean" },
     "read_only": { "type": "boolean" },
+    "dismissed": { "type": "boolean" },
     "review_flags": { "type": "array", "items": { "type": "object", "required": ["reason", "candidates"], "properties": { "reason": { "type": "string", "minLength": 1 }, "candidates": { "type": "array", "items": { "type": "string", "minLength": 1 } } }, "additionalProperties": false } }
   },
   "additionalProperties": false
