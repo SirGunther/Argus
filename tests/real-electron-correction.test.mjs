@@ -5,6 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { DesktopApplication } from '../runtime/desktop-application.mjs';
+import { MessageIntegrityLedger } from '../runtime/message-identity.mjs';
+import { createEnvelope } from '../runtime/orchestrator.mjs';
 import { SessionLifecycle } from '../runtime/session-lifecycle.mjs';
 import { SessionStorage } from '../runtime/session-storage.mjs';
 import { createSessionTimer } from '../ui/session-timer.mjs';
@@ -120,6 +122,57 @@ test('delayed transcription accepts later chunks and completes FIFO without mixi
   assert.deepEqual(completedUtterances, [[0, 1], [2, 3]]);
   assert.equal(maxConcurrentTranscriptions, 1);
   assert.ok(projections.some((message) => message.payload.audio_processing?.state === 'queued' || message.payload.audio_processing?.queue_depth > 0));
+});
+
+test('same-session audio identities survive pause/flush reuse and exact chunk replay', async () => {
+  const sessionId = 'audio-identity-lifecycle-session';
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-audio-identity-${Date.now()}`) });
+  application.sessionId = sessionId;
+  application.metadata = { session_id: sessionId, state: 'recording', revision: 1, created_at: '2026-08-30T00:00:00.000Z', started_at: '2026-08-30T00:00:00.000Z' };
+  const ledger = new MessageIntegrityLedger();
+  const chunks = [];
+  const flushes = [];
+  const finalized = [];
+  let currentWindow = [];
+  application.graph = {
+    closed: false,
+    async dispatchFrom(_from, plane, type, correlationId, payload, idempotencyKey) {
+      const message = createEnvelope({ plane, messageType: type, producer: '@desktop-controller', correlationId, payload, idempotencyKey });
+      ledger.observe(message);
+      if (type === 'audio.chunk') {
+        chunks.push(payload);
+        currentWindow.push(payload.sequence);
+      }
+      if (type === 'audio.flush') {
+        flushes.push(payload);
+        finalized.push(currentWindow);
+        currentWindow = [];
+      }
+    }
+  };
+
+  const first = lifecycleChunk(sessionId, 0, 'AAABAA==', 'sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93', '00:00:00.000', '00:00:00.256');
+  await application.acceptAudioChunk(first);
+  const duplicate = await application.acceptAudioChunk(structuredClone(first));
+  assert.deepEqual(duplicate, { accepted: true, duplicate: true, sequence: 0 });
+  assert.deepEqual(application.audioPreviewSnapshot(application.audioCurrentUtteranceId, 1).covered_chunk_ids, [`${sessionId}-chunk-0`]);
+  assert.equal((await application.acceptAudioFlush({ session_id: sessionId, reason: 'pause' })).queued, true);
+  await application.waitForAudioIdle();
+
+  const later = lifecycleChunk(sessionId, 0, 'AAACAA==', 'sha256:313588ae36b23498c072b8718f9a3614d9e52b444cdcea74ecd49c93044741b3', '00:00:00.256', '00:00:00.512');
+  await application.acceptAudioChunk(later);
+  assert.equal(application.audioPreviewSnapshot(application.audioCurrentUtteranceId, 1).covered_chunk_ids[0], `${sessionId}-chunk-1`);
+  assert.equal((await application.acceptAudioFlush({ session_id: sessionId, reason: 'pause' })).queued, true);
+  await application.waitForAudioIdle();
+
+  assert.deepEqual(chunks.map((chunk) => [chunk.chunk_id, chunk.sequence, chunk.start_time, chunk.end_time, chunk.checksum]), [
+    [`${sessionId}-chunk-0`, 0, '00:00:00.000', '00:00:00.256', first.checksum],
+    [`${sessionId}-chunk-1`, 1, '00:00:00.256', '00:00:00.512', later.checksum]
+  ]);
+  assert.equal(flushes.length, 2);
+  assert.notEqual(flushes[0].utterance_id, flushes[1].utterance_id);
+  assert.deepEqual(finalized, [[0], [1]]);
+  assert.equal(application.audioProcessingError, undefined);
 });
 
 test('sustained capture rolls over after 120 chunks without dropping or mixing audio', async () => {
@@ -262,6 +315,17 @@ function whisperChunk(sequence, sessionId) {
     format: { encoding: 'pcm-signed-integer', sample_rate_hz: 16000, channels: 1, bits_per_sample: 16, byte_order: 'little-endian' },
     sample_count: 2, byte_length: 4, audio_base64: 'AAABAA==', checksum: 'sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93'
   });
+}
+
+function lifecycleChunk(sessionId, sequence, audio_base64, checksum, start_time, end_time) {
+  return {
+    chunk_id: `${sessionId}-chunk-${sequence}`, session_id: sessionId, sequence,
+    start_time, end_time,
+    format: { encoding: 'pcm-signed-integer', sample_rate_hz: 16000, channels: 1, bits_per_sample: 16, byte_order: 'little-endian' },
+    sample_count: Buffer.from(audio_base64, 'base64').byteLength / 2,
+    byte_length: Buffer.from(audio_base64, 'base64').byteLength,
+    audio_base64, checksum
+  };
 }
 
 function envelope(messageType, idempotencyKey, payload) {
