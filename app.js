@@ -4,6 +4,7 @@ import {
   resolveSourceRangeIds, selectionCount, setAllSelected, toggleSelected
 } from './ui/ui-state.mjs';
 import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from './ui/audio-capture.mjs';
+import { acceptLiveTranscript, createLiveTranscriptState, finalizeLiveTranscript, resetLiveTranscriptState } from './ui/live-transcript.mjs';
 import { createSessionTimer } from './ui/session-timer.mjs';
 
 (() => {
@@ -12,7 +13,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   const AUDIO_INPUT_STORAGE_KEY = 'argus.selected-audio-input-device';
   const ui = createUiState();
   const desktop = window.argus || null;
-  const state = { session: null, transcript: [], derived: [], services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null };
+  const state = { session: null, transcript: [], derived: [], liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null };
   const timer = createSessionTimer();
   const STARTING_TIMEOUT_MS = 15000;
   const audioInput = { devices: [], selectedDeviceId: readRememberedAudioInput(), refreshing: false, initialized: false, ready: false, message: 'Checking microphone access...', tone: '' };
@@ -22,7 +23,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   let timerInterval;
 
   const els = {
-    template: document.querySelector('#rowTemplate'), transcriptList: document.querySelector('#transcriptList'), derivedList: document.querySelector('#derivedList'),
+    template: document.querySelector('#rowTemplate'), transcriptList: document.querySelector('#transcriptList'), derivedList: document.querySelector('#derivedList'), liveTranscript: document.querySelector('#liveTranscript'), liveTranscriptText: document.querySelector('#liveTranscriptText'),
     transcriptScroll: document.querySelector('#transcriptScroll'), derivedScroll: document.querySelector('#derivedScroll'), transcriptCount: document.querySelector('#transcriptCount'), derivedCount: document.querySelector('#derivedCount'),
     recordButton: document.querySelector('#recordButton'), stopButton: document.querySelector('#stopButton'), closeSessionButton: document.querySelector('#closeSessionButton'), captureStatus: document.querySelector('#captureStatus'), captureStatusText: document.querySelector('#captureStatusText'), transcriptionStatus: document.querySelector('#transcriptionStatus'), transcriptionStatusText: document.querySelector('#transcriptionStatusText'), sessionStateDot: document.querySelector('#sessionStateDot'), elapsedTime: document.querySelector('#elapsedTime'), sessionIdentity: document.querySelector('#sessionIdentity'),
     saveStatus: document.querySelector('#saveStatus'), saveStatusText: document.querySelector('#saveStatusText'), transcriptJump: document.querySelector('#transcriptJump'), derivedJump: document.querySelector('#derivedJump'), transcriptNewCount: document.querySelector('#transcriptNewCount'), derivedNewCount: document.querySelector('#derivedNewCount'),
@@ -236,13 +237,17 @@ import { createSessionTimer } from './ui/session-timer.mjs';
 
   function upsert(kind, item, bootstrap) {
     if (state.session?.session_id && item.session_id !== state.session.session_id) return;
+    if (kind === 'transcript' && item.provisional) {
+      upsertLiveTranscript(item, bootstrap);
+      return;
+    }
+    if (kind === 'transcript') {
+      const liveResult = finalizeLiveTranscript(state.liveProvisional, item);
+      if (liveResult.cleared) renderLiveTranscript();
+    }
     const id = kind === 'transcript' ? item.segment_id : item.item_id;
     const collection = state[kind];
-    if (kind === 'transcript' && !item.provisional) {
-      for (let index = collection.length - 1; index >= 0; index -= 1) if (collection[index].provisional) collection.splice(index, 1);
-    }
     const index = collection.findIndex((entry) => (kind === 'transcript' ? entry.segment_id : entry.item_id) === id);
-    if (index >= 0 && kind === 'transcript' && item.provisional && collection[index].provisional && item.revision <= collection[index].revision) return;
     const wasPresent = index >= 0;
     if (wasPresent) collection[index] = { ...collection[index], ...item };
     else collection.push({ ...item });
@@ -256,6 +261,20 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       updateJumpButton(kind);
       if (ui.panes[kind].followingLive) scrollToLive(kind, false);
     }
+  }
+
+  function upsertLiveTranscript(item, bootstrap) {
+    const result = acceptLiveTranscript(state.liveProvisional, item);
+    if (!result.changed) return;
+    renderLiveTranscript();
+    if (!bootstrap && ui.panes.transcript.followingLive) scrollToLive('transcript', false);
+  }
+
+  function renderLiveTranscript() {
+    const item = state.liveProvisional.current?.item;
+    els.transcriptScroll.classList.toggle('has-live-transcript', Boolean(item));
+    els.liveTranscript.hidden = !item;
+    els.liveTranscriptText.textContent = item?.text || '';
   }
 
   function renderRows(kind, animate = false) {
@@ -613,6 +632,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     if (result.status === 'accepted' && desktop && result.command === 'session.new') {
       state.transcript = [];
       state.derived = [];
+      resetLiveTranscriptState(state.liveProvisional);
       state.pending.clear();
       ui.selected.transcript.clear();
       ui.selected.derived.clear();
@@ -694,7 +714,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     updateJumpButton(kind);
   }
 
-  function renderAll() { renderRows('transcript'); renderRows('derived'); updateCounts(); renderSession(); renderServices(); }
+  function renderAll() { renderRows('transcript'); renderLiveTranscript(); renderRows('derived'); updateCounts(); renderSession(); renderServices(); }
 
   function showToast(message, tone = 'success') {
     const toast = document.createElement('div');

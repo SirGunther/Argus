@@ -1,0 +1,22 @@
+{
+  "message_id": "fixture-ui-transcript-row-v1-1",
+  "plane": "domain",
+  "message_type": "ui.transcript-row",
+  "timestamp": "2026-08-31T00:00:00.000Z",
+  "producer": "fixture-ui-projection",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.1.0",
+  "payload": {
+    "session_id": "fixture-session",
+    "utterance_id": "fixture-utterance-1",
+    "segment_id": "fixture-segment-1",
+    "revision": 0,
+    "sequence": 0,
+    "start_time": "00:00:00.000",
+    "end_time": "00:00:01.000",
+    "text": "Fixture transcript text.",
+    "provisional": false,
+    "read_only": false,
+    "review_flags": []
+  }
+}
