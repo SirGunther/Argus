@@ -24,7 +24,13 @@ In the running Electron window, use the **Audio input** selector in the bottom s
 
 The desktop host uses a per-user session root under Electron's `userData` directory unless `ARGUS_SESSION_ROOT` is set. It does not silently fall back to fake audio, fake STT, or a fake model: unavailable real dependencies are shown as degraded capabilities.
 
-Terminal diagnostics are disabled by default. Enable the existing sanitized logger and service traces for troubleshooting with `$env:ARGUS_DIAGNOSTICS='1'` before starting Argus.
+Terminal diagnostics are disabled by default. For a correlated physical-microphone run, start the source Electron application with:
+
+```powershell
+npm.cmd run start:diagnostics
+```
+
+The command enables the existing sanitized diagnostics with `ARGUS_DIAGNOSTICS=1`, prints the exact JSONL diagnostic-file path once, and tees high-signal host/service events to the launching terminal. The file is bounded to 5 MiB and keeps two rotated files (`.1` and `.2`). Raw PCM/audio base64, credentials, unrestricted environment values, and unbounded transcript text are excluded. `npm.cmd start` remains quiet unless diagnostics are explicitly enabled.
 
 Provision the real local dependencies before expecting transcription or logged-item extraction:
 

@@ -16,9 +16,10 @@ const MAX_AUDIO_QUEUE_ITEMS = 256;
 const MAX_AUDIO_UTTERANCES = 16;
 const DELAYED_AUDIO_UTTERANCES = 4;
 const MAX_UTTERANCE_CHUNKS = 120;
+const PIPELINE_STALL_THRESHOLD_MS = 30000;
 
 export class DesktopApplication {
-  constructor({ root, graphFile, sessionRoot, environment = process.env, diagnosticsEnabled = false, diagnosticsOutput, diagnosticClock } = {}) {
+  constructor({ root, graphFile, sessionRoot, environment = process.env, diagnosticsEnabled = false, diagnosticsOutput, diagnosticClock, diagnosticStallThresholdMs = PIPELINE_STALL_THRESHOLD_MS } = {}) {
     this.root = path.resolve(root);
     this.graphFile = path.resolve(graphFile);
     this.sessionRoot = path.resolve(sessionRoot);
@@ -57,6 +58,11 @@ export class DesktopApplication {
     this.audioProcessingOverride = undefined;
     this.audioProcessingLast = undefined;
     this.audioProcessingNotice = undefined;
+    this.audioWorkerGeneration = 0;
+    this.audioWorkerInvocation = undefined;
+    this.pipelinePreviewProgress = new Map();
+    this.pipelineStallTimers = new Map();
+    this.diagnosticStallThresholdMs = Math.max(1, Number(diagnosticStallThresholdMs) || PIPELINE_STALL_THRESHOLD_MS);
     this.captureActive = false;
     this.shuttingDown = false;
     this.shutdownPromise = undefined;
@@ -140,6 +146,7 @@ export class DesktopApplication {
           this.diagnostics.log('shutdown.graph-drained', { session_id: this.sessionId });
         }
       } finally {
+        this.clearPipelineStallDetection();
         this.audioPreviewScheduler.stop();
         await this.graph?.close();
         this.diagnostics.log('shutdown.queue-drain-completed', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
@@ -158,7 +165,7 @@ export class DesktopApplication {
 
   reportCaptureFailure(message) {
     this.captureActive = false;
-    this.diagnostics.log('capture.failure', { session_id: this.sessionId, error: String(message || 'Physical microphone capture failed.') });
+    this.diagnostics.log('capture.failure', { session_id: this.sessionId, error: String(message || 'Physical microphone capture failed.'), ...this.audioQueueDiagnostics() });
     this.updateAudioProcessing();
     this.setCapability('microphone', 'unavailable', `Physical microphone capture failed: ${message}`, true);
     return { accepted: true };
@@ -166,9 +173,9 @@ export class DesktopApplication {
 
   reportCaptureDiagnostic(payload = {}) {
     const event = typeof payload.event === 'string' && payload.event ? payload.event : 'capture.renderer-diagnostic';
-    this.diagnostics.log(event, payload);
     if (event === 'capture.active') this.captureActive = true;
     if (event === 'capture.stopped' || event === 'capture.failure' || event === 'capture.renderer-failure' || event === 'capture.start-failed' || event === 'capture.backpressure') this.captureActive = false;
+    this.diagnostics.log(event, { ...payload, capture_active: this.captureActive, ...this.audioQueueDiagnostics() });
     if (event === 'capture.active' || event.startsWith('capture.')) this.updateAudioProcessing();
     return { accepted: true };
   }
@@ -202,6 +209,17 @@ export class DesktopApplication {
     this.audioProcessingNotice = undefined;
     const snapshot = this.canonicalAudioChunk(chunk);
     if (this.audioCurrentUtterance.length >= MAX_UTTERANCE_CHUNKS) {
+      this.diagnostics.log('audio.rollover-boundary-triggered', {
+        session_id: chunk.session_id,
+        utterance_id: this.audioCurrentUtteranceId,
+        audio_window_id: `${chunk.session_id}-audio-window-${this.audioCurrentUtterance[0].sequence}`,
+        first_sequence: this.audioCurrentUtterance[0].sequence,
+        last_sequence: this.audioCurrentUtterance.at(-1).sequence,
+        chunk_count: this.audioCurrentUtterance.length,
+        trigger_sequence: chunk.sequence,
+        reason: 'size',
+        ...this.audioQueueDiagnostics({ extended: true })
+      });
       this.enqueueCurrentUtterance(`${chunk.session_id}:audio.rollover:${this.audioCurrentUtterance[0].sequence}`, { reason: 'rollover' });
     }
     if (!this.audioCurrentUtteranceId) this.audioCurrentUtteranceId = `${chunk.session_id}-utterance-${randomUUID()}`;
@@ -239,6 +257,7 @@ export class DesktopApplication {
       this.diagnostics.log('capture.flush-rejected', { session_id: payload.session_id, reason: 'session-not-recording' });
       throw new Error('Audio flush is accepted only while the governed session is recording');
     }
+    this.diagnostics.log('audio.flush-requested', { session_id: payload.session_id, reason: payload.reason || 'flush', requested_at: payload.requested_at, ...this.audioQueueDiagnostics({ extended: true }) });
     const result = this.enqueueAudioFlush(payload.session_id, {
       session_id: payload.session_id,
       requested_at: payload.requested_at || new Date().toISOString(),
@@ -249,7 +268,16 @@ export class DesktopApplication {
 
   async dispatchAudioPreview(snapshot) {
     if (this.shuttingDown || this.graph?.closed || this.metadata?.state !== 'recording') return { accepted: false, discarded: true };
-    return this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.preview', snapshot.session_id, snapshot, `${snapshot.session_id}:audio.preview:${snapshot.preview_id}`);
+    const previewId = `${snapshot.session_id}:audio.preview:${snapshot.preview_id}`;
+    try {
+      const message = await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.preview', snapshot.session_id, snapshot, previewId);
+      this.markPreviewStage(snapshot.utterance_id, 'audio.preview.dispatch-completed');
+      this.diagnostics.log('audio.preview-dispatch-completed', { session_id: snapshot.session_id, utterance_id: snapshot.utterance_id, preview_id: snapshot.preview_id, revision: snapshot.revision, input_message_id: message.message_id });
+      return message;
+    } catch (error) {
+      this.diagnostics.log('audio.preview-dispatch-failed', { session_id: snapshot.session_id, utterance_id: snapshot.utterance_id, preview_id: snapshot.preview_id, revision: snapshot.revision, error_code: error.code, error: error.message });
+      throw error;
+    }
   }
 
   async handleCommand(rawPayload) {
@@ -323,6 +351,7 @@ export class DesktopApplication {
     this.loggedItems = [];
     this.transcriptPartials.clear();
     this.transcriptBoundaries.clear();
+    this.clearPipelineStallDetection();
     this.emit('ui.session-status', this.sessionProjection());
     return this.accepted({ ...payload, session_id: sessionId }, 'runtime/session-lifecycle', sessionId, this.metadata?.revision, 'New Session accepted by the session lifecycle owner.');
   }
@@ -350,7 +379,7 @@ export class DesktopApplication {
     if (this.shuttingDown && !allowShutdown) return this.ignoredAudioResult(sessionId);
     if (this.audioProcessingError) throw this.audioProcessingError;
     if (!this.audioCurrentUtterance.length) {
-      this.diagnostics.log('audio-window.flush-empty', { session_id: sessionId, reason: payload.reason || 'flush', ...this.audioQueueDiagnostics() });
+      this.diagnostics.log('audio.flush-completed-empty', { session_id: sessionId, flush_id: idempotencyKey, reason: payload.reason || 'flush', ...this.audioQueueDiagnostics({ extended: true }) });
       return { accepted: true, session_id: sessionId, queued: false };
     }
     this.audioProcessingOverride = undefined;
@@ -386,7 +415,7 @@ export class DesktopApplication {
       chunk_count: utterance.chunks.length,
       duration_ms: audioDurationMs(utterance.chunks),
       reason: payload.reason || 'flush',
-      ...this.audioQueueDiagnostics(),
+      ...this.audioQueueDiagnostics({ extended: true }),
       queued_window_count: this.audioUtteranceQueue.length + 1,
       queued_chunk_count: this.audioQueuedChunkCount,
       audio_in_flight: this.audioInFlight + 1
@@ -398,6 +427,11 @@ export class DesktopApplication {
   enqueueAudioWork(work) {
     this.audioUtteranceQueue.push(work);
     this.audioInFlight += 1;
+    this.diagnostics.log('audio.utterance-entered-host-fifo', {
+      ...audioWorkDiagnostics(work),
+      fifo_position: this.audioUtteranceQueue.length,
+      ...this.audioQueueDiagnostics({ extended: true })
+    });
     this.diagnostics.log('audio-queue.snapshot', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
     this.updateAudioProcessing();
     this.enqueueAudioWorkWorker();
@@ -405,29 +439,43 @@ export class DesktopApplication {
 
   enqueueAudioWorkWorker() {
     if (this.audioWorkerPromise || !this.audioUtteranceQueue.length || this.audioProcessingError) return;
-    this.audioWorkerPromise = this.processAudioQueue().finally(() => {
+    const worker = {
+      worker_generation: ++this.audioWorkerGeneration,
+      worker_invocation_id: `${this.sessionId}:audio-worker-${this.audioWorkerGeneration}`
+    };
+    this.audioWorkerInvocation = worker;
+    this.diagnostics.log('audio.worker-started', { session_id: this.sessionId, ...worker, ...this.audioQueueDiagnostics({ extended: true }) });
+    this.audioWorkerPromise = this.processAudioQueue(worker).finally(() => {
+      const queued = this.audioUtteranceQueue.length;
       this.audioWorkerPromise = undefined;
-      if (this.audioUtteranceQueue.length && !this.audioProcessingError) this.enqueueAudioWorkWorker();
+      this.audioWorkerInvocation = undefined;
+      this.diagnostics.log('audio.worker-finished', { session_id: this.sessionId, ...worker, ...this.audioQueueDiagnostics({ extended: true }) });
+      if (queued && !this.audioProcessingError) {
+        this.diagnostics.log('audio.worker-rekick', { session_id: this.sessionId, ...worker, queued_utterance_count: queued, ...this.audioQueueDiagnostics({ extended: true }) });
+        this.enqueueAudioWorkWorker();
+      }
       this.resolveAudioIdleWaiters();
     });
   }
 
-  async processAudioQueue() {
+  async processAudioQueue(worker) {
     while (this.audioUtteranceQueue.length) {
       const work = this.audioUtteranceQueue.shift();
       let queueAccountingCleared = false;
+      let terminalOutcome = 'unknown';
+      let terminalError;
       try {
         this.audioQueuedUtterances -= 1;
         this.audioPreparingUtterance = work;
         this.diagnostics.log('audio-window.transcription-started', {
-          session_id: work.utterance.session_id,
-          audio_window_id: work.utterance.audio_window_id,
-          first_sequence: work.utterance.chunks[0].sequence,
-          last_sequence: work.utterance.chunks.at(-1).sequence,
-          chunk_count: work.utterance.chunks.length,
-          duration_ms: audioDurationMs(work.utterance.chunks),
-          reason: work.utterance.reason || 'flush',
-          ...this.audioQueueDiagnostics()
+          ...worker,
+          ...audioWorkDiagnostics(work),
+          ...this.audioQueueDiagnostics({ extended: true })
+        });
+        this.diagnostics.log('audio-window.dispatch-beginning', {
+          ...worker,
+          ...audioWorkDiagnostics(work),
+          ...this.audioQueueDiagnostics({ extended: true })
         });
         this.updateAudioProcessing();
         for (const chunk of work.utterance.chunks) {
@@ -436,14 +484,34 @@ export class DesktopApplication {
         this.audioPreparingUtterance = undefined;
         this.audioActiveFlush = work;
         this.updateAudioProcessing();
-        await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', work.utterance.session_id, {
+        this.diagnostics.log('audio.flush-dispatch-beginning', {
+          ...worker,
+          ...audioWorkDiagnostics(work),
+          flush_id: work.idempotencyKey,
+          ...this.audioQueueDiagnostics({ extended: true })
+        });
+        const flushMessage = await this.graph.dispatchFrom('@desktop-controller', 'domain', 'audio.flush', work.utterance.session_id, {
           session_id: work.utterance.session_id,
           requested_at: work.utterance.requested_at,
           utterance_id: work.utterance.utterance_id,
           ...(work.utterance.reason === 'pause' ? { reason: 'pause' } : {})
         }, work.idempotencyKey);
-        this.diagnostics.log('audio-window.transcription-completed', { session_id: work.utterance.session_id, audio_window_id: work.utterance.audio_window_id, ...this.audioQueueDiagnostics() });
+        this.diagnostics.log('audio.flush-dispatch-completed', {
+          ...worker,
+          ...audioWorkDiagnostics(work),
+          flush_id: work.idempotencyKey,
+          input_message_id: flushMessage?.message_id,
+          ...this.audioQueueDiagnostics({ extended: true })
+        });
+        this.diagnostics.log('audio-window.transcription-completed', {
+          ...worker,
+          ...audioWorkDiagnostics(work),
+          ...this.audioQueueDiagnostics({ extended: true })
+        });
+        terminalOutcome = 'completed';
       } catch (error) {
+        terminalOutcome = 'failed';
+        terminalError = error;
         this.failAudioProcessing(error);
         this.clearAudioQueue(error);
         queueAccountingCleared = true;
@@ -452,6 +520,14 @@ export class DesktopApplication {
         this.audioActiveFlush = undefined;
         if (!queueAccountingCleared) this.audioQueuedChunkCount -= work.utterance.chunks.length;
         this.audioInFlight -= 1;
+        this.diagnostics.log('audio.queue-state-after-terminal-outcome', {
+          ...worker,
+          ...audioWorkDiagnostics(work),
+          outcome: terminalOutcome,
+          error_code: terminalError?.code,
+          retryable: terminalError?.retryable,
+          ...this.audioQueueDiagnostics({ extended: true })
+        });
         this.diagnostics.log('audio-queue.snapshot', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
         this.updateAudioProcessing();
       }
@@ -461,7 +537,7 @@ export class DesktopApplication {
 
   failAudioProcessing(error) {
     this.audioProcessingError = Object.assign(error, { retryable: error.retryable ?? true });
-    this.diagnostics.log('audio.processing-failed', { session_id: this.sessionId, error: error.message, error_code: error.code, ...this.audioQueueDiagnostics() });
+    this.diagnostics.log('audio.processing-failed', { session_id: this.sessionId, error: error.message, error_code: error.code, retryable: error.retryable, ...this.audioQueueDiagnostics() });
     this.setCapability('stt', 'unavailable', `Audio processing failed: ${error.message}`, true);
     this.updateAudioProcessing();
   }
@@ -511,9 +587,9 @@ export class DesktopApplication {
     };
   }
 
-  audioQueueDiagnostics() {
+  audioQueueDiagnostics({ extended = false } = {}) {
     const active = this.audioActiveFlush || this.audioPreparingUtterance;
-    return {
+    const base = {
       capturing_chunk_count: this.audioCurrentUtterance.length,
       queued_window_count: this.audioUtteranceQueue.length,
       queued_chunk_count: this.audioQueuedChunkCount,
@@ -521,12 +597,29 @@ export class DesktopApplication {
       active_chunk_count: active?.utterance.chunks.length || 0,
       audio_in_flight: this.audioInFlight
     };
+    return extended ? {
+      ...base,
+      queued_utterance_count: this.audioQueuedUtterances,
+      active_utterance_id: active?.utterance.utterance_id,
+      active_worker_state: this.audioWorkerState(),
+      worker_generation: this.audioWorkerInvocation?.worker_generation,
+      worker_invocation_id: this.audioWorkerInvocation?.worker_invocation_id
+    } : base;
   }
 
   audioPreviewSnapshot(utteranceId, revision) {
     if (!utteranceId || utteranceId !== this.audioCurrentUtteranceId || !this.audioCurrentUtterance.length) return undefined;
     const chunks = Object.freeze(this.audioCurrentUtterance.slice());
     const bytes = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.audio_base64, 'base64')));
+    this.observePreviewRevision({
+      session_id: this.sessionId,
+      utterance_id: utteranceId,
+      revision,
+      preview_id: `${utteranceId}-preview-${revision}`,
+      first_sequence: chunks[0].sequence,
+      last_sequence: chunks.at(-1).sequence,
+      chunk_count: chunks.length
+    });
     return Object.freeze({
       preview_id: `${utteranceId}-preview-${revision}`,
       session_id: this.sessionId,
@@ -541,6 +634,80 @@ export class DesktopApplication {
       checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       covered_chunk_ids: chunks.map((chunk) => chunk.chunk_id)
     });
+  }
+
+  audioWorkerState() {
+    if (!this.audioWorkerPromise) return this.audioWorkerInvocation ? 'starting' : 'idle';
+    if (this.audioActiveFlush) return 'flushing';
+    if (this.audioPreparingUtterance) return 'dispatching';
+    return 'running';
+  }
+
+  observePreviewRevision(preview) {
+    if (!this.diagnostics.enabled) return;
+    const existing = this.pipelinePreviewProgress.get(preview.utterance_id);
+    if (existing && preview.revision <= existing.latest_revision) return;
+    const progress = existing || {
+      session_id: preview.session_id,
+      utterance_id: preview.utterance_id,
+      first_revision: preview.revision,
+      first_observed_at: Date.now(),
+      warning_emitted: false,
+      last_successfully_completed_stage: 'capture.audio-window'
+    };
+    progress.latest_revision = preview.revision;
+    progress.latest_preview_id = preview.preview_id;
+    progress.latest_observed_at = Date.now();
+    progress.last_successfully_completed_stage = 'audio.preview.dispatch-beginning';
+    this.pipelinePreviewProgress.set(preview.utterance_id, progress);
+    this.diagnostics.log('pipeline.preview-revision-advanced', {
+      session_id: preview.session_id,
+      utterance_id: preview.utterance_id,
+      preview_id: preview.preview_id,
+      preview_revision: preview.revision,
+      first_sequence: preview.first_sequence,
+      last_sequence: preview.last_sequence,
+      chunk_count: preview.chunk_count
+    });
+    if (!this.pipelineStallTimers.has(preview.utterance_id)) {
+      const timer = setTimeout(() => this.emitPossiblePipelineStall(preview.utterance_id), this.diagnosticStallThresholdMs);
+      timer.unref?.();
+      this.pipelineStallTimers.set(preview.utterance_id, timer);
+    }
+  }
+
+  markPreviewStage(utteranceId, stage) {
+    const progress = this.pipelinePreviewProgress.get(utteranceId);
+    if (progress) progress.last_successfully_completed_stage = stage;
+  }
+
+  emitPossiblePipelineStall(utteranceId) {
+    const progress = this.pipelinePreviewProgress.get(utteranceId);
+    if (!progress || progress.warning_emitted) return;
+    progress.warning_emitted = true;
+    this.diagnostics.log('pipeline.possible-stall', {
+      session_id: progress.session_id,
+      utterance_id: progress.utterance_id,
+      preview_revision: progress.latest_revision,
+      preview_id: progress.latest_preview_id,
+      elapsed_ms: Math.max(0, Date.now() - progress.first_observed_at),
+      last_successfully_completed_stage: progress.last_successfully_completed_stage,
+      ...this.audioQueueDiagnostics({ extended: true })
+    });
+  }
+
+  clearPipelineStall(utteranceId) {
+    if (!utteranceId) return;
+    const timer = this.pipelineStallTimers.get(utteranceId);
+    if (timer) clearTimeout(timer);
+    this.pipelineStallTimers.delete(utteranceId);
+    this.pipelinePreviewProgress.delete(utteranceId);
+  }
+
+  clearPipelineStallDetection() {
+    for (const timer of this.pipelineStallTimers.values()) clearTimeout(timer);
+    this.pipelineStallTimers.clear();
+    this.pipelinePreviewProgress.clear();
   }
 
   ignoredAudioResult(sessionId) { return { accepted: false, ignored: true, code: 'SHUTDOWN_IN_PROGRESS', session_id: sessionId, reason: 'Application shutdown is in progress.' }; }
@@ -620,7 +787,7 @@ export class DesktopApplication {
     if (message.message_type === 'transcript.empty') {
       const partial = this.transcriptPartials.get(payload.utterance_id);
       if (partial) {
-        this.emit('ui.transcript-row', {
+        const projection = this.emit('ui.transcript-row', {
           session_id: partial.session_id,
           utterance_id: partial.utterance_id,
           segment_id: `${partial.session_id}-live`,
@@ -634,28 +801,37 @@ export class DesktopApplication {
           dismissed: true,
           review_flags: []
         });
+        this.diagnostics.log('ui.transcript-row-projected', { session_id: partial.session_id, utterance_id: partial.utterance_id, projection_id: projection.message_id, segment_id: `${partial.session_id}-live`, revision: partial.revision + 1, provisional: true, dismissed: true });
       }
       this.transcriptPartials.delete(payload.utterance_id);
       this.transcriptBoundaries.delete(payload.utterance_id);
       this.audioProcessingNotice = 'No speech recognized; still listening';
-      this.diagnostics.log('whisper.empty-observed', { session_id: payload.session_id, utterance_id: payload.utterance_id, reason: payload.reason, segment_count: payload.segment_count, word_count: payload.word_count });
+      this.clearPipelineStall(payload.utterance_id);
+      this.diagnostics.log('whisper.empty-observed', { session_id: payload.session_id, utterance_id: payload.utterance_id, audio_window_id: payload.audio_window_id, reason: payload.reason, segment_count: payload.segment_count, word_count: payload.word_count, terminal_outcome: 'empty' });
       this.updateAudioProcessing();
       return;
     }
     if (message.message_type === 'transcript.partial') {
       const partial = payload;
       this.transcriptPartials.set(partial.utterance_id, partial);
-      this.emit('ui.transcript-row', { session_id: partial.session_id, utterance_id: partial.utterance_id, segment_id: `${partial.session_id}-live`, revision: partial.revision, sequence: 0, start_time: partial.start_time, end_time: partial.end_time, text: partial.text, provisional: true, read_only: true, review_flags: [] });
+      this.observePreviewRevision({ session_id: partial.session_id, utterance_id: partial.utterance_id, revision: partial.revision, preview_id: partial.projection_id });
+      this.markPreviewStage(partial.utterance_id, 'whisper.preview');
+      const projection = this.emit('ui.transcript-row', { session_id: partial.session_id, utterance_id: partial.utterance_id, segment_id: `${partial.session_id}-live`, revision: partial.revision, sequence: 0, start_time: partial.start_time, end_time: partial.end_time, text: partial.text, provisional: true, read_only: true, review_flags: [] });
+      this.diagnostics.log('ui.transcript-row-projected', { session_id: partial.session_id, utterance_id: partial.utterance_id, projection_id: projection.message_id, segment_id: `${partial.session_id}-live`, revision: partial.revision, provisional: true });
       return;
     }
     if (message.message_type === 'transcript.utterance-boundary') {
       this.transcriptBoundaries.set(payload.utterance_id, payload);
+      this.markPreviewStage(payload.utterance_id, 'transcript.utterance-boundary');
+      this.diagnostics.log('transcript.utterance-boundary-received', { session_id: payload.session_id, utterance_id: payload.utterance_id, boundary_id: payload.boundary_id, first_word_sequence: payload.first_word_sequence, last_word_sequence: payload.last_word_sequence, reason: payload.reason });
       return;
     }
     if (message.message_type === 'transcript.segment') {
-      this.diagnostics.log('transcript.segment-projected', { session_id: payload.session_id, segment_id: payload.segment_id, sequence: payload.sequence, transcript_preview: payload.text });
       const utteranceId = this.correlateTranscriptSegment(payload);
-      this.emit('ui.transcript-row', this.transcriptRow(payload, utteranceId));
+      this.clearPipelineStall(utteranceId);
+      this.diagnostics.log('transcript.segment-received', { session_id: payload.session_id, utterance_id: utteranceId, segment_id: payload.segment_id, sequence: payload.sequence, boundary: payload.boundary, transcript_preview: payload.text });
+      const projection = this.emit('ui.transcript-row', this.transcriptRow(payload, utteranceId));
+      this.diagnostics.log('ui.transcript-row-projected', { session_id: payload.session_id, utterance_id: utteranceId, projection_id: projection.message_id, segment_id: payload.segment_id, revision: payload.revision || 0, provisional: false });
       if (utteranceId) {
         this.transcriptPartials.delete(utteranceId);
         this.transcriptBoundaries.delete(utteranceId);
@@ -673,7 +849,8 @@ export class DesktopApplication {
     }
     if (message.message_type === 'service.failure') {
       const service = message.payload.service || '';
-      this.diagnostics.log('service.failure', { session_id: message.correlation_id, correlation_id: message.correlation_id, service, operation: message.payload.operation, input_message_id: message.payload.input_message_id, error_code: message.payload.error?.code, error: message.payload.error?.message });
+      this.diagnostics.log('service.failure', { session_id: message.correlation_id, correlation_id: message.correlation_id, service, operation: message.payload.operation, input_message_id: message.payload.input_message_id, error_code: message.payload.error?.code, retryable: message.payload.error?.retryable, error: message.payload.error?.message });
+      this.clearPipelineStallDetection();
       if (service.includes('speech') || service.includes('stt')) this.setCapability('stt', 'unavailable', message.payload.error?.message || 'The real Whisper transcription dependency failed.', true);
       if (service.includes('model')) this.setCapability('model', 'unavailable', message.payload.error?.message || 'The configured local model dependency failed.', true);
     }
@@ -681,7 +858,7 @@ export class DesktopApplication {
 
   handleGraphStatus(status) {
     const event = status.type === 'service-failure' ? 'service.failure' : status.type === 'service-exit' ? 'graph.service-exited' : status.type === 'graph-failure' ? 'graph.failure' : status.type === 'operation-rejected' ? 'operation.rejected' : undefined;
-    if (event) this.diagnostics.log(event, { session_id: status.correlation_id || this.sessionId, correlation_id: status.correlation_id || this.sessionId, service: status.service, operation: status.operation, input_message_id: status.input_message_id, code: status.code, error: status.message, pid: status.pid, signal: status.signal, expected: status.expected });
+    if (event) this.diagnostics.log(event, { session_id: status.correlation_id || this.sessionId, correlation_id: status.correlation_id || this.sessionId, service: status.service, operation: status.operation, input_message_id: status.input_message_id, code: status.code, retryable: status.retryable, error: status.message, pid: status.pid, signal: status.signal, expected: status.expected });
     if (status.type === 'graph-ready') this.setCapability('orchestration', 'available', 'Production Argus graph is supervised and ready.', false);
     if (status.type === 'graph-failure') this.setCapability('orchestration', 'unavailable', status.message, true);
     if (status.type === 'service-failure') {
@@ -743,6 +920,21 @@ function ownerFor(command) { if (command === 'transcript.edit') return 'transcri
 
 function freezeAudioChunk(chunk) {
   return Object.freeze({ ...chunk, format: Object.freeze({ ...(chunk.format || {}) }) });
+}
+
+function audioWorkDiagnostics(work) {
+  const utterance = work?.utterance;
+  const chunks = utterance?.chunks || [];
+  return {
+    session_id: utterance?.session_id,
+    utterance_id: utterance?.utterance_id,
+    audio_window_id: utterance?.audio_window_id,
+    first_sequence: chunks[0]?.sequence,
+    last_sequence: chunks.at(-1)?.sequence,
+    chunk_count: chunks.length,
+    duration_ms: audioDurationMs(chunks),
+    reason: utterance?.reason || 'flush'
+  };
 }
 
 function audioChunkSourceIdentity(chunk) {

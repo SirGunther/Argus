@@ -23,6 +23,7 @@ runLineService({ service: SERVICE, operations: {
     if (state.chunks.length >= MAX_WINDOW_CHUNKS) throw boundedAudioWindow();
     state.chunkIds.add(chunk.chunk_id);
     state.chunks.push({ ...chunk, bytes: Buffer.from(chunk.audio_base64, 'base64') });
+    if (state.chunks.length === 1) diagnostics.log('audio-window.first-chunk-received', { ...audioWindowDetails(state), chunk_id: chunk.chunk_id });
     return [];
   } },
   'audio.preview': { name: 'preview-whisper-window', retainOutputs: false, async handle(message, { emit } = {}) {
@@ -51,14 +52,22 @@ runLineService({ service: SERVICE, operations: {
     const state = stateBySession.get(sessionId);
     if (!state?.chunks.length) return [];
     const utteranceId = message.payload?.utterance_id || `${sessionId}-utterance-${state.nextUtteranceSequence}`;
+    const flushId = message.idempotency_key || message.message_id;
+    diagnostics.log('audio.flush-received', { ...audioWindowDetails(state), utterance_id: utteranceId, flush_id: flushId, input_message_id: message.message_id, reason: message.payload?.reason || 'flush' });
+    diagnostics.log('audio-window.last-chunk-received', { ...audioWindowDetails(state), utterance_id: utteranceId, last_chunk_id: state.chunks.at(-1).chunk_id, flush_id: flushId });
     try {
-      return await whisperLane.runFinal({
+      const outputs = await whisperLane.runFinal({
         utterance_id: utteranceId,
         run: async () => {
-          const result = await transcribe(state);
-          return finalOutputs(state, result, message.payload?.reason || 'flush', utteranceId);
+          const result = await transcribe(state, { utterance_id: utteranceId, flush_id: flushId, input_message_id: message.message_id });
+          return finalOutputs(state, result, message.payload?.reason || 'flush', utteranceId, { flush_id: flushId, input_message_id: message.message_id });
         }
       });
+      diagnostics.log('audio.flush-completed', { ...audioWindowDetails(state), utterance_id: utteranceId, flush_id: flushId, input_message_id: message.message_id, output_count: outputs.length, terminal_outcome: outputs.some((output) => output.messageType === 'transcript.empty') ? 'empty' : 'boundary-emitted' });
+      return outputs;
+    } catch (error) {
+      diagnostics.log('audio.flush-failed', { ...audioWindowDetails(state), utterance_id: utteranceId, flush_id: flushId, input_message_id: message.message_id, error_code: error.code, retryable: error.retryable, error: error.message });
+      throw error;
     } finally {
       // A failed or empty window must not poison the next queued utterance.
       state.chunks = [];
@@ -95,10 +104,10 @@ function audioWindowId(state) {
   return audioWindowDetails(state).audio_window_id;
 }
 
-async function transcribe(state) {
+async function transcribe(state, identifiers = {}) {
   const window = audioWindowDetails(state);
   const bytes = Buffer.concat(state.chunks.map((chunk) => chunk.bytes));
-  return transcribeBytes(bytes, window, 'final');
+  return transcribeBytes(bytes, window, 'final', undefined, identifiers);
 }
 
 async function transcribePreview(preview, signal) {
@@ -110,22 +119,27 @@ async function transcribePreview(preview, signal) {
     last_sequence: undefined,
     chunk_count: preview.covered_chunk_ids.length,
     duration_ms: Math.max(0, parseClock(preview.end_time) - parseClock(preview.start_time))
-  }, 'preview', signal);
+  }, 'preview', signal, { utterance_id: preview.utterance_id, preview_id: preview.preview_id, preview_revision: preview.revision });
 }
 
-async function transcribeBytes(bytes, window, inferenceKind, signal) {
+async function transcribeBytes(bytes, window, inferenceKind, signal, identifiers = {}) {
+  const invocationId = identifiers.invocation_id || `${window.session_id}:whisper-${inferenceKind}-${window.audio_window_id}`;
+  const diagnosticWindow = { ...window, ...identifiers, invocation_id: invocationId, inference_kind: inferenceKind };
+  diagnostics.log(inferenceKind === 'preview' ? 'whisper.preview-beginning' : 'whisper.final-beginning', diagnosticWindow);
   const binary = String(process.env.ARGUS_WHISPER_BINARY || '').trim();
   const model = String(process.env.ARGUS_WHISPER_MODEL || '').trim();
   if (!binary || !model) {
     const error = unavailable('ARGUS_WHISPER_BINARY and ARGUS_WHISPER_MODEL are required; run npm run setup:real');
-    diagnostics.log('whisper.failed', { ...window, error_code: error.code, error: error.message });
+    diagnostics.log('whisper.failed', { ...diagnosticWindow, error_code: error.code, retryable: error.retryable, error: error.message });
+    diagnostics.log(inferenceKind === 'preview' ? 'whisper.preview-failed' : 'whisper.final-failed', { ...diagnosticWindow, error_code: error.code, retryable: error.retryable, error: error.message });
     throw error;
   }
   try {
     await assertAssetReadable('runtime', binary);
     await assertAssetReadable('model', model);
   } catch (error) {
-    diagnostics.log('whisper.failed', { ...window, error_code: error.code, error: error.message });
+    diagnostics.log('whisper.failed', { ...diagnosticWindow, error_code: error.code, retryable: error.retryable, error: error.message });
+    diagnostics.log(inferenceKind === 'preview' ? 'whisper.preview-failed' : 'whisper.final-failed', { ...diagnosticWindow, error_code: error.code, retryable: error.retryable, error: error.message });
     throw error;
   }
 
@@ -137,11 +151,12 @@ async function transcribeBytes(bytes, window, inferenceKind, signal) {
   const outputBase = path.join(tempRoot, `${id}`);
   const outputJson = `${outputBase}.json`;
   const ownerFile = `${outputBase}.owner.json`;
+  const processWindow = { ...diagnosticWindow, byte_count: bytes.byteLength };
   let processResult;
   try {
     await writeFile(ownerFile, JSON.stringify({ pid: process.pid, output_base: outputBase }), { flag: 'wx' });
     await writeFile(wav, createWav(bytes, 16000, 1, 16));
-    processResult = await runWhisper(binary, model, wav, outputBase, { ...window, byte_count: bytes.byteLength, inference_kind: inferenceKind }, { signal });
+    processResult = await runWhisper(binary, model, wav, outputBase, processWindow, { signal });
     let raw;
     try { raw = JSON.parse(await readFile(outputJson, 'utf8')); }
     catch (error) { throw malformed(`Whisper returned malformed JSON: ${error.message}`, processResult.stderr); }
@@ -151,26 +166,30 @@ async function transcribeBytes(bytes, window, inferenceKind, signal) {
     }
     const text = reconstructTranscriptText(segments);
     const wordCount = countWords(segments);
-    diagnostics.log('whisper.completed', { session_id: window.session_id, audio_window_id: window.audio_window_id, inference_kind: inferenceKind, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, transcript_preview: text });
+    diagnostics.log('whisper.completed', { ...processWindow, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, transcript_preview: text });
+    diagnostics.log(inferenceKind === 'preview' ? 'whisper.preview-completed' : 'whisper.final-completed', { ...processWindow, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, transcript_preview: text });
     if (!segments.length || !wordCount || !text) {
-      diagnostics.log('whisper.empty', { session_id: window.session_id, audio_window_id: window.audio_window_id, inference_kind: inferenceKind, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, reason: 'no-speech' });
+      diagnostics.log('whisper.empty', { ...processWindow, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, reason: 'no-speech' });
+      diagnostics.log(inferenceKind === 'preview' ? 'whisper.preview-empty' : 'whisper.final-empty', { ...processWindow, process_pid: processResult.pid, elapsed_ms: processResult.elapsed_ms, segment_count: segments.length, committed_word_count: wordCount, reason: 'no-speech' });
     }
     return { text, segments, process: processResult };
   } catch (error) {
-    diagnostics.log('whisper.failed', { session_id: window.session_id, audio_window_id: window.audio_window_id, duration_ms: window.duration_ms, byte_count: window.byte_count, process_pid: processResult?.pid, elapsed_ms: processResult?.elapsed_ms, error_code: error.code, error: error.message });
+    diagnostics.log('whisper.failed', { ...processWindow, process_pid: processResult?.pid, elapsed_ms: processResult?.elapsed_ms, error_code: error.code, retryable: error.retryable, error: error.message });
+    diagnostics.log(inferenceKind === 'preview' ? 'whisper.preview-failed' : 'whisper.final-failed', { ...processWindow, process_pid: processResult?.pid, elapsed_ms: processResult?.elapsed_ms, error_code: error.code, retryable: error.retryable, error: error.message });
     throw error;
   } finally {
     const cleanup = await Promise.allSettled([rm(wav, { force: true }), rm(outputJson, { force: true }), rm(ownerFile, { force: true })]);
     const failures = cleanup.filter((result) => result.status === 'rejected').map((result) => result.reason?.message || String(result.reason));
-    if (failures.length) diagnostics.log('whisper.cleanup-failed', { session_id: window.session_id, audio_window_id: window.audio_window_id, error_count: failures.length, error: failures.join('; ') });
+    if (failures.length) diagnostics.log('whisper.cleanup-failed', { ...processWindow, error_count: failures.length, error: failures.join('; ') });
   }
 }
 
-function finalOutputs(state, result, reason = 'flush', requestedUtteranceId) {
+function finalOutputs(state, result, reason = 'flush', requestedUtteranceId, identifiers = {}) {
   const first = state.chunks[0];
   const last = state.chunks.at(-1);
   const utteranceId = requestedUtteranceId || `${first.session_id}-utterance-${state.nextUtteranceSequence++}`;
   if (requestedUtteranceId) state.nextUtteranceSequence += 1;
+  const windowId = audioWindowId(state);
   const words = [];
   for (const word of lexicalWordsForSegments(result.segments)) {
     const firstToken = word.tokens[0];
@@ -185,15 +204,37 @@ function finalOutputs(state, result, reason = 'flush', requestedUtteranceId) {
     } });
   }
   if (!words.length) {
+    diagnostics.log('transcript.final-emission-summary', {
+      session_id: first.session_id,
+      utterance_id: utteranceId,
+      audio_window_id: windowId,
+      flush_id: identifiers.flush_id,
+      input_message_id: identifiers.input_message_id,
+      committed_word_count: 0,
+      boundary_count: 0,
+      outcome: 'empty'
+    });
     return [{ messageType: 'transcript.empty', schemaVersion: '1.0.0', identityKey: `transcript.empty:${utteranceId}`, payload: {
-      audio_window_id: audioWindowId(state), session_id: first.session_id, utterance_id: utteranceId, reason: reason === 'pause' ? 'pause' : 'flush', segment_count: result.segments.length, word_count: 0
+      audio_window_id: windowId, session_id: first.session_id, utterance_id: utteranceId, reason: reason === 'pause' ? 'pause' : 'flush', segment_count: result.segments.length, word_count: 0
     } }];
   }
-  diagnostics.log('transcript.boundary-emitted', { session_id: first.session_id, audio_window_id: audioWindowId(state), utterance_id: utteranceId, first_word_sequence: words[0].payload.sequence, last_word_sequence: words.at(-1).payload.sequence, reason });
+  const boundaryId = `${utteranceId}-boundary-${state.nextWordSequence}`;
+  diagnostics.log('transcript.final-emission-summary', {
+    session_id: first.session_id,
+    utterance_id: utteranceId,
+    audio_window_id: windowId,
+    flush_id: identifiers.flush_id,
+    input_message_id: identifiers.input_message_id,
+    committed_word_count: words.length,
+    boundary_count: 1,
+    boundary_id: boundaryId,
+    outcome: 'boundary-ready'
+  });
+  diagnostics.log('transcript.boundary-emitted', { session_id: first.session_id, audio_window_id: windowId, utterance_id: utteranceId, boundary_id: boundaryId, flush_id: identifiers.flush_id, input_message_id: identifiers.input_message_id, first_word_sequence: words[0].payload.sequence, last_word_sequence: words.at(-1).payload.sequence, reason });
   return [
     ...words,
     { messageType: 'transcript.utterance-boundary', identityKey: `${SERVICE}:boundary:${utteranceId}:${state.nextWordSequence}`, payload: {
-      boundary_id: `${utteranceId}-boundary-${state.nextWordSequence}`, session_id: first.session_id, utterance_id: utteranceId, reason,
+      boundary_id: boundaryId, session_id: first.session_id, utterance_id: utteranceId, reason,
       first_word_sequence: words[0].payload.sequence, last_word_sequence: words.at(-1).payload.sequence,
       start_time: first.start_time, end_time: last.end_time, punctuation_hint: punctuationHint(result.text), source_chunk_ids: state.chunks.map((chunk) => chunk.chunk_id)
     } }
@@ -251,6 +292,7 @@ function readTimestamp(value) {
 function runWhisper(binary, model, wav, outputBase, window, { signal } = {}) {
   return new Promise((resolve, reject) => {
     const startedAt = performance.now();
+    const lifecyclePrefix = window.inference_kind === 'preview' ? 'whisper.preview' : 'whisper.final';
     const delayedMs = positiveEnvironmentNumber('ARGUS_WHISPER_DELAYED_MS', 10000);
     const timeoutMs = positiveEnvironmentNumber('ARGUS_WHISPER_TIMEOUT_MS', 120000);
     const child = spawn(binary, ['--model', model, '--file', wav, '--output-json-full', '--output-file', outputBase, '--no-prints', '--no-gpu', '--language', 'en'], { windowsHide: true, shell: /\.(?:cmd|bat)$/i.test(binary), stdio: ['ignore', 'ignore', 'pipe'] });
@@ -278,6 +320,7 @@ function runWhisper(binary, model, wav, outputBase, window, { signal } = {}) {
     const abort = () => {
       if (settled) return;
       superseded = true;
+      diagnostics.log(`${lifecyclePrefix}-cancelled`, { ...window, process_pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt), reason: 'finalization-priority' });
       terminateProcessTree(child);
       finish(supersededError());
     };
@@ -287,9 +330,13 @@ function runWhisper(binary, model, wav, outputBase, window, { signal } = {}) {
       if (stderr.length < 4096) stderr += chunk.toString().slice(0, 4096 - stderr.length);
     });
     if (child.pid) diagnostics.log('whisper.started', { ...window, byte_count: window.byte_count, process_pid: child.pid });
-    child.once('error', (error) => finish(unavailable(`Unable to start whisper.cpp: ${error.message}`)));
+    child.once('error', (error) => {
+      diagnostics.log(`${lifecyclePrefix}-process-error`, { ...window, process_pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt), error_code: error.code, error: error.message });
+      finish(unavailable(`Unable to start whisper.cpp: ${error.message}`));
+    });
     child.once('exit', (code, signal) => {
       exited = true;
+      diagnostics.log('whisper.process-exit', { ...window, process_pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt), exit_code: code, signal, expected: superseded || timedOut });
       if (superseded) return finish(supersededError());
       if (timedOut) return finish(timeoutError());
       if (code === 0) return finish(undefined, { stderr, pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt) });
@@ -302,6 +349,7 @@ function runWhisper(binary, model, wav, outputBase, window, { signal } = {}) {
       if (settled || exited) return;
       timedOut = true;
       diagnostics.log('whisper.timeout', { ...window, byte_count: window.byte_count, process_pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt), timeout_ms: timeoutMs });
+      diagnostics.log(`${lifecyclePrefix}-timed-out`, { ...window, byte_count: window.byte_count, process_pid: child.pid, elapsed_ms: Math.round(performance.now() - startedAt), timeout_ms: timeoutMs, retryable: true });
       terminateProcessTree(child);
       killTimer = setTimeout(() => { if (!exited) terminateProcessTree(child); finish(timeoutError()); }, 1000);
     }, timeoutMs);

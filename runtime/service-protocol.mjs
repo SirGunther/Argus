@@ -1,5 +1,6 @@
 import readline from 'node:readline';
 import { createMessageIdentity, fingerprintMessage, fingerprintValue, MessageIntegrityLedger } from './message-identity.mjs';
+import { createDiagnosticLogger, installProcessDiagnosticHandlers } from './diagnostics.mjs';
 
 export class ServiceOperationError extends Error {
   constructor(message, { code = 'INTERNAL_ERROR', category = 'internal', retryable = false, rejected = false, details } = {}) {
@@ -14,6 +15,8 @@ export class ServiceOperationError extends Error {
 
 export function runLineService({ service, operations, onDrain, onReady }) {
   const producer = process.env.ARGUS_SERVICE_INSTANCE_ID || service;
+  const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS === '1', source: producer });
+  installProcessDiagnosticHandlers(diagnostics);
   const integrity = new MessageIntegrityLedger();
   const completed = new Map();
   const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });

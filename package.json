@@ -18,6 +18,7 @@
     "setup:real": "node scripts/setup-real-dependencies.mjs",
     "start": "electron .",
     "start:desktop": "electron .",
+    "start:diagnostics": "node scripts/start-diagnostics.mjs",
     "package:win": "electron-forge make --platform win32",
     "contracts:docs": "node scripts/generate-contract-docs.mjs",
     "contracts:docs:check": "node scripts/generate-contract-docs.mjs --check",

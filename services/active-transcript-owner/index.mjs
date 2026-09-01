@@ -53,11 +53,13 @@ runLineService({ service: SERVICE, operations: {
     await loadSession(message.payload.session_id);
     if (finalizedUtterances.has(message.payload.utterance_id)) throw rejected('LATE_BOUNDARY', `Utterance ${message.payload.utterance_id} is already finalized`);
     boundaryByUtterance.set(message.payload.utterance_id, message.payload);
+    diagnostics.log('transcript.boundary-received', { session_id: message.payload.session_id, utterance_id: message.payload.utterance_id, boundary_id: message.payload.boundary_id, first_word_sequence: message.payload.first_word_sequence, last_word_sequence: message.payload.last_word_sequence, reason: message.payload.reason, input_message_id: message.message_id });
     diagnostics.log('transcript.boundary-emitted', { session_id: message.payload.session_id, utterance_id: message.payload.utterance_id, boundary_id: message.payload.boundary_id, first_word_sequence: message.payload.first_word_sequence, last_word_sequence: message.payload.last_word_sequence, reason: message.payload.reason });
     return maybeRequestCorrection(message.payload.utterance_id);
   } },
   'transcript.correction-resolved': { name: 'finalize-transcript-segment', handle: async (message) => {
     const resolution = message.payload;
+    diagnostics.log('transcript.correction-resolving', { session_id: resolution.session_id, utterance_id: resolution.utterance_id, boundary_id: resolution.boundary_id, request_id: resolution.request_id, resolution_message_id: message.message_id, proposal_count: resolution.proposals?.length || 0 });
     await loadSession(resolution.session_id);
     const request = requestById.get(resolution.request_id);
     if (!request || request.boundary_id !== resolution.boundary_id) throw rejected('STALE_CORRECTION', 'Correction request is missing or no longer current');
@@ -97,6 +99,8 @@ runLineService({ service: SERVICE, operations: {
     };
     segmentById.set(segmentId, stored);
     await persistSession(resolution.session_id);
+    diagnostics.log('transcript.correction-resolved', { session_id: resolution.session_id, utterance_id: resolution.utterance_id, boundary_id: resolution.boundary_id, request_id: resolution.request_id, resolution_message_id: message.message_id, accepted_proposal_count: accepted.size, word_count: words.length });
+    diagnostics.log('transcript.segment-emitting', { session_id: stored.session_id, utterance_id: resolution.utterance_id, boundary_id: resolution.boundary_id, segment_id: stored.segment_id, sequence: stored.sequence, revision: stored.revision, word_count: words.length, transcript_preview: stored.text });
     diagnostics.log('transcript.segment-projected', { session_id: stored.session_id, segment_id: stored.segment_id, sequence: stored.sequence, transcript_preview: stored.text });
     finalizedUtterances.add(resolution.utterance_id);
     partialByUtterance.delete(resolution.utterance_id);
@@ -133,12 +137,16 @@ function maybeRequestCorrection(utteranceId) {
     policy: { profile: 'working-document-default', instruction_version: '1.0.0', automatic_acceptance_threshold: 0.9, max_context_words: 64 }
   };
   requestById.set(requestId, request);
+  diagnostics.log('transcript.correction-requested', { session_id: request.session_id, utterance_id: request.utterance_id, boundary_id: request.boundary_id, request_id: request.request_id, word_count: request.words.length, formatting_hint: request.formatting_hint });
   return [{ messageType: 'transcript.correction-request', identityKey: `transcript.correction-request:${requestId}`, payload: request }];
 }
 
 function segmentOutputs(stored, causationId, emitFinalizedSegment = true) {
   const outputs = [];
-  if (emitFinalizedSegment) outputs.push({ messageType: 'transcript.segment', schemaVersion: '1.4.0', identityKey: `transcript.segment:${stored.segment_id}:r${stored.revision}`, payload: Object.fromEntries(Object.entries(stored).filter(([key]) => key !== 'stored_at')) });
+  if (emitFinalizedSegment) {
+    diagnostics.log('transcript.segment-emitted', { session_id: stored.session_id, segment_id: stored.segment_id, sequence: stored.sequence, revision: stored.revision, boundary: stored.boundary, word_count: stored.word_provenance.length, causation_id: causationId, transcript_preview: stored.text });
+    outputs.push({ messageType: 'transcript.segment', schemaVersion: '1.4.0', identityKey: `transcript.segment:${stored.segment_id}:r${stored.revision}`, payload: Object.fromEntries(Object.entries(stored).filter(([key]) => key !== 'stored_at')) });
+  }
   outputs.push({ messageType: 'transcript.segment-stored', schemaVersion: '1.3.0', identityKey: `transcript.segment-stored:${stored.segment_id}:r${stored.revision}`, payload: stored });
   outputs.push({ messageType: 'transcript.history-append', schemaVersion: '1.3.0', identityKey: `transcript.history-append:${stored.segment_id}:r${stored.revision}`, payload: {
     history_entry_id: `${stored.segment_id}-r${stored.revision}`, session_id: stored.session_id, segment: stored, requested_at: stored.stored_at
