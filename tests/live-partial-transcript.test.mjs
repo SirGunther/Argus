@@ -120,11 +120,19 @@ test('renderer keeps provisional content out of finalized rows, counts, selectio
   assert.match(app, /const ids = state\[kind\]\.map/);
   assert.match(app, /return state\[kind\]\.filter\(\(item\) => isSelected/);
   assert.doesNotMatch(app, /state\.transcript\.push\(\{ \.\.\.item, provisional: true/);
-  assert.match(html, /<div class="rows-scroll" id="transcriptScroll">[\s\S]*<div class="rows-list" id="transcriptList"><\/div>[\s\S]*<div class="live-transcript" id="liveTranscript"/);
-  assert.match(html, /class="live-transcript"[^>]*hidden[^>]*aria-live="polite"/);
+  const transcriptScrollStart = html.indexOf('<div class="rows-scroll" id="transcriptScroll">');
+  const liveRowStart = html.indexOf('<section class="live-transcript-row" id="liveTranscript"');
+  const transcriptScroll = transcriptScrollStart >= 0 && liveRowStart > transcriptScrollStart ? html.slice(transcriptScrollStart, liveRowStart) : '';
+  const liveBlock = html.match(/<section class="live-transcript-row" id="liveTranscript"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(transcriptScroll, /<div class="rows-list" id="transcriptList"><\/div>/);
+  assert.doesNotMatch(transcriptScroll, /liveTranscript/);
+  assert.match(liveBlock, /aria-live="polite"/);
+  assert.doesNotMatch(liveBlock, /\bhidden\b/);
   assert.match(html, /class="live-transcript-kicker">LIVE<\/span>[\s\S]*PROVISIONAL · READ-ONLY/);
-  const liveBlock = html.match(/<div class="live-transcript"[\s\S]*?<p id="liveTranscriptText"><\/p>\s*<\/div>/)?.[0] || '';
   assert.doesNotMatch(liveBlock, /checkbox|timestamp|copy|contenteditable/i);
+  assert.match(liveBlock, /<p id="liveTranscriptText">Listening for speech\.\.\.<\/p>/);
+  assert.ok(html.indexOf('</main>') < html.indexOf('id="liveTranscript"'), 'live row must be outside the scrolling workspace');
+  assert.ok(html.indexOf('id="liveTranscript"') < html.indexOf('<footer class="statusbar">'), 'live row must sit immediately above the system-status footer');
 });
 
 test('desktop UI projections carry utterance identity from provisional through final segment', () => {

@@ -70,13 +70,6 @@
           </div>
           <div class="rows-scroll" id="transcriptScroll">
             <div class="rows-list" id="transcriptList"></div>
-            <div class="live-transcript" id="liveTranscript" hidden aria-live="polite" aria-label="Live provisional transcript">
-              <div class="live-transcript-heading">
-                <span class="live-transcript-kicker">LIVE</span>
-                <span>PROVISIONAL · READ-ONLY</span>
-              </div>
-              <p id="liveTranscriptText"></p>
-            </div>
           </div>
           <button class="jump-live" id="transcriptJump" data-kind="transcript" type="button" hidden>
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>
@@ -116,6 +109,14 @@
           </button>
         </section>
       </main>
+
+      <section class="live-transcript-row" id="liveTranscript" aria-live="polite" aria-label="Live provisional transcript">
+        <div class="live-transcript-heading">
+          <span class="live-transcript-kicker">LIVE</span>
+          <span>PROVISIONAL · READ-ONLY</span>
+        </div>
+        <p id="liveTranscriptText">Listening for speech...</p>
+      </section>
 
       <footer class="statusbar">
         <div class="status-cluster">

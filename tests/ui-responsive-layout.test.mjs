@@ -17,12 +17,15 @@ test('compact Electron viewport contract keeps primary controls visible and seco
 
   assert.match(electron, /width:\s*1180,\s*height:\s*800,\s*minWidth:\s*760,\s*minHeight:\s*600/);
   assert.match(css, /body\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?overflow-x:\s*hidden;/);
-  assert.match(css, /\.app-shell\s*\{[\s\S]*?grid-template-rows:\s*64px minmax\(0, 1fr\) 42px;[\s\S]*?min-height:\s*0;/);
+  assert.match(css, /\.app-shell\s*\{[\s\S]*?grid-template-rows:\s*64px minmax\(0, 1fr\) auto 42px;[\s\S]*?min-height:\s*0;/);
   assert.match(css, /#transcriptList \.data-row:not\(\.live-preview\) > \.row-main \{\s*margin-left:\s*4px;\s*\}/, 'finalized transcript rows must keep a 4px timestamp/text inset');
   assert.doesNotMatch(css, /min-width:\s*760px|min-height:\s*850px|select\s*\{\s*width:\s*190px/);
   assert.doesNotMatch(css, /\.product-label, \.elapsed-block\s*\{\s*display:\s*none/);
   assert.match(html, /id="elapsedTime"/);
   assert.match(css, /@media \(max-width:\s*840px\)[\s\S]*?grid-template-columns:\s*1fr;[\s\S]*?grid-template-rows:\s*minmax\(190px, 1\.15fr\) minmax\(170px, \.85fr\)/);
+  assert.match(css, /\.live-transcript-row\s*\{[\s\S]*?max-height:\s*78px;[\s\S]*?border-top:\s*1px solid var\(--line\);[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto;/);
+  assert.match(css, /@media \(max-width:\s*840px\)[\s\S]*?\.live-transcript-row\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
+  assert.match(html, /<main class="workspace">[\s\S]*<\/main>\s*<section class="live-transcript-row" id="liveTranscript"[\s\S]*<footer class="statusbar">/);
 
   assert.match(footer, /class="capture-status"[\s\S]*?class="transcription-status/);
   assert.match(systemStatus, /id="serviceStatusList"/);
