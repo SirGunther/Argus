@@ -204,6 +204,9 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
   grid-template-columns: 20px minmax(5ch, 7ch) minmax(0, 1fr) 28px;
   gap: 10px;
 }
+.transcript-labels { grid-template-columns: 20px minmax(5ch, 7ch) minmax(9ch, 13ch) minmax(0, 1fr) 28px; }
+#transcriptList .data-row.has-source { grid-template-columns: 20px minmax(5ch, 7ch) minmax(9ch, 13ch) minmax(0, 1fr) 28px; }
+#transcriptList .data-row.has-source > .row-main { margin-left: 0; }
 .derived-labels, #derivedList .data-row {
   grid-template-columns: 20px minmax(5ch, 7ch) minmax(9ch, 13ch) minmax(0, 1fr) 28px;
 }
@@ -300,11 +303,14 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
   font: 400 8px/1 var(--mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
   cursor: pointer;
   transition: .14s ease;
 }
 .source-range[hidden] { display: none; }
 .source-range svg { width: 10px; height: 10px; color: #53645d; }
+.source-range > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .source-range:hover, .source-range:focus-visible {
   border-color: var(--accent-line);
   background: var(--accent-soft);

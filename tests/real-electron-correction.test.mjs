@@ -542,6 +542,7 @@ test('continuous two-minute capture survives pause and forced windows across the
   for (let sequence = 121; sequence < 480; sequence += 1) await application.acceptAudioChunk(chunk(sequence));
   assert.equal((await application.acceptAudioFlush({ session_id: sessionId, reason: 'pause' })).queued, true);
   await application.waitForAudioIdle();
+  application.flushFinalizedTranscriptRows('stop');
 
   const rows = projections.filter((message) => message.message_type === 'ui.transcript-row' && !message.payload.provisional);
   assert.deepEqual(finalizedWindows.map((window) => window.sequences), [
@@ -551,8 +552,9 @@ test('continuous two-minute capture survives pause and forced windows across the
     ...Array.from({ length: 8 }, (_, window) => Array.from({ length: 40 }, (_, sequence) => sequence + 120 + (window * 40))),
     Array.from({ length: 40 }, (_, sequence) => sequence + 440)
   ]);
-  assert.equal(rows.length, 12, 'each bounded utterance must produce a finalized transcript row');
-  assert.deepEqual(rows.map((row) => row.payload.sequence), Array.from({ length: 12 }, (_, sequence) => sequence));
+  assert.equal(rows.length, 6, 'visible rows must accumulate independently of bounded audio windows');
+  assert.deepEqual(rows.map((row) => row.payload.sequence), Array.from({ length: 6 }, (_, sequence) => sequence));
+  assert.ok(rows.every((row) => row.payload.source_segment_ids.length === 2));
   assert.equal(flushes.length, 12);
   assert.equal(flushes.at(-1).reason, 'pause');
   assert.equal(flushes.filter((flush) => flush.reason === 'pause').length, 2);

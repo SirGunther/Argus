@@ -33,15 +33,13 @@ export function reconcileKeyedRows({ list, items, itemId, createRow, updateRow, 
 
 export function resolveSourceRangeIds(transcriptRows, source) {
   if (!source?.first_segment_id || !source?.last_segment_id) return [];
-  const first = transcriptRows.find((row) => row.segment_id === source.first_segment_id);
-  const last = transcriptRows.find((row) => row.segment_id === source.last_segment_id);
-  if (!first || !last) return [];
-  const low = Math.min(first.sequence, last.sequence);
-  const high = Math.max(first.sequence, last.sequence);
-  return transcriptRows
-    .filter((row) => row.sequence >= low && row.sequence <= high)
-    .sort((left, right) => left.sequence - right.sequence)
-    .map((row) => row.segment_id);
+  const sourceIds = (row) => row.source_segment_ids?.length ? row.source_segment_ids : [row.segment_id];
+  const firstIndex = transcriptRows.findIndex((row) => sourceIds(row).includes(source.first_segment_id));
+  const lastIndex = transcriptRows.findIndex((row) => sourceIds(row).includes(source.last_segment_id));
+  if (firstIndex < 0 || lastIndex < 0) return [];
+  const low = Math.min(firstIndex, lastIndex);
+  const high = Math.max(firstIndex, lastIndex);
+  return transcriptRows.slice(low, high + 1).map((row) => row.row_id || row.segment_id);
 }
 
 export function replaceSourceHighlights(uiState, segmentIds = []) {

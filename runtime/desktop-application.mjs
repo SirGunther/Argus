@@ -9,6 +9,14 @@ import { calculateRecordingDurationMs } from './session-lifecycle.mjs';
 import { createDiagnosticLogger } from './diagnostics.mjs';
 import { createAudioPreviewScheduler } from './audio-preview-scheduler.mjs';
 import { canonicalJson } from './message-identity.mjs';
+import {
+  consumeAcknowledgedTranscriptRevision,
+  createFinalizedTranscriptState,
+  finalizedTranscriptRows,
+  flushFinalizedTranscript,
+  hasConsumedTranscriptRevision,
+  resetFinalizedTranscriptState
+} from '../ui/finalized-transcript.mjs';
 
 const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL', 'ARGUS_WHISPER_TIMEOUT_MS', 'ARGUS_WHISPER_DELAYED_MS', 'ARGUS_WHISPER_PREVIEW_CADENCE_MS', 'ARGUS_DIAGNOSTICS'];
 const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'storage-session', 'clipboard', 'folder-opening'];
@@ -35,6 +43,8 @@ export class DesktopApplication {
     this.sessionId = process.env.ARGUS_SESSION_ID || `session-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`;
     this.metadata = undefined;
     this.transcript = [];
+    this.transcriptProjection = createFinalizedTranscriptState({ sessionId: this.sessionId });
+    this.transcriptProjectionLoaded = false;
     this.loggedItems = [];
     this.transcriptPartials = new Map();
     this.transcriptBoundaries = new Map();
@@ -337,6 +347,7 @@ export class DesktopApplication {
     }
     const output = await this.graph.dispatchFrom('@desktop-controller', 'control', payload.command, payload.session_id, { operation_id: payload.command_id, session_id: payload.session_id, requested_at: new Date().toISOString() }, payload.command_id);
     await this.graph.waitForIdle();
+    if (payload.command === 'session.stop' || payload.command === 'session.close') this.flushFinalizedTranscriptRows(payload.command);
     await this.loadLatestSession(payload.session_id);
     this.emit('ui.session-status', this.sessionProjection());
     const state = this.metadata?.state || (payload.command === 'session.record' ? 'recording' : 'stopped');
@@ -369,6 +380,8 @@ export class DesktopApplication {
     this.transcriptBoundaries.clear();
     this.transcriptHistoryAcknowledgements.clear();
     this.transcriptPendingFinalSegments.clear();
+    resetFinalizedTranscriptState(this.transcriptProjection, sessionId);
+    this.transcriptProjectionLoaded = true;
     this.clearPipelineStallDetection();
     this.emit('ui.session-status', this.sessionProjection());
     return this.accepted({ ...payload, session_id: sessionId }, 'runtime/session-lifecycle', sessionId, this.metadata?.revision, 'New Session accepted by the session lifecycle owner.');
@@ -756,7 +769,12 @@ export class DesktopApplication {
 
   async copyCommand(payload) {
     const { transcriptSegments, loggedItems } = await this.storageProjections();
-    const values = payload.kind === 'transcript' ? transcriptSegments.filter((item) => payload.item_ids.includes(item.segment_id)) : loggedItems.filter((item) => payload.item_ids.includes(item.item_id));
+    const values = payload.kind === 'transcript'
+      ? (() => {
+        const visible = this.transcript.filter((item) => payload.item_ids.includes(item.row_id || item.segment_id) || item.source_segment_ids?.some((segmentId) => payload.item_ids.includes(segmentId)));
+        return visible.length ? visible : transcriptSegments.filter((item) => payload.item_ids.includes(item.segment_id));
+      })()
+      : loggedItems.filter((item) => payload.item_ids.includes(item.item_id));
     const text = values.map((item) => `${payload.include_timestamps ? `[${item.start_time || item.stored_at}] ` : ''}${item.text}`).join('\n');
     const receipt = await this.capabilities.clipboard.write(text);
     return this.accepted(payload, 'platform/clipboard', undefined, undefined, receipt.message);
@@ -771,8 +789,14 @@ export class DesktopApplication {
   async openFolder(payload) { return this.accepted(payload, 'platform/folder', undefined, undefined, (await this.capabilities.folder.open(payload.session_id)).message); }
 
   async storageProjections(sessionId = this.sessionId) {
-    const [transcript, logged] = await Promise.all([this.storage.readActiveSnapshot(sessionId, 'transcript'), this.storage.readActiveSnapshot(sessionId, 'logged-item')]);
-    return { transcriptSegments: transcript?.segments || [], loggedItems: logged?.items || [] };
+    const [transcript, logged, history] = await Promise.all([
+      this.storage.readActiveSnapshot(sessionId, 'transcript'),
+      this.storage.readActiveSnapshot(sessionId, 'logged-item'),
+      this.storage.readHistory(sessionId, 'transcript')
+    ]);
+    const acknowledged = new Map(history.map((entry) => [entry.history_entry_id, entry.record]));
+    const transcriptSegments = (transcript?.segments || []).map((segment) => acknowledged.get(transcriptRevisionId(segment))).filter(Boolean);
+    return { transcriptSegments, loggedItems: logged?.items || [] };
   }
 
   async loadLatestSession(preferredSessionId) {
@@ -789,9 +813,34 @@ export class DesktopApplication {
     this.metadata = metadata;
     if (metadata) {
       const active = await this.storageProjections(metadata.session_id);
-      this.transcript = active.transcriptSegments.map((item) => this.transcriptRow(item));
+      const sessionChanged = this.transcriptProjectionLoaded && this.transcriptProjection.sessionId !== metadata.session_id;
+      const rebuildProjection = !this.transcriptProjectionLoaded || sessionChanged;
+      if (rebuildProjection) {
+        resetFinalizedTranscriptState(this.transcriptProjection, metadata.session_id);
+        this.transcriptProjectionLoaded = true;
+        for (const segment of active.transcriptSegments) {
+          const revisionId = transcriptRevisionId(segment);
+          consumeAcknowledgedTranscriptRevision(this.transcriptProjection, segment, {
+            history_entry_id: revisionId,
+            session_id: segment.session_id,
+            segment_id: segment.segment_id,
+            segment_revision: segment.revision || 0,
+            revision_id: revisionId
+          });
+        }
+      }
+      const flushed = metadata.state !== 'recording' ? flushFinalizedTranscript(this.transcriptProjection, 'session-load') : [];
+      if (rebuildProjection || flushed.length) {
+        this.transcript = finalizedTranscriptRows(this.transcriptProjection);
+      }
+      if (flushed.length && (this.started || this.projectionListeners.size)) this.emitFinalizedTranscriptRows(flushed, 'session-load');
       this.loggedItems = active.loggedItems.map((item) => this.loggedItemRow(item));
-    } else { this.transcript = []; this.loggedItems = []; }
+    } else {
+      resetFinalizedTranscriptState(this.transcriptProjection, this.sessionId);
+      this.transcriptProjectionLoaded = true;
+      this.transcript = [];
+      this.loggedItems = [];
+    }
   }
 
   async recoverUncleanRecordings() {
@@ -885,6 +934,10 @@ export class DesktopApplication {
       const revisionId = transcriptRevisionId(payload);
       const acknowledgementKey = `${payload.session_id}:${revisionId}`;
       const acknowledgement = this.transcriptHistoryAcknowledgements.get(acknowledgementKey);
+      if (!acknowledgement && hasConsumedTranscriptRevision(this.transcriptProjection, revisionId)) {
+        this.diagnostics.log('transcript.segment-duplicate', { session_id: payload.session_id, segment_id: payload.segment_id, revision: payload.revision || 0, revision_id: revisionId });
+        return;
+      }
       if (!acknowledgement || acknowledgement.history_entry_id !== revisionId) {
         if (!this.transcriptPendingFinalSegments.has(acknowledgementKey) && this.transcriptPendingFinalSegments.size >= MAX_AUDIO_UTTERANCES) {
           this.failFinalization({ code: 'TRANSCRIPT_PRESENTATION_BACKLOG_FULL', message: 'Finalized transcript presentation is waiting on too many history acknowledgements.', retryable: false, service: 'permanent-transcript-history' });
@@ -902,7 +955,7 @@ export class DesktopApplication {
       }
       this.transcriptPendingFinalSegments.delete(acknowledgementKey);
       this.transcriptHistoryAcknowledgements.delete(acknowledgementKey);
-      this.projectFinalTranscriptSegment(payload);
+      this.projectFinalTranscriptSegment(payload, acknowledgement);
       return;
     }
     if (message.message_type === 'transcript.history-appended') {
@@ -914,6 +967,7 @@ export class DesktopApplication {
       const acknowledgementKey = `${payload.session_id}:${revisionId}`;
       this.transcriptHistoryAcknowledgements.set(acknowledgementKey, {
         history_entry_id: payload.history_entry_id,
+        session_id: payload.session_id,
         segment_id: payload.segment_id,
         segment_revision: payload.segment_revision,
         revision_id: revisionId
@@ -922,7 +976,7 @@ export class DesktopApplication {
       if (pending) {
         this.transcriptPendingFinalSegments.delete(acknowledgementKey);
         this.transcriptHistoryAcknowledgements.delete(acknowledgementKey);
-        this.projectFinalTranscriptSegment(pending);
+        this.projectFinalTranscriptSegment(pending, payload);
       }
       this.diagnostics.log('transcript.history-appended', { session_id: payload.session_id, history_entry_id: payload.history_entry_id, segment_id: payload.segment_id, revision: payload.segment_revision });
       return;
@@ -951,15 +1005,41 @@ export class DesktopApplication {
     }
   }
 
-  projectFinalTranscriptSegment(payload) {
+  projectFinalTranscriptSegment(payload, acknowledgement) {
+    if (!this.transcriptProjectionLoaded) {
+      resetFinalizedTranscriptState(this.transcriptProjection, payload.session_id);
+      this.transcriptProjectionLoaded = true;
+    }
     const utteranceId = this.correlateTranscriptSegment(payload);
     this.clearPipelineStall(utteranceId);
     this.diagnostics.log('transcript.segment-received', { session_id: payload.session_id, utterance_id: utteranceId, segment_id: payload.segment_id, sequence: payload.sequence, boundary: payload.boundary, transcript_preview: payload.text });
-    const projection = this.emit('ui.transcript-row', this.transcriptRow(payload, utteranceId));
-    this.diagnostics.log('ui.transcript-row-projected', { session_id: payload.session_id, utterance_id: utteranceId, projection_id: projection.message_id, segment_id: payload.segment_id, revision: payload.revision || 0, provisional: false });
+    const correlatedPayload = utteranceId ? { ...payload, utterance_id: utteranceId } : payload;
+    const result = consumeAcknowledgedTranscriptRevision(this.transcriptProjection, correlatedPayload, acknowledgement);
+    if (result.accepted) {
+      this.transcript = finalizedTranscriptRows(this.transcriptProjection);
+      for (const row of result.appended) {
+        const projection = this.emit('ui.transcript-row', row);
+        this.diagnostics.log('ui.transcript-row-projected', { session_id: row.session_id, utterance_id: utteranceId, projection_id: projection.message_id, row_id: row.row_id, source_segment_ids: row.source_segment_ids, provisional: false });
+      }
+    }
     if (utteranceId) {
       this.transcriptPartials.delete(utteranceId);
       this.transcriptBoundaries.delete(utteranceId);
+    }
+  }
+
+  flushFinalizedTranscriptRows(reason = 'flush') {
+    const rows = flushFinalizedTranscript(this.transcriptProjection, reason);
+    if (!rows.length) return [];
+    this.transcript = finalizedTranscriptRows(this.transcriptProjection);
+    this.emitFinalizedTranscriptRows(rows, reason);
+    return rows;
+  }
+
+  emitFinalizedTranscriptRows(rows, reason) {
+    for (const row of rows) {
+      const projection = this.emit('ui.transcript-row', row);
+      this.diagnostics.log('ui.transcript-row-projected', { session_id: row.session_id, projection_id: projection.message_id, row_id: row.row_id, source_segment_ids: row.source_segment_ids, provisional: false, ...(reason ? { flush_reason: reason } : {}) });
     }
   }
 
@@ -1020,7 +1100,6 @@ export class DesktopApplication {
     }
     return undefined;
   }
-  transcriptRow(item, utteranceId) { return { session_id: item.session_id, ...(utteranceId ? { utterance_id: utteranceId } : {}), segment_id: item.segment_id, revision: item.revision || 0, sequence: item.sequence, start_time: item.start_time, end_time: item.end_time, text: item.text, provisional: false, read_only: false, review_flags: item.review_flags || [] }; }
   loggedItemRow(item) { return { session_id: item.session_id, item_id: item.item_id, revision: item.revision, revision_id: item.revision_id, logged_at: item.stored_at || item.created_at, text: item.text, source: item.source, classification_suggestion: item.classification_suggestion || null }; }
   accepted(payload, owner, resourceId, revision, message) { return { command_id: payload.command_id, session_id: payload.session_id, command: payload.command, status: 'accepted', owner, ...(resourceId ? { resource_id: resourceId } : {}), ...(revision === undefined ? {} : { revision }), message }; }
   rejected(payload = {}, code, message, owner, pending = false) { return { command_id: payload.command_id || 'invalid-command', session_id: payload.session_id || this.sessionId, command: payload.command || 'unknown', status: 'rejected', owner, code, message, ...(pending ? { pending: true } : {}) }; }

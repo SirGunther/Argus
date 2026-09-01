@@ -67,7 +67,7 @@
 | `ui.command` | control | `1.0.0` | `ui/bridge` | 32 KiB |
 | `ui.command-result` | control | `1.0.0` | `ui/bridge` | 16 KiB |
 | `ui.session-status` | domain | `1.2.0` | `ui/projection` | 16 KiB |
-| `ui.transcript-row` | domain | `1.1.0` | `ui/projection` | 32 KiB |
+| `ui.transcript-row` | domain | `1.2.0` | `ui/projection` | 32 KiB |
 | `ui.logged-item-row` | domain | `1.0.0` | `ui/projection` | 32 KiB |
 | `ui.service-status` | control | `1.0.0` | `ui/projection` | 16 KiB |
 
@@ -1052,7 +1052,7 @@
 ## `ui.transcript-row`
 
 - Plane: `domain`
-- Version: `1.1.0`
+- Version: `1.2.0`
 - Owner: `ui/projection`
 - Schema: [`ui-transcript-row.schema.json`](../ui-transcript-row.schema.json)
 - History: [`history/ui.transcript-row.md`](../history/ui.transcript-row.md)
@@ -1061,8 +1061,10 @@
 | Field | Required | Type | Constraint |
 | --- | --- | --- | --- |
 | `session_id` | yes | string | min length 1 |
+| `row_id` | no | string | min length 1 |
 | `segment_id` | yes | string | min length 1 |
 | `utterance_id` | no | string | min length 1 |
+| `utterance_ids` | no | array<string> | min items 1 |
 | `revision` | yes | integer | minimum 0 |
 | `sequence` | yes | integer | minimum 0 |
 | `start_time` | yes | string | min length 1 |
@@ -1071,6 +1073,9 @@
 | `provisional` | yes | boolean | — |
 | `read_only` | yes | boolean | — |
 | `dismissed` | no | boolean | — |
+| `source_segment_ids` | no | array<string> | min items 1 |
+| `source_segments` | no | array<object> | min items 1 |
+| `source` | no | object | requires `first_segment_id`, `last_segment_id`, `start_time`, `end_time` |
 | `review_flags` | yes | array<object> | — |
 
 ## `ui.logged-item-row`

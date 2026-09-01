@@ -156,7 +156,9 @@ test('desktop UI projections carry utterance identity from provisional through f
   application.handleGraphMessage({ message_id: 'history-1', message_type: 'transcript.history-appended', payload: {
     history_entry_id: 'segment-1-r0', session_id: sessionId, segment_id: 'segment-1', segment_revision: 0, revision_id: 'segment-1-r0', appended_at: '2026-09-01T00:00:00.000Z'
   } });
-  assert.equal(emitted.length, 2, 'a held finalized segment is projected when its exact history acknowledgement arrives');
+  assert.equal(emitted.length, 1, 'an acknowledged segment remains in the pending presentation row until a row boundary');
+  application.flushFinalizedTranscriptRows('stop');
+  assert.equal(emitted.length, 2, 'Stop flushes the pending finalized presentation row');
   assert.equal(emitted[0].payload.utterance_id, 'utterance-1');
   assert.equal(emitted[0].payload.provisional, true);
   assert.equal(emitted[1].payload.utterance_id, 'utterance-1');
@@ -190,7 +192,7 @@ test('the UI projection contract accepts optional utterance correlation metadata
     session_id: 'contract-correlation-session', utterance_id: 'utterance-1', segment_id: 'segment-1', revision: 0, sequence: 0,
     start_time: '00:00:00.000', end_time: '00:00:01.000', text: 'Final text', provisional: false, read_only: false, dismissed: false, review_flags: []
   }, 'contract-correlation-session');
-  assert.equal(message.schema_version, '1.1.0');
+  assert.equal(message.schema_version, '1.2.0');
   assert.deepEqual(boundary.registry.validateEnvelope(message), []);
 });
 
