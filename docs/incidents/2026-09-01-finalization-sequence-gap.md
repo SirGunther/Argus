@@ -1,6 +1,6 @@
 # Finalized Transcript Sequence-Gap Incident
 
-**Status:** Open  
+**Status:** Resolved in `8f0b8b457f650e46539bafd60f4a2459e3987f59`; physical-microphone acceptance pending
 **Observed:** 2026-09-01  
 **Affected session:** `session-5877d529-bf4e-402a-a87a-7d72ed19c8d9`  
 **Primary boundary:** `whisper-cpp-stt` -> `active-transcript-owner`  
@@ -92,3 +92,18 @@ $.plane must be control for session.stopped; received domain
 
 This contract-plane defect is real but is not the cause of the preceding finalized-word rejection. It is deferred from the primary sequence-gap correction unless investigation proves a direct causal relationship.
 
+## Resolution
+
+The production graph had allowed Whisper to emit faster than the bounded downstream wire could deliver. Overflowed finalized-word messages were rejected after Whisper had already advanced its authoritative sequence, leaving `active-transcript-owner` waiting for words that could no longer arrive.
+
+The resolved transport now:
+
+- applies FIFO deferred delivery with receipt-based backpressure instead of dropping accepted finalized words;
+- settles receipts using graph instance identity rather than manifest service name;
+- bounds receipt waits through the governed per-wire or graph operation timeout;
+- rejects and drains all pending work when a wire fails terminally;
+- rejects later delivery immediately while that session remains failed;
+- exposes finalization failure in application state; and
+- restores failed delivery only across a validated old-session/new-session boundary.
+
+Sequence, idempotency, immutable audio-window/chunk provenance, rollover, pause, delayed Whisper, and single-worker rules remain enforced. Automated validation passed all 187 tests, contract governance for 56 messages, generated contract documentation, syntax checks, and deterministic package-graph verification. A real Electron session with the configured physical microphone and Whisper assets remains the final acceptance check.
