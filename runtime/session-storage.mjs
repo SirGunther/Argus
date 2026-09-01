@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { access, appendFile, mkdir, readFile, rename, writeFile, lstat, realpath } from 'node:fs/promises';
+import { access, appendFile, copyFile, mkdir, readFile, rename, writeFile, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 export const STORAGE_SCHEMA_VERSION = '1.0.0';
@@ -18,6 +18,16 @@ const HISTORY_FILE_BY_KIND = Object.freeze({
   transcript: 'transcript.history.ndjson',
   'logged-item': 'logged-item.history.ndjson'
 });
+const RECOVERY_BACKUP_FILE_NAMES = Object.freeze([
+  'metadata',
+  'transcriptActive',
+  'loggedItemActive',
+  'transcriptOutbox',
+  'finalization',
+  'transcriptHistory',
+  'loggedItemHistory',
+  'closeEvidence'
+]);
 
 export class SessionStorageError extends Error {
   constructor(code, message, { retryable = false, details } = {}) {
@@ -71,7 +81,8 @@ export class SessionStorage {
       finalization: path.join(active, 'finalization.json'),
       transcriptHistory: path.join(permanent, HISTORY_FILE_BY_KIND.transcript),
       loggedItemHistory: path.join(permanent, HISTORY_FILE_BY_KIND['logged-item']),
-      closeEvidence: path.join(permanent, 'close.evidence.json')
+      closeEvidence: path.join(permanent, 'close.evidence.json'),
+      recoveryBackups: this.#insideRoot(path.join(session, 'recovery-backups'))
     });
   }
 
@@ -157,6 +168,62 @@ export class SessionStorage {
   async writeCloseEvidence(sessionId, evidence) {
     const paths = await this.ensureSession(sessionId);
     return this.#writeAtomic(paths.closeEvidence, evidence);
+  }
+
+  async backupSessionFiles(sessionId, { backupId, fileNames = RECOVERY_BACKUP_FILE_NAMES } = {}) {
+    if (typeof backupId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(backupId)) {
+      throw new SessionStorageError('INVALID_RECOVERY_BACKUP_ID', 'Recovery backup id must be a safe path segment');
+    }
+    if (!Array.isArray(fileNames) || fileNames.some((name) => !RECOVERY_BACKUP_FILE_NAMES.includes(name))) {
+      throw new SessionStorageError('INVALID_RECOVERY_BACKUP_FILE', 'Recovery backup file list is not governed');
+    }
+    const paths = await this.ensureSession(sessionId);
+    await this.#assertSafeSessionPaths(paths, fileNames);
+    await mkdir(paths.recoveryBackups, { recursive: true });
+    await this.#assertDirectory(paths.recoveryBackups, 'RECOVERY_BACKUP_FOLDER_SYMLINK');
+    const backupDirectory = this.#insideRoot(path.join(paths.recoveryBackups, backupId));
+    await mkdir(backupDirectory, { recursive: true });
+    await this.#assertDirectory(backupDirectory, 'RECOVERY_BACKUP_FOLDER_SYMLINK');
+
+    const copied = [];
+    for (const name of fileNames) {
+      const source = paths[name];
+      const destination = this.#insideRoot(path.join(backupDirectory, path.basename(source)));
+      let sourceInfo;
+      try { sourceInfo = await lstat(source); } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        throw error;
+      }
+      if (sourceInfo.isSymbolicLink() || !sourceInfo.isFile()) throw new SessionStorageError('SESSION_FILE_NOT_REGULAR', `Cannot back up non-regular session file: ${source}`);
+      try {
+        await access(destination);
+        const [sourceContent, backupContent] = await Promise.all([readFile(source), readFile(destination)]);
+        if (!sourceContent.equals(backupContent)) throw new SessionStorageError('RECOVERY_BACKUP_CONFLICT', `Recovery backup ${backupId} already contains different ${name}`);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        await copyFile(source, destination);
+      }
+      copied.push({ name, file: path.basename(source) });
+    }
+
+    const manifest = {
+      schema_version: STORAGE_SCHEMA_VERSION,
+      backup_id: backupId,
+      session_id: sessionId,
+      files: copied
+    };
+    const manifestPath = path.join(backupDirectory, 'recovery-manifest.json');
+    try {
+      const existing = JSON.parse(await readFile(manifestPath, 'utf8'));
+      if (existing?.schema_version !== manifest.schema_version || existing?.backup_id !== backupId || existing?.session_id !== sessionId || JSON.stringify(existing?.files) !== JSON.stringify(copied)) {
+        throw new SessionStorageError('RECOVERY_BACKUP_CONFLICT', `Recovery backup ${backupId} already contains a different manifest`);
+      }
+    } catch (error) {
+      if (error instanceof SessionStorageError) throw error;
+      if (error.code !== 'ENOENT') throw new SessionStorageError('RECOVERY_BACKUP_READ_FAILED', `Unable to read recovery backup manifest: ${error.message}`, { retryable: true });
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    }
+    return { backup_id: backupId, directory: backupDirectory, files: copied };
   }
 
   async readHistory(sessionId, kind) {

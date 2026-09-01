@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,11 +20,12 @@ async function withRoot(callback) {
 
 function command(operationId, sessionId, requestedAt = '2026-08-19T00:00:00.000Z') { return { operation_id: operationId, session_id: sessionId, requested_at: requestedAt }; }
 function segment(sessionId, revision, text = `Transcript revision ${revision}.`) { return { segment_id: `${sessionId}-segment-0`, session_id: sessionId, sequence: 0, revision, start_time: '0', end_time: '1', text, original_stt_text: 'Transcript', boundary: 'pause', word_provenance: [], formatting: { source: 'test', provisional_until_finalized: true }, stored_at: `2026-08-19T00:00:${String(revision).padStart(2, '0')}.000Z` }; }
+function storedSegment(sessionId, sequence, revision, text) { return { segment_id: `${sessionId}-segment-${sequence}`, session_id: sessionId, sequence, revision, revision_id: `${sessionId}-segment-${sequence}-r${revision}`, start_time: `00:00:${String(sequence).padStart(2, '0')}.000`, end_time: `00:00:${String(sequence + 1).padStart(2, '0')}.000`, text, original_stt_text: text.replace(/[.?!]$/, ''), boundary: 'pause', word_provenance: [{ word_id: `${sessionId}-stored-word-${sequence}`, source_text: 'Stored', rendered_text: 'Stored', source_sequence: sequence, source_audio_window_id: `${sessionId}-window-${sequence}`, source_chunk_ids: [`${sessionId}-chunk-${sequence}`] }], audio_windows: [{ audio_window_id: `${sessionId}-window-${sequence}`, first_chunk_id: `${sessionId}-chunk-${sequence}`, last_chunk_id: `${sessionId}-chunk-${sequence}`, first_sequence: sequence, last_sequence: sequence, chunk_count: 1, start_time: `00:00:${String(sequence).padStart(2, '0')}.000`, end_time: `00:00:${String(sequence + 1).padStart(2, '0')}.000` }], formatting: { source: 'contextual-language', provisional_until_finalized: true }, review_flags: [], stored_at: `2026-08-19T00:00:${String(sequence).padStart(2, '0')}.000Z` }; }
 function item(sessionId, revision) { return { item_id: `${sessionId}-item-0`, session_id: sessionId, revision, revision_id: `${sessionId}-item-0:r${revision}`, text: `Logged item ${revision}.`, source: { first_segment_id: `${sessionId}-segment-0`, last_segment_id: `${sessionId}-segment-0`, start_time: '0', end_time: '1' }, generator: { implementation: 'phase6-test', input_window_id: 'window-0' }, stored_at: `2026-08-19T00:00:${String(revision).padStart(2, '0')}.000Z` }; }
-function legacyRepeatedSegment(sessionId) {
+function legacyRepeatedSegment(sessionId, sequence = 0) {
   const chunkIds = Array.from({ length: 103 }, (_, index) => `${sessionId}-chunk-${index + 45}`);
   return {
-    segment_id: `${sessionId}-segment-0`, session_id: sessionId, sequence: 0, revision: 0,
+    segment_id: `${sessionId}-segment-${sequence}`, session_id: sessionId, sequence, revision: 0,
     start_time: '00:00:11.520', end_time: '00:00:37.888', text: 'Recovered legacy transcript.', original_stt_text: 'Recovered legacy transcript.', boundary: 'pause',
     word_provenance: Array.from({ length: 30 }, (_, index) => ({ word_id: `${sessionId}-word-${index}`, source_text: `word-${index}`, rendered_text: `word-${index}`, source_sequence: index, source_audio_window_id: `${sessionId}-audio-window-45`, source_chunk_ids: chunkIds })),
     formatting: { source: 'contextual-language', provisional_until_finalized: true }, review_flags: [], stored_at: '2026-08-19T00:00:38.000Z'
@@ -112,7 +113,40 @@ test('durable transcript outbox reconciles an acknowledged revision before close
   });
 });
 
-test('close compacts a legacy repeated-provenance segment before durable history append', async () => {
+test('close automatically resumes a valid unacknowledged corrected outbox revision', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'corrected-outbox-close';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    const pending = storedSegment(sessionId, 0, 0, 'Safe pending transcript.');
+    await storage.writeTranscriptOutbox(sessionId, { schema_version: '1.0.0', session_id: sessionId, saved_at: pending.stored_at, pending: [{ revision_id: pending.revision_id, segment: pending, emit_segment: true }] });
+
+    const closed = await lifecycle.close(command('close-1', sessionId));
+    assert.equal(closed.state, 'closed');
+    assert.deepEqual((await storage.readActiveSnapshot(sessionId, 'transcript')).segments, [pending]);
+    assert.deepEqual((await storage.readTranscriptOutbox(sessionId)).pending, []);
+    assert.deepEqual((await storage.readHistory(sessionId, 'transcript')).map((entry) => entry.history_entry_id), [pending.revision_id]);
+  });
+});
+
+test('close does not implicitly append an active-only missing revision', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'active-only-gap';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    const active = storedSegment(sessionId, 0, 0, 'Active-only transcript.');
+    await storage.writeActiveSnapshot(sessionId, 'transcript', { schema_version: '1.0.0', session_id: sessionId, saved_at: active.stored_at, segments: [active] });
+    await assert.rejects(() => lifecycle.close(command('close-1', sessionId)), (error) => error.code === 'RECOVERY_APPLY_REQUIRED');
+    assert.equal((await storage.readHistory(sessionId, 'transcript')).length, 0);
+    const recovered = await lifecycle.recoverSession(sessionId, { apply: true });
+    assert.equal(recovered.state_after, 'closed');
+    assert.deepEqual((await storage.readHistory(sessionId, 'transcript')).map((entry) => entry.history_entry_id), [active.revision_id]);
+  });
+});
+
+test('explicit recovery compacts a legacy repeated-provenance segment before durable history append', async () => {
   await withRoot(async (directory) => {
     const storage = new SessionStorage({ root: directory });
     const sessionId = 'legacy-provenance-recovery';
@@ -121,8 +155,19 @@ test('close compacts a legacy repeated-provenance segment before durable history
     const legacy = legacyRepeatedSegment(sessionId);
     await storage.writeActiveSnapshot(sessionId, 'transcript', { schema_version: '1.0.0', session_id: sessionId, saved_at: legacy.stored_at, segments: [legacy] });
 
-    const closed = await lifecycle.close(command('close-1', sessionId));
-    assert.equal(closed.state, 'closed');
+    await assert.rejects(() => lifecycle.close(command('close-1', sessionId)), (error) => error.code === 'LEGACY_RECOVERY_APPLY_REQUIRED');
+    const beforeDryRun = await readFile(storage.paths(sessionId).transcriptActive, 'utf8');
+    const dryRun = await lifecycle.recoverSession(sessionId, { dryRun: true });
+    assert.deepEqual(dryRun.recovered, [`${sessionId}-segment-0-r0`]);
+    assert.deepEqual(dryRun.already_present, []);
+    assert.deepEqual(dryRun.rejected, []);
+    assert.equal(dryRun.backup_path, null);
+    assert.equal(await readFile(storage.paths(sessionId).transcriptActive, 'utf8'), beforeDryRun);
+
+    const closed = await lifecycle.recoverSession(sessionId, { apply: true });
+    assert.equal(closed.state_after, 'closed');
+    assert.equal(closed.finalization.completed, true);
+    assert.ok(closed.backup_path);
     const active = (await storage.readActiveSnapshot(sessionId, 'transcript')).segments[0];
     const history = (await storage.readHistory(sessionId, 'transcript'))[0];
     assert.equal(active.revision_id, undefined);
@@ -134,6 +179,97 @@ test('close compacts a legacy repeated-provenance segment before durable history
     assert.equal(history.history_entry_id, `${sessionId}-segment-0-r0`);
     assert.deepEqual(history.record, active);
     assert.ok(Buffer.byteLength(JSON.stringify(history.record), 'utf8') < 32768);
+    assert.deepEqual(active.word_provenance.map((word) => [word.word_id, word.source_text, word.rendered_text, word.source_sequence, word.source_audio_window_id]), legacy.word_provenance.map((word) => [word.word_id, word.source_text, word.rendered_text, word.source_sequence, word.source_audio_window_id]));
+    assert.equal((await storage.readHistory(sessionId, 'transcript')).length, 1);
+
+    const replay = await lifecycle.recoverSession(sessionId, { apply: true });
+    assert.deepEqual(replay.recovered, []);
+    assert.deepEqual(replay.already_present, [`${sessionId}-segment-0-r0`]);
+    assert.equal(replay.backup_path, null);
+    assert.equal((await storage.readHistory(sessionId, 'transcript')).length, 1);
+  });
+});
+
+test('copied affected-session fixture reports active gaps and resumes acknowledged or unacknowledged corrected commits deterministically', async () => {
+  const sessionId = 'session-922dc897-804b-4c0b-be5a-6357ff4496c6';
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'argus-copied-incident-'));
+  const sourceRoot = path.join(scratch, 'source');
+  const copiedRoot = path.join(scratch, 'copied');
+  try {
+    const sourceStorage = new SessionStorage({ root: sourceRoot });
+    const sourceLifecycle = new SessionLifecycle({ storage: sourceStorage });
+    await sourceLifecycle.record(command('record-1', sessionId));
+    const first = storedSegment(sessionId, 0, 0, 'First authoritative segment.');
+    const second = storedSegment(sessionId, 1, 0, 'Second authoritative segment.');
+    const legacy = legacyRepeatedSegment(sessionId, 2);
+    await sourceStorage.writeActiveSnapshot(sessionId, 'transcript', { schema_version: '1.0.0', session_id: sessionId, saved_at: legacy.stored_at, segments: [first, second, legacy] });
+    for (const item of [first, second]) await sourceStorage.appendHistory(sessionId, 'transcript', { historyEntryId: `${item.segment_id}-r${item.revision}`, revision: item.revision, record: item, appendedAt: item.stored_at });
+    await assert.rejects(() => sourceLifecycle.close(command('close-incident', sessionId)), (error) => error.code === 'LEGACY_RECOVERY_APPLY_REQUIRED');
+    const sourceBefore = await readFile(sourceStorage.paths(sessionId).transcriptActive, 'utf8');
+    await cp(path.join(sourceRoot, sessionId), path.join(copiedRoot, sessionId), { recursive: true });
+
+    const copiedStorage = new SessionStorage({ root: copiedRoot });
+    const copiedLifecycle = new SessionLifecycle({ storage: copiedStorage });
+    const dryRun = await copiedLifecycle.recoverSession(sessionId, { dryRun: true });
+    assert.deepEqual(dryRun.active_revisions_missing_history, [`${sessionId}-segment-2-r0`]);
+    assert.deepEqual(dryRun.recovered, [`${sessionId}-segment-2-r0`]);
+    assert.deepEqual(dryRun.already_present, [`${sessionId}-segment-0-r0`, `${sessionId}-segment-1-r0`]);
+    assert.deepEqual(dryRun.rejected, []);
+    assert.equal(dryRun.state_after, 'closing');
+    assert.equal(await readFile(copiedStorage.paths(sessionId).transcriptActive, 'utf8'), sourceBefore);
+
+    const applied = await copiedLifecycle.recoverSession(sessionId, { apply: true });
+    assert.equal(applied.state_after, 'closed');
+    assert.equal(applied.finalization.completed, true);
+    assert.ok(applied.backup_path);
+    assert.equal((await copiedStorage.readHistory(sessionId, 'transcript')).length, 3);
+    assert.equal((await copiedStorage.readActiveSnapshot(sessionId, 'transcript')).segments.length, 3);
+    assert.equal((await copiedStorage.readActiveSnapshot(sessionId, 'transcript')).segments[2].word_provenance.length, 30);
+    assert.equal((await copiedStorage.readTranscriptOutbox(sessionId)).pending.length, 0);
+    assert.ok(await readFile(path.join(applied.backup_path, 'transcript.json'), 'utf8'));
+    assert.ok(await readFile(path.join(applied.backup_path, 'session.json'), 'utf8'));
+
+    const replay = await copiedLifecycle.recoverSession(sessionId, { apply: true });
+    assert.deepEqual(replay.recovered, []);
+    assert.deepEqual(replay.already_present, [`${sessionId}-segment-0-r0`, `${sessionId}-segment-1-r0`, `${sessionId}-segment-2-r0`]);
+    assert.equal(replay.backup_path, null);
+    assert.equal((await copiedStorage.readHistory(sessionId, 'transcript')).length, 3);
+    assert.equal(await readFile(sourceStorage.paths(sessionId).transcriptActive, 'utf8'), sourceBefore);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test('recovery applies only governed corrected pending commits and preserves rejected evidence', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'pending-recovery-session';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    const acknowledged = storedSegment(sessionId, 0, 0, 'Acknowledged pending segment.');
+    const unacknowledged = storedSegment(sessionId, 1, 0, 'Unacknowledged pending segment.');
+    const rejected = { ...storedSegment(sessionId, 2, 0, 'Rejected pending segment.'), word_provenance: Array.from({ length: 30 }, (_, index) => ({ word_id: `${sessionId}-bad-word-${index}`, source_text: 'bad', rendered_text: 'bad', source_sequence: index, source_chunk_ids: Array.from({ length: 121 }, (_, chunkIndex) => `${sessionId}-chunk-${chunkIndex}`), source_audio_window_id: `${sessionId}-window-bad` })) };
+    await storage.appendHistory(sessionId, 'transcript', { historyEntryId: `${acknowledged.segment_id}-r0`, revision: 0, record: acknowledged, appendedAt: acknowledged.stored_at });
+    await storage.writeTranscriptOutbox(sessionId, { schema_version: '1.0.0', session_id: sessionId, saved_at: acknowledged.stored_at, pending: [
+      { revision_id: `${acknowledged.segment_id}-r0`, segment: acknowledged, emit_segment: true },
+      { revision_id: `${unacknowledged.segment_id}-r0`, segment: unacknowledged, emit_segment: true },
+      { revision_id: `${rejected.segment_id}-r0`, segment: rejected, emit_segment: true }
+    ] });
+
+    const dryRun = await lifecycle.recoverSession(sessionId, { dryRun: true });
+    assert.deepEqual(dryRun.pending_acknowledged, [`${acknowledged.segment_id}-r0`]);
+    assert.deepEqual(dryRun.pending_unacknowledged, [`${unacknowledged.segment_id}-r0`, `${rejected.segment_id}-r0`]);
+    assert.deepEqual(dryRun.recovered, [`${acknowledged.segment_id}-r0`, `${unacknowledged.segment_id}-r0`]);
+    assert.deepEqual(dryRun.rejected, [`${rejected.segment_id}-r0`]);
+    assert.equal((await storage.readHistory(sessionId, 'transcript')).length, 1);
+
+    const applied = await lifecycle.recoverSession(sessionId, { apply: true });
+    assert.equal(applied.applied, true);
+    assert.deepEqual(applied.recovered, [`${acknowledged.segment_id}-r0`, `${unacknowledged.segment_id}-r0`]);
+    assert.deepEqual(applied.rejected, [`${rejected.segment_id}-r0`]);
+    assert.equal((await storage.readHistory(sessionId, 'transcript')).length, 2);
+    assert.deepEqual((await storage.readTranscriptOutbox(sessionId)).pending.map((entry) => entry.revision_id), [`${rejected.segment_id}-r0`]);
+    assert.deepEqual((await storage.readActiveSnapshot(sessionId, 'transcript')).segments.map((segment) => segment.segment_id), [acknowledged.segment_id, unacknowledged.segment_id]);
   });
 });
 

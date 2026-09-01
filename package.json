@@ -19,6 +19,7 @@
     "start": "electron .",
     "start:desktop": "electron .",
     "start:diagnostics": "node scripts/start-diagnostics.mjs",
+    "recover:session": "node scripts/recover-session.mjs",
     "package:win": "electron-forge make --platform win32",
     "contracts:docs": "node scripts/generate-contract-docs.mjs",
     "contracts:docs:check": "node scripts/generate-contract-docs.mjs --check",

@@ -141,18 +141,19 @@ export class SessionLifecycle {
     return result;
   }
 
-  async recover(sessionId, { failBeforePhase, failAfterPhase } = {}) {
+  async recover(sessionId, options = {}) {
     validateSessionId(sessionId);
     const metadata = await this.storage.readMetadata(sessionId);
     if (!metadata) throw conflict('SESSION_NOT_FOUND', `Unknown session ${sessionId}`);
+    if (Object.hasOwn(options, 'dryRun') || Object.hasOwn(options, 'apply')) return this.recoverSession(sessionId, options);
     if (metadata.state === 'closed') {
       const evidence = await this.storage.readCloseEvidence(sessionId);
       if (!evidence?.outcome) throw integrity('CLOSED_SESSION_EVIDENCE_MISSING', `Closed session ${sessionId} has no final close evidence`);
       return structuredClone(evidence.outcome);
     }
-    if (metadata.state !== 'closing') return { session_id: sessionId, state: metadata.state, finalization_phase: metadata.finalization.phase };
+    if (metadata.state !== 'closing') return this.recoverSession(sessionId, { dryRun: true });
     if (!metadata.finalization.command || !metadata.finalization.operation_id) throw integrity('FINALIZATION_COMMAND_MISSING', `Session ${sessionId} has incomplete close progress`);
-    const result = await this.#finalize(metadata, metadata.finalization.command, { failBeforePhase, failAfterPhase });
+    const result = await this.#finalize(metadata, metadata.finalization.command, options);
     const latest = await this.storage.readMetadata(sessionId);
     const fingerprint = metadata.finalization.command_fingerprint;
     if (!latest.operations?.[metadata.finalization.operation_id]) {
@@ -161,6 +162,67 @@ export class SessionLifecycle {
     }
     this.#releaseCaches(sessionId);
     return result;
+  }
+
+  async recoverSession(sessionId, options = {}) {
+    validateSessionId(sessionId);
+    const apply = options.apply === true;
+    const dryRun = Object.hasOwn(options, 'dryRun') ? options.dryRun === true : !apply;
+    if (dryRun && apply) throw invalid('Recovery cannot be both dry-run and apply');
+    if (!dryRun && !apply) throw invalid('Recovery mutation requires explicit apply: true');
+
+    const plan = await this.#buildRecoveryPlan(sessionId);
+    const report = {
+      session_id: sessionId,
+      mode: apply ? 'apply' : 'dry-run',
+      applied: false,
+      backup_path: null,
+      state_before: plan.metadata.state,
+      state_after: plan.metadata.state,
+      active_revisions_missing_history: plan.activeRevisionsMissingHistory,
+      pending_acknowledged: plan.pendingAcknowledged,
+      pending_unacknowledged: plan.pendingUnacknowledged,
+      recovered: plan.recovered,
+      already_present: plan.alreadyPresent,
+      rejected: plan.rejected,
+      rejection_details: plan.rejectionDetails,
+      finalization: {
+        eligible: plan.metadata.state === 'closing' && plan.rejected.length === 0,
+        attempted: false,
+        completed: false,
+        phase_before: plan.metadata.finalization?.phase || 'none',
+        phase_after: plan.metadata.finalization?.phase || 'none'
+      }
+    };
+    if (!apply) return report;
+
+    if (plan.willMutate) {
+      const backup = await this.storage.backupSessionFiles(sessionId, { backupId: plan.backupId });
+      report.backup_path = backup.directory;
+      await this.#applyRecoveryPlan(plan);
+      report.applied = true;
+    }
+
+    if (plan.metadata.state === 'closing' && plan.rejected.length === 0) {
+      report.finalization.attempted = true;
+      const latest = await this.#loadMetadata(sessionId);
+      if (!latest.finalization.command || !latest.finalization.operation_id) throw integrity('FINALIZATION_COMMAND_MISSING', `Session ${sessionId} has incomplete close progress`);
+      const outcome = await this.#finalize(latest, latest.finalization.command);
+      report.finalization.completed = true;
+      report.finalization.phase_after = 'released';
+      report.state_after = outcome.state;
+      report.outcome = outcome;
+      this.#releaseCaches(sessionId);
+    } else {
+      const latest = await this.storage.readMetadata(sessionId);
+      report.state_after = latest?.state || plan.metadata.state;
+      report.finalization.phase_after = latest?.finalization?.phase || report.finalization.phase_after;
+    }
+    return report;
+  }
+
+  async inspectRecovery(sessionId) {
+    return this.recoverSession(sessionId, { dryRun: true });
   }
 
   async acceptTranscriptRevision(sessionId, segment, { appendedAt = this.clock() } = {}) {
@@ -407,10 +469,10 @@ export class SessionLifecycle {
     for (const entry of pending) {
       const segment = entry?.segment;
       const revisionId = entry?.revision_id || `${segment?.segment_id}-r${segment?.revision}`;
-      if (!segment?.segment_id || segment.session_id !== sessionId || revisionId !== `${segment.segment_id}-r${segment.revision}`) {
+      if (!entry || typeof entry !== 'object' || typeof entry.revision_id !== 'string' || !entry.revision_id || !segment?.segment_id || segment.session_id !== sessionId || revisionId !== `${segment.segment_id}-r${segment.revision}` || typeof entry.emit_segment !== 'boolean') {
         throw integrity('PENDING_TRANSCRIPT_COMMIT_INVALID', `Pending transcript outbox contains an invalid revision for ${sessionId}`);
       }
-      const reconciled = await reconcileTranscriptHistoryEntry(this.storage, sessionId, history, revisionId, segment);
+      const reconciled = await reconcilePendingTranscriptHistoryEntry(this.storage, sessionId, history, revisionId, segment);
       const index = segments.findIndex((candidate) => candidate.segment_id === segment.segment_id);
       if (index < 0) segments.push(structuredClone(reconciled));
       else if (segments[index].revision < reconciled.revision) segments[index] = structuredClone(reconciled);
@@ -421,6 +483,195 @@ export class SessionLifecycle {
     await this.persistActiveProjections(sessionId, { transcriptSegments: segments, loggedItems: projections.loggedItems });
     await this.storage.writeTranscriptOutbox(sessionId, createTranscriptOutbox(sessionId, this.clock(), []));
     return { ...projections, transcriptSegments: segments };
+  }
+
+  async #buildRecoveryPlan(sessionId) {
+    const metadata = await this.#loadMetadata(sessionId);
+    const [transcriptSnapshot, loggedItemSnapshot, outbox, transcriptHistory, loggedItemHistory] = await Promise.all([
+      this.storage.readActiveSnapshot(sessionId, 'transcript'),
+      this.storage.readActiveSnapshot(sessionId, 'logged-item'),
+      this.storage.readTranscriptOutbox(sessionId),
+      this.storage.readHistory(sessionId, 'transcript'),
+      this.storage.readHistory(sessionId, 'logged-item')
+    ]);
+    if (!transcriptSnapshot || transcriptSnapshot.session_id !== sessionId || !Array.isArray(transcriptSnapshot.segments)) throw integrity('ACTIVE_SNAPSHOT_INVALID', `Active transcript snapshot is not governed for ${sessionId}`);
+    if (!loggedItemSnapshot || loggedItemSnapshot.session_id !== sessionId || !Array.isArray(loggedItemSnapshot.items)) throw integrity('ACTIVE_SNAPSHOT_INVALID', `Active logged-item snapshot is not governed for ${sessionId}`);
+    if (outbox && (outbox.session_id !== sessionId || outbox.schema_version !== STORAGE_SCHEMA_VERSION || !Array.isArray(outbox.pending))) throw integrity('TRANSCRIPT_OUTBOX_INVALID', `Transcript pending outbox is not governed for ${sessionId}`);
+
+    const historyById = new Map();
+    const historyConflicts = new Map();
+    for (const entry of transcriptHistory) {
+      const known = historyById.get(entry.history_entry_id);
+      if (known && known.fingerprint !== entry.fingerprint) historyConflicts.set(entry.history_entry_id, 'Permanent history contains conflicting copies of this revision');
+      else if (!known) historyById.set(entry.history_entry_id, entry);
+    }
+
+    const candidates = new Map();
+    const rejectionDetails = new Map();
+    const activeRevisionsMissingHistory = [];
+    const pendingEntries = (outbox?.pending || []).map((entry, index) => ({ entry, index, revisionId: recoveryRevisionId(entry?.segment, entry?.revision_id) || reportRevisionId(entry?.segment, `pending-${index}`) }));
+    const reject = (revisionId, error) => {
+      const id = revisionId || 'unknown-revision';
+      if (!rejectionDetails.has(id)) rejectionDetails.set(id, { code: error.code || 'RECOVERY_REJECTED', message: error.message });
+    };
+    const addCandidate = (segment, source, sourceIndex, revisionId) => {
+      const id = revisionId || recoveryRevisionId(segment) || reportRevisionId(segment, `${source}-${sourceIndex}`);
+      const derivedId = segment?.segment_id && Number.isInteger(segment?.revision) && segment.revision >= 0 ? `${segment.segment_id}-r${segment.revision}` : undefined;
+      if (!derivedId || (segment.revision_id !== undefined && segment.revision_id !== derivedId) || derivedId !== id) {
+        reject(id, integrity('TRANSCRIPT_REVISION_ID_INVALID', `Transcript revision ${id} has no governed segment/revision identity`));
+        return;
+      }
+      const fingerprint = fingerprintValue(segment);
+      const known = candidates.get(id);
+      if (known && known.fingerprint !== fingerprint) {
+        reject(id, integrity('RECOVERY_REVISION_CONFLICT', `Active and pending transcript revision ${id} contain different evidence`));
+        known.conflicted = true;
+        return;
+      }
+      const candidate = known || { revisionId: id, fingerprint, segment: structuredClone(segment), activeIndexes: [], pendingIndexes: [], conflicted: false };
+      if (source === 'active') candidate.activeIndexes.push(sourceIndex);
+      else candidate.pendingIndexes.push(sourceIndex);
+      candidates.set(id, candidate);
+    };
+
+    for (const [index, segment] of transcriptSnapshot.segments.entries()) {
+      const revisionId = recoveryRevisionId(segment);
+      const reportId = revisionId || reportRevisionId(segment, `active-${index}`);
+      if (revisionId && !historyById.has(revisionId)) activeRevisionsMissingHistory.push(revisionId);
+      addCandidate(segment, 'active', index, revisionId);
+      if (!revisionId) reject(reportId, integrity('TRANSCRIPT_REVISION_ID_INVALID', `Active transcript entry ${reportId} has no governed revision identity`));
+    }
+    for (const pending of pendingEntries) {
+      const entry = pending.entry;
+      if (!entry || typeof entry !== 'object' || typeof entry.revision_id !== 'string' || !entry.revision_id || !entry.segment || typeof entry.segment !== 'object' || typeof entry.emit_segment !== 'boolean' || (entry.utterance_id !== undefined && (typeof entry.utterance_id !== 'string' || !entry.utterance_id)) || (entry.request_id !== undefined && (typeof entry.request_id !== 'string' || !entry.request_id))) {
+        reject(pending.revisionId, integrity('PENDING_TRANSCRIPT_COMMIT_INVALID', `Pending transcript outbox entry ${pending.revisionId} is not governed`));
+        continue;
+      }
+      addCandidate(entry.segment, 'pending', pending.index, pending.revisionId);
+      if (!recoveryRevisionId(pending.entry?.segment) || pending.revisionId !== recoveryRevisionId(pending.entry?.segment)) {
+        reject(pending.revisionId, integrity('PENDING_TRANSCRIPT_COMMIT_INVALID', `Pending transcript outbox entry ${pending.revisionId} is not a governed revision`));
+      }
+    }
+
+    const pendingAcknowledged = pendingEntries.filter((pending) => pending.revisionId && historyById.has(pending.revisionId)).map((pending) => pending.revisionId);
+    const pendingUnacknowledged = pendingEntries.filter((pending) => pending.revisionId && !historyById.has(pending.revisionId)).map((pending) => pending.revisionId);
+    const activeByRevision = new Map(transcriptSnapshot.segments.map((segment, index) => [recoveryRevisionId(segment), { segment, index }]));
+    const activeReplacements = new Map();
+    const activeAdditions = [];
+    const append = [];
+    const completedPending = new Set();
+    const recovered = [];
+    const alreadyPresent = [];
+
+    for (const candidate of [...candidates.values()].sort(compareRecoveryCandidates)) {
+      if (candidate.conflicted) continue;
+      const id = candidate.revisionId;
+      const existing = historyById.get(id);
+      const active = activeByRevision.get(id);
+      let normalized;
+      try {
+        normalized = compactLegacyTranscriptSegment(candidate.segment);
+      } catch (error) {
+        reject(id, error);
+        continue;
+      }
+      if (historyConflicts.has(id)) {
+        reject(id, integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Permanent history entry ${id} has conflicting copies`));
+        continue;
+      }
+      const normalizedFingerprint = fingerprintValue(normalized);
+      if (existing && active && existing.fingerprint === normalizedFingerprint && fingerprintValue(active.segment) === existing.fingerprint && fingerprintValue(candidate.segment) === existing.fingerprint) {
+        for (const pendingIndex of candidate.pendingIndexes) completedPending.add(pendingIndex);
+        alreadyPresent.push(id);
+        continue;
+      }
+      try { validateRecoveredTranscriptAppend(sessionId, id, normalized); }
+      catch (error) {
+        reject(id, error);
+        continue;
+      }
+      if (existing && existing.fingerprint !== normalizedFingerprint) {
+        reject(id, integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${id} differs from active state`));
+        continue;
+      }
+      const activeMatches = Boolean(active && fingerprintValue(active.segment) === normalizedFingerprint);
+      if (!existing) append.push({ id, segment: normalized });
+      if (active && !activeMatches) activeReplacements.set(active.index, normalized);
+      if (!active && candidate.pendingIndexes.length) {
+        const currentIndex = transcriptSnapshot.segments.findIndex((segment) => segment.segment_id === normalized.segment_id);
+        const current = currentIndex >= 0 ? transcriptSnapshot.segments[currentIndex] : undefined;
+        if (!current || (Number.isInteger(current.revision) && current.revision < normalized.revision)) activeAdditions.push(normalized);
+      }
+      for (const pendingIndex of candidate.pendingIndexes) completedPending.add(pendingIndex);
+      if (existing && activeMatches) alreadyPresent.push(id);
+      else recovered.push(id);
+    }
+
+    for (const item of loggedItemSnapshot.items) {
+      const id = item?.revision_id || (item?.item_id && Number.isInteger(item?.revision) ? `${item.item_id}:r${item.revision}` : undefined);
+      const historyEntry = id ? loggedItemHistory.find((entry) => entry.history_entry_id === id) : undefined;
+      if (!id) reject('unknown-logged-item-revision', integrity('LOGGED_ITEM_REVISION_ID_INVALID', `Active logged item has no governed revision identity`));
+      else if (!historyEntry) reject(id, integrity('MISSING_AUTHORITATIVE_HISTORY', `Missing authoritative history entry ${id}`));
+      else if (historyEntry.fingerprint !== fingerprintValue(item)) reject(id, integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${id} differs from active state`));
+    }
+    for (const id of historyConflicts.keys()) if (!rejectionDetails.has(id)) reject(id, integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Permanent history entry ${id} has conflicting copies`));
+
+    const nextSegments = transcriptSnapshot.segments.map((segment, index) => activeReplacements.get(index) || structuredClone(segment));
+    for (const addition of activeAdditions) {
+      const sameSegmentIndex = nextSegments.findIndex((segment) => segment.segment_id === addition.segment_id);
+      if (sameSegmentIndex < 0) nextSegments.push(structuredClone(addition));
+      else if ((nextSegments[sameSegmentIndex].revision ?? -1) < addition.revision) nextSegments[sameSegmentIndex] = structuredClone(addition);
+    }
+    const nextPending = pendingEntries.filter((pending) => !completedPending.has(pending.index)).map((pending) => structuredClone(pending.entry));
+    const appendIds = append.map((item) => item.id);
+    const activeChanged = fingerprintValue(nextSegments) !== fingerprintValue(transcriptSnapshot.segments);
+    const outboxChanged = nextPending.length !== pendingEntries.length;
+    const rejectionIds = [...rejectionDetails.keys()].sort();
+    const preimage = { metadata, transcriptSnapshot, loggedItemSnapshot, outbox: outbox || createTranscriptOutbox(sessionId, transcriptSnapshot.saved_at, []), transcriptHistory, loggedItemHistory };
+    const backupId = `recovery-${fingerprintValue(preimage).slice(7, 31)}`;
+    return {
+      sessionId,
+      metadata,
+      transcriptSnapshot,
+      outbox: outbox || createTranscriptOutbox(sessionId, transcriptSnapshot.saved_at, []),
+      nextSegments,
+      nextPending,
+      append,
+      appendIds,
+      activeChanged,
+      outboxChanged,
+      recovered: [...new Set(recovered)].sort(),
+      alreadyPresent: [...new Set(alreadyPresent)].sort(),
+      rejected: rejectionIds,
+      rejectionDetails: Object.fromEntries(rejectionIds.map((id) => [id, rejectionDetails.get(id)])),
+      activeRevisionsMissingHistory: [...new Set(activeRevisionsMissingHistory)].sort(),
+      pendingAcknowledged: [...new Set(pendingAcknowledged)].sort(),
+      pendingUnacknowledged: [...new Set(pendingUnacknowledged)].sort(),
+      backupId,
+      willMutate: activeChanged || outboxChanged || appendIds.length > 0 || (metadata.state === 'closing' && rejectionIds.length === 0)
+    };
+  }
+
+  async #applyRecoveryPlan(plan) {
+    const initialMetadata = await this.#loadMetadata(plan.sessionId);
+    if (initialMetadata.revision !== plan.metadata.revision || initialMetadata.state !== plan.metadata.state) throw integrity('RECOVERY_STATE_CHANGED', `Session ${plan.sessionId} changed before recovery could be applied`);
+    for (const item of plan.append) {
+      await this.storage.appendHistory(plan.sessionId, 'transcript', {
+        historyEntryId: item.id,
+        revision: item.segment.revision,
+        record: item.segment,
+        appendedAt: item.segment.stored_at
+      });
+    }
+    if (plan.activeChanged) await this.storage.writeActiveSnapshot(plan.sessionId, 'transcript', createTranscriptSnapshot(plan.sessionId, this.clock(), plan.nextSegments));
+    if (plan.outboxChanged) await this.storage.writeTranscriptOutbox(plan.sessionId, createTranscriptOutbox(plan.sessionId, this.clock(), plan.nextPending));
+    if (plan.activeChanged || plan.outboxChanged || plan.append.length) {
+      const metadata = await this.#loadMetadata(plan.sessionId);
+      if (metadata.revision !== plan.metadata.revision || metadata.state !== plan.metadata.state) throw integrity('RECOVERY_STATE_CHANGED', `Session ${plan.sessionId} changed while recovery was being applied`);
+      metadata.updated_at = this.clock();
+      metadata.revision += 1;
+      await this.storage.writeMetadata(plan.sessionId, metadata);
+    }
   }
 
   async #historyCounts(sessionId) {
@@ -486,55 +737,69 @@ async function reconcileTranscriptHistoryEntry(storage, sessionId, history, revi
   if (existing?.fingerprint === fingerprintValue(segment)) return segment;
   let candidate = segment;
   candidate = compactLegacyTranscriptSegment(segment);
+  if (fingerprintValue(candidate) !== fingerprintValue(segment)) throw integrity('LEGACY_RECOVERY_APPLY_REQUIRED', `Transcript revision ${revisionId} requires explicit recovery apply before close can mutate legacy provenance`);
   validateRecoveredTranscriptAppend(sessionId, revisionId, candidate);
   if (existing) {
     if (existing.fingerprint !== fingerprintValue(candidate)) throw integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${revisionId} differs from active state`);
     return candidate;
   }
+  throw integrity('RECOVERY_APPLY_REQUIRED', `Transcript revision ${revisionId} is active without authoritative history; run explicit recovery apply before close`);
+}
+async function reconcilePendingTranscriptHistoryEntry(storage, sessionId, history, revisionId, segment) {
+  const existing = history.find((item) => item.history_entry_id === revisionId);
+  if (existing?.fingerprint === fingerprintValue(segment)) return segment;
+  validateRecoveredTranscriptAppend(sessionId, revisionId, segment);
+  if (existing) throw integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${revisionId} differs from pending state`);
   const appended = await storage.appendHistory(sessionId, 'transcript', {
     historyEntryId: revisionId,
-    revision: candidate.revision,
-    record: candidate,
-    appendedAt: candidate.stored_at
+    revision: segment.revision,
+    record: segment,
+    appendedAt: segment.stored_at
   });
   history.push(appended.entry);
-  return candidate;
+  return segment;
 }
 
 function compactLegacyTranscriptSegment(segment) {
   const words = Array.isArray(segment?.word_provenance) ? segment.word_provenance : [];
+  if (Array.isArray(segment?.audio_windows) && segment.audio_windows.length) return structuredClone(segment);
   const groups = new Map();
   for (const word of words) {
     if (!Array.isArray(word?.source_chunk_ids) || word.source_chunk_ids.length < 2) continue;
     const windowId = word.source_audio_window_id;
     if (!windowId) throw integrity('LEGACY_PROVENANCE_UNRECOVERABLE', `Transcript segment ${segment.segment_id} has repeated chunks without an audio-window identity`);
-    const group = groups.get(windowId) || { chunkIds: word.source_chunk_ids, repeated: true };
-    if (fingerprintValue(group.chunkIds) !== fingerprintValue(word.source_chunk_ids)) group.repeated = false;
+    const group = groups.get(windowId) || { chunkIds: word.source_chunk_ids, count: 0, consistent: true };
+    if (fingerprintValue(group.chunkIds) !== fingerprintValue(word.source_chunk_ids)) group.consistent = false;
+    group.count += 1;
     groups.set(windowId, group);
   }
-  if (!groups.size || [...groups.values()].some((group) => !group.repeated)) return structuredClone(segment);
-  if (groups.size !== 1) throw integrity('LEGACY_PROVENANCE_UNRECOVERABLE', `Transcript segment ${segment.segment_id} repeats provenance for multiple windows without word timestamps`);
-
-  const [audioWindowId, group] = groups.entries().next().value;
-  const chunkIds = group.chunkIds;
-  const sequences = chunkIds.map(sequenceFromChunkId);
-  if (sequences.some((sequence) => !Number.isInteger(sequence)) || sequences.at(-1) - sequences[0] + 1 !== chunkIds.length || chunkIds.length > 120) {
-    throw integrity('LEGACY_PROVENANCE_UNRECOVERABLE', `Transcript segment ${segment.segment_id} has a non-contiguous or oversized legacy audio span`);
-  }
+  if (!groups.size) return structuredClone(segment);
+  if ([...groups.values()].some((group) => !group.consistent)) throw integrity('LEGACY_PROVENANCE_UNRECOVERABLE', `Transcript segment ${segment.segment_id} has inconsistent repeated provenance without word timestamps`);
+  const repeatedGroups = [...groups.entries()].filter(([, group]) => group.count > 1);
+  if (!repeatedGroups.length) return structuredClone(segment);
+  const audioWindows = repeatedGroups.map(([audioWindowId, group]) => {
+    const chunkIds = group.chunkIds;
+    const sequences = chunkIds.map(sequenceFromChunkId);
+    if (sequences.some((sequence) => !Number.isInteger(sequence)) || sequences.at(-1) - sequences[0] + 1 !== chunkIds.length || chunkIds.length > 120) {
+      throw integrity('LEGACY_PROVENANCE_UNRECOVERABLE', `Transcript segment ${segment.segment_id} has a non-contiguous or oversized legacy audio span`);
+    }
+    return {
+      audio_window_id: audioWindowId,
+      first_chunk_id: chunkIds[0],
+      last_chunk_id: chunkIds.at(-1),
+      first_sequence: sequences[0],
+      last_sequence: sequences.at(-1),
+      chunk_count: chunkIds.length,
+      start_time: segment.start_time,
+      end_time: segment.end_time
+    };
+  });
   const compacted = structuredClone(segment);
-  compacted.audio_windows = [{
-    audio_window_id: audioWindowId,
-    first_chunk_id: chunkIds[0],
-    last_chunk_id: chunkIds.at(-1),
-    first_sequence: sequences[0],
-    last_sequence: sequences.at(-1),
-    chunk_count: chunkIds.length,
-    start_time: segment.start_time,
-    end_time: segment.end_time
-  }];
+  compacted.audio_windows = audioWindows;
   compacted.word_provenance = words.map((word) => {
     const next = structuredClone(word);
-    if (Array.isArray(next.source_chunk_ids) && next.source_chunk_ids.length > 1) delete next.source_chunk_ids;
+    const group = groups.get(next.source_audio_window_id);
+    if (group?.count > 1 && group.consistent && fingerprintValue(group.chunkIds) === fingerprintValue(next.source_chunk_ids)) delete next.source_chunk_ids;
     return next;
   });
   return compacted;
@@ -546,12 +811,47 @@ function sequenceFromChunkId(chunkId) {
 }
 
 function validateRecoveredTranscriptAppend(sessionId, revisionId, segment) {
-  if (!segment || typeof segment !== 'object' || segment.session_id !== sessionId || revisionId !== `${segment.segment_id}-r${segment.revision}` || !Array.isArray(segment.word_provenance) || !segment.word_provenance.length) {
+  if (!segment || typeof segment !== 'object' || segment.session_id !== sessionId || typeof segment.segment_id !== 'string' || !Number.isInteger(segment.sequence) || segment.sequence < 0 || !Number.isInteger(segment.revision) || segment.revision < 0 || revisionId !== `${segment.segment_id}-r${segment.revision}` || !Array.isArray(segment.word_provenance) || !segment.word_provenance.length) {
     throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} is not a governed stored segment`);
   }
+  if (![segment.start_time, segment.end_time, segment.text, segment.original_stt_text, segment.stored_at].every((value) => typeof value === 'string' && value.length > 0) || !['continuation', 'pause', 'size', 'latency', 'flush'].includes(segment.boundary)) {
+    throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} is not a governed stored segment`);
+  }
+  const allowedSegmentKeys = new Set(['segment_id', 'revision_id', 'session_id', 'sequence', 'revision', 'start_time', 'end_time', 'text', 'original_stt_text', 'boundary', 'word_provenance', 'audio_windows', 'formatting', 'review_flags', 'stored_at']);
+  if (Object.keys(segment).some((key) => !allowedSegmentKeys.has(key))) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} contains an undeclared field`);
+  const wordIds = new Set();
+  for (const word of segment.word_provenance) {
+    if (!word || typeof word !== 'object' || typeof word.word_id !== 'string' || !word.word_id || typeof word.source_text !== 'string' || !word.source_text || typeof word.rendered_text !== 'string' || !word.rendered_text) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} contains an invalid word record`);
+    const allowedWordKeys = new Set(['word_id', 'source_text', 'rendered_text', 'source_sequence', 'source_audio_window_id', 'source_chunk_ids', 'correction_proposal_id']);
+    if (Object.keys(word).some((key) => !allowedWordKeys.has(key))) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} contains an undeclared word field`);
+    if (wordIds.has(word.word_id)) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} contains duplicate word evidence`);
+    wordIds.add(word.word_id);
+    if (word.source_sequence !== undefined && (!Number.isInteger(word.source_sequence) || word.source_sequence < 0)) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} contains an invalid word sequence`);
+    if (word.source_audio_window_id !== undefined && (typeof word.source_audio_window_id !== 'string' || !word.source_audio_window_id)) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} contains an invalid audio-window identity`);
+    if (word.source_chunk_ids !== undefined && (!Array.isArray(word.source_chunk_ids) || !word.source_chunk_ids.length || word.source_chunk_ids.some((chunkId) => typeof chunkId !== 'string' || !chunkId))) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} contains invalid chunk evidence`);
+  }
+  if (segment.audio_windows !== undefined) validateRecoveredAudioWindows(segment.audio_windows, revisionId);
+  if (segment.formatting !== undefined && (!segment.formatting || segment.formatting.provisional_until_finalized !== true || !['stt-provider', 'active-transcript-owner', 'contextual-language'].includes(segment.formatting.source))) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} has invalid formatting metadata`);
+  if (segment.review_flags !== undefined && (!Array.isArray(segment.review_flags) || segment.review_flags.some((flag) => !flag || typeof flag.word_id !== 'string' || !['unresolved-ambiguity', 'correction-review'].includes(flag.reason) || !Array.isArray(flag.candidates) || flag.candidates.length < 1 || flag.candidates.some((candidate) => typeof candidate !== 'string' || !candidate)))) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} has invalid review flags`);
   const bytes = Buffer.byteLength(JSON.stringify({ history_entry_id: revisionId, session_id: sessionId, segment, requested_at: segment.stored_at }), 'utf8');
   if (bytes > TRANSCRIPT_HISTORY_PAYLOAD_LIMIT_BYTES) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_LIMIT', `Transcript revision ${revisionId} remains ${bytes} bytes after provenance compaction; maximum is ${TRANSCRIPT_HISTORY_PAYLOAD_LIMIT_BYTES}`);
 }
+function validateRecoveredAudioWindows(windows, revisionId) {
+  if (!Array.isArray(windows) || !windows.length) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} has invalid audio-window spans`);
+  for (const window of windows) {
+    const allowedWindowKeys = new Set(['audio_window_id', 'first_chunk_id', 'last_chunk_id', 'first_sequence', 'last_sequence', 'chunk_count', 'start_time', 'end_time']);
+    if (!window || typeof window !== 'object' || Object.keys(window).some((key) => !allowedWindowKeys.has(key))) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} has undeclared audio-window fields`);
+    if (!window || typeof window !== 'object' || ['audio_window_id', 'first_chunk_id', 'last_chunk_id', 'start_time', 'end_time'].some((key) => typeof window[key] !== 'string' || !window[key]) || !Number.isInteger(window.first_sequence) || !Number.isInteger(window.last_sequence) || !Number.isInteger(window.chunk_count) || window.first_sequence < 0 || window.last_sequence < window.first_sequence || window.chunk_count < 1 || window.chunk_count > 120 || window.last_sequence - window.first_sequence + 1 !== window.chunk_count) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} has invalid audio-window spans`);
+  }
+}
+function recoveryRevisionId(segment, explicitId) {
+  const derived = segment?.segment_id && Number.isInteger(segment?.revision) && segment.revision >= 0 ? `${segment.segment_id}-r${segment.revision}` : undefined;
+  if (explicitId !== undefined) return typeof explicitId === 'string' && explicitId === derived ? explicitId : explicitId;
+  if (segment?.revision_id !== undefined) return segment.revision_id;
+  return derived;
+}
+function reportRevisionId(segment, fallback) { return recoveryRevisionId(segment) || (segment?.revision_id || `${fallback}`); }
+function compareRecoveryCandidates(a, b) { return (a.segment?.sequence ?? Number.MAX_SAFE_INTEGER) - (b.segment?.sequence ?? Number.MAX_SAFE_INTEGER) || (a.segment?.revision ?? Number.MAX_SAFE_INTEGER) - (b.segment?.revision ?? Number.MAX_SAFE_INTEGER) || a.revisionId.localeCompare(b.revisionId); }
 function ensureLatestHistory(history, id, value) { const entry = history.find((item) => item.history_entry_id === id); if (!entry) throw integrity('MISSING_AUTHORITATIVE_HISTORY', `Missing authoritative history entry ${id}`); if (entry.fingerprint !== fingerprintValue(value)) throw integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${id} differs from active state`); }
 function invalid(message) { return new SessionLifecycleError('INVALID_INPUT', message); }
 function conflict(code, message) { return new SessionLifecycleError(code, message, { rejected: true }); }
