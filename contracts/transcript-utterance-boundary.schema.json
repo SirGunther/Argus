@@ -7,6 +7,7 @@
     "session_id": { "type": "string", "minLength": 1 },
     "utterance_id": { "type": "string", "minLength": 1 },
     "reason": { "type": "string", "enum": ["pause", "size", "latency", "flush"] },
+    "audio_window_id": { "type": "string", "minLength": 1 },
     "first_word_sequence": { "type": "integer", "minimum": 0 },
     "last_word_sequence": { "type": "integer", "minimum": 0 },
     "start_time": { "type": "string", "minLength": 1 },

@@ -319,6 +319,7 @@ export class DesktopApplication {
   async sessionCommand(payload, { allowFlushFailure = false } = {}) {
     if ((payload.command === 'session.stop' || payload.command === 'session.close') && this.metadata?.state === 'recording') {
       this.diagnostics.log('shutdown.session-drain-beginning', { session_id: payload.session_id, command: payload.command, ...this.audioQueueDiagnostics() });
+      const finalizationAlreadyFailed = this.audioProcessingError?.code?.startsWith('FINALIZATION_');
       try {
         this.enqueueAudioFlush(payload.session_id, { session_id: payload.session_id, requested_at: new Date().toISOString() }, `${payload.command_id}:audio-flush`, { allowShutdown: true });
         await this.waitForAudioIdle();
@@ -326,8 +327,8 @@ export class DesktopApplication {
         this.diagnostics.log('shutdown.session-drain-completed', { session_id: payload.session_id, command: payload.command, ...this.audioQueueDiagnostics() });
       } catch (error) {
         this.diagnostics.log('shutdown.session-drain-failed', { session_id: payload.session_id, command: payload.command, error: error.message, ...this.audioQueueDiagnostics() });
-        if (!allowFlushFailure) throw error;
-        this.setCapability('stt', 'unavailable', `Final audio flush failed during shutdown: ${error.message}`, true);
+        if (!allowFlushFailure && !finalizationAlreadyFailed) throw error;
+        this.setCapability('stt', 'unavailable', `Final audio flush failed during shutdown: ${error.message}`, false);
       }
     }
     const output = await this.graph.dispatchFrom('@desktop-controller', 'control', payload.command, payload.session_id, { operation_id: payload.command_id, session_id: payload.session_id, requested_at: new Date().toISOString() }, payload.command_id);
@@ -349,6 +350,16 @@ export class DesktopApplication {
     await this.loadLatestSession(sessionId);
     this.transcript = [];
     this.loggedItems = [];
+    if (this.audioProcessingError?.code?.startsWith('FINALIZATION_')) {
+      this.audioProcessingError = undefined;
+      this.audioProcessingOverride = undefined;
+      this.audioProcessingNotice = undefined;
+      this.audioIdentitySessionId = undefined;
+      this.audioNextChunkSequence = 0;
+      this.audioChunkIdentities.clear();
+      this.setCapability('stt', 'available', 'Whisper finalization is ready for the new session.', false);
+      this.setCapability('transcript', 'available', 'Finalized transcript is ready for the new session.', false);
+    }
     this.transcriptPartials.clear();
     this.transcriptBoundaries.clear();
     this.clearPipelineStallDetection();
@@ -494,7 +505,7 @@ export class DesktopApplication {
           session_id: work.utterance.session_id,
           requested_at: work.utterance.requested_at,
           utterance_id: work.utterance.utterance_id,
-          ...(work.utterance.reason === 'pause' ? { reason: 'pause' } : {})
+          ...(work.utterance.reason === 'pause' ? { reason: 'pause' } : work.utterance.reason === 'rollover' ? { reason: 'size' } : {})
         }, work.idempotencyKey);
         this.diagnostics.log('audio.flush-dispatch-completed', {
           ...worker,
@@ -535,11 +546,35 @@ export class DesktopApplication {
     }
   }
 
-  failAudioProcessing(error) {
-    this.audioProcessingError = Object.assign(error, { retryable: error.retryable ?? true });
-    this.diagnostics.log('audio.processing-failed', { session_id: this.sessionId, error: error.message, error_code: error.code, retryable: error.retryable, ...this.audioQueueDiagnostics() });
-    this.setCapability('stt', 'unavailable', `Audio processing failed: ${error.message}`, true);
+  failAudioProcessing(error, { retryable = error.retryable ?? true } = {}) {
+    this.audioProcessingError = Object.assign(error, { retryable });
+    this.diagnostics.log('audio.processing-failed', { session_id: this.sessionId, error: error.message, error_code: error.code, retryable, ...this.audioQueueDiagnostics() });
+    this.setCapability('stt', 'unavailable', `Audio processing failed: ${error.message}`, retryable);
+    this.setCapability('transcript', 'unavailable', `Finalized transcript unavailable: ${error.message}`, retryable);
     this.updateAudioProcessing();
+  }
+
+  failFinalization({ code = 'FINALIZATION_FAILED', message = 'Finalized transcript processing failed.', retryable = false, expected, received, service = 'active-transcript' } = {}) {
+    if (this.audioProcessingError?.code === `FINALIZATION_${code}`) return;
+    const error = Object.assign(new Error(`Finalized transcript failed in ${service}: ${message}`), {
+      code: `FINALIZATION_${code}`,
+      retryable,
+      expected,
+      received
+    });
+    this.diagnostics.log('transcript.finalization-failed', {
+      session_id: this.sessionId,
+      service,
+      error_code: code,
+      error: message,
+      retryable,
+      expected,
+      received,
+      ...this.audioQueueDiagnostics()
+    });
+    this.failAudioProcessing(error, { retryable });
+    this.audioProcessingOverride = { state: 'error', detail: `${error.message} Stop recording and start a new session.` };
+    this.updateAudioProcessing('error', this.audioProcessingOverride.detail);
   }
 
   audioBackpressure(message) {
@@ -851,6 +886,16 @@ export class DesktopApplication {
       const service = message.payload.service || '';
       this.diagnostics.log('service.failure', { session_id: message.correlation_id, correlation_id: message.correlation_id, service, operation: message.payload.operation, input_message_id: message.payload.input_message_id, error_code: message.payload.error?.code, retryable: message.payload.error?.retryable, error: message.payload.error?.message });
       this.clearPipelineStallDetection();
+      if (service === 'active-transcript' || message.payload.error?.code === 'SEQUENCE_GAP' || message.payload.error?.code === 'DELIVERY_BACKLOG_FULL') {
+        this.failFinalization({
+          code: message.payload.error?.code,
+          message: message.payload.error?.message,
+          retryable: false,
+          expected: message.payload.error?.details?.expected,
+          received: message.payload.error?.details?.received,
+          service: service || 'active-transcript'
+        });
+      }
       if (service.includes('speech') || service.includes('stt')) this.setCapability('stt', 'unavailable', message.payload.error?.message || 'The real Whisper transcription dependency failed.', true);
       if (service.includes('model')) this.setCapability('model', 'unavailable', message.payload.error?.message || 'The configured local model dependency failed.', true);
     }
@@ -864,6 +909,12 @@ export class DesktopApplication {
     if (status.type === 'service-failure') {
       if (status.service === 'speech-to-text') this.setCapability('stt', 'unavailable', status.message, true);
       if (status.service === 'model-lane') this.setCapability('model', 'unavailable', status.message, true);
+      if (status.service === 'active-transcript' || status.code === 'SEQUENCE_GAP' || status.code === 'DELIVERY_BACKLOG_FULL') {
+        this.failFinalization({ code: status.code, message: status.message, retryable: false, expected: status.expected, received: status.received, service: status.service });
+      }
+    }
+    if (status.type === 'operation-rejected' && status.service === 'active-transcript' && ['WORD_ID_CONFLICT', 'WORD_WINDOW_MISMATCH', 'WORD_PROVENANCE_MISMATCH'].includes(status.code)) {
+      this.failFinalization({ code: status.code, message: status.message, retryable: false, service: status.service });
     }
   }
 

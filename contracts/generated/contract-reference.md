@@ -107,7 +107,7 @@
 | `session_id` | yes | string | min length 1 |
 | `requested_at` | yes | string | min length 1 |
 | `utterance_id` | no | string | min length 1 |
-| `reason` | no | any | `pause`, `flush` |
+| `reason` | no | any | `pause`, `size`, `flush` |
 
 ## `audio.preview`
 
@@ -232,6 +232,7 @@
 | `session_id` | yes | string | min length 1 |
 | `utterance_id` | yes | string | min length 1 |
 | `reason` | yes | string | `pause`, `size`, `latency`, `flush` |
+| `audio_window_id` | no | string | min length 1 |
 | `first_word_sequence` | yes | integer | minimum 0 |
 | `last_word_sequence` | yes | integer | minimum 0 |
 | `start_time` | yes | string | min length 1 |

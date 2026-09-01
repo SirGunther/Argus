@@ -11,6 +11,7 @@ export class BoundedWireQueue {
   #active = false;
   #items = [];
   #waiters = [];
+  #capacityWaiters = [];
 
   constructor({ wireKey, capacity, consume, observe = () => {}, onError = () => {} }) {
     this.wireKey = wireKey;
@@ -29,6 +30,11 @@ export class BoundedWireQueue {
     this.#items.push(item);
     this.observe(this.depth);
     void this.#pump();
+  }
+
+  whenAvailable() {
+    if (this.depth < this.capacity) return Promise.resolve();
+    return new Promise((resolve) => this.#capacityWaiters.push(resolve));
   }
 
   async drain() {
@@ -51,6 +57,9 @@ export class BoundedWireQueue {
     } finally {
       this.#active = false;
       this.observe(this.depth);
+      if (this.depth < this.capacity) {
+        for (const resolve of this.#capacityWaiters.splice(0)) resolve();
+      }
       void this.#pump();
     }
   }

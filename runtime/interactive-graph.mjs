@@ -4,6 +4,7 @@ import { createEnvelope, prepareGraph } from './orchestrator.mjs';
 import { MessageIntegrityLedger } from './message-identity.mjs';
 
 const NO_RECEIPT = new Set(['lifecycle.health-check', 'lifecycle.drain']);
+const MAX_DEFERRED_DELIVERIES = 4096;
 
 export class InteractiveGraph {
   constructor(prepared, { trace = false, onMessage = () => {}, onStatus = () => {}, diagnostics } = {}) {
@@ -15,6 +16,7 @@ export class InteractiveGraph {
     this.running = new Map();
     this.queues = new Map();
     this.waiters = new Map();
+    this.deferredDeliveries = new Map();
     this.ready = new Set();
     this.drained = new Set();
     this.integrity = new MessageIntegrityLedger();
@@ -111,7 +113,14 @@ export class InteractiveGraph {
 
   async close() { await this.drain('application-shutdown'); }
 
-  async waitForIdle() { await Promise.all([...this.queues.values()].map((queue) => queue.drain())); }
+  async waitForIdle() {
+    while (true) {
+      await Promise.all([...this.queues.values()].map((queue) => queue.drain()));
+      const pumps = [...this.deferredDeliveries.values()].map((state) => state.pumpPromise).filter(Boolean);
+      if (!pumps.length) return;
+      await Promise.all(pumps);
+    }
+  }
 
   startService(instance) {
     const provider = this.prepared.providers.get(instance.manifest.runtime.kind);
@@ -159,7 +168,11 @@ export class InteractiveGraph {
         queue = new BoundedWireQueue({
           wireKey: this.wireKey(wire),
           capacity: wire.delivery?.queue_capacity || this.prepared.definition.supervision.queue.capacity,
-          onError: (error, item) => this.rejectReceipt(wire.to, item.message.message_id, error),
+          onError: (error, item) => {
+            const state = this.deferredDeliveries.get(this.wireKey(wire));
+            if (state) state.failed = true;
+            if (!error.code) this.reportDeliveryFailure(wire, item.message, error);
+          },
           observe: (depth) => {
             this.onStatus({ type: 'queue', wire: this.wireKey(wire), depth });
             if (depth >= Math.max(1, Math.floor((wire.delivery?.queue_capacity || this.prepared.definition.supervision.queue.capacity) * 0.75))) {
@@ -170,17 +183,66 @@ export class InteractiveGraph {
         queue.consume = async (item) => {
           const current = this.running.get(wire.to);
           if (!current || current.exited) throw new Error(`Target service is unavailable: ${wire.to}`);
+          const receipt = NO_RECEIPT.has(item.message.message_type) ? undefined : this.waitForReceipt(wire.to, item.message.message_id);
           await current.handle.write(item.message);
+          await receipt;
         };
         this.queues.set(this.wireKey(wire), queue);
       }
+      const wireState = this.deferredDeliveries.get(this.wireKey(wire)) || { pending: [], pumping: false, pumpPromise: undefined, failed: false };
+      this.deferredDeliveries.set(this.wireKey(wire), wireState);
+      if (wireState.failed) continue;
+      if (wireState.pending.length || queue.depth >= queue.capacity) {
+        if (wireState.pending.length >= MAX_DEFERRED_DELIVERIES) {
+          wireState.failed = true;
+          this.reportDeliveryFailure(wire, message, new Error(`Reliable delivery backlog reached its governed limit of ${MAX_DEFERRED_DELIVERIES} messages`), 'DELIVERY_BACKLOG_FULL', false);
+          continue;
+        }
+        wireState.pending.push({ message, attempt: 1 });
+        this.pumpDeferredDeliveries(wire, queue, wireState);
+        continue;
+      }
       try { queue.enqueue({ message, attempt: 1 }); }
       catch (error) {
-        this.rejectReceipt(wire.to, message.message_id, error);
-        this.diagnostics?.log('graph.queue-rejected', { session_id: message.correlation_id, correlation_id: message.correlation_id, service: wire.to, input_message_id: message.message_id, message_type: message.message_type, code: error.code || 'QUEUE_OVERFLOW', error: error.message });
-        this.onStatus({ type: 'service-failure', service: wire.to, code: error.code || 'QUEUE_OVERFLOW', message: error.message, retryable: true, correlation_id: message.correlation_id, input_message_id: message.message_id, operation: message.message_type });
+        if (wireState.pending.length >= MAX_DEFERRED_DELIVERIES) {
+          wireState.failed = true;
+          this.reportDeliveryFailure(wire, message, new Error(`Reliable delivery backlog reached its governed limit of ${MAX_DEFERRED_DELIVERIES} messages`), 'DELIVERY_BACKLOG_FULL', false);
+          continue;
+        }
+        wireState.pending.push({ message, attempt: 1 });
+        this.pumpDeferredDeliveries(wire, queue, wireState);
       }
     }
+  }
+
+  pumpDeferredDeliveries(wire, queue, state) {
+    if (state.pumping || state.failed) return;
+    state.pumping = true;
+    state.pumpPromise = (async () => {
+      try {
+        while (state.pending.length && !state.failed && !this.closed) {
+          await queue.whenAvailable();
+          if (state.failed || this.closed) break;
+          const item = state.pending.shift();
+          try {
+            queue.enqueue(item);
+          } catch (error) {
+            state.pending.unshift(item);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        }
+      } finally {
+        state.pumping = false;
+        state.pumpPromise = undefined;
+        if (state.pending.length && !state.failed && !this.closed) this.pumpDeferredDeliveries(wire, queue, state);
+      }
+    })();
+  }
+
+  reportDeliveryFailure(wire, message, error, code = error.code || 'DELIVERY_FAILED', retryable = Boolean(error.retryable)) {
+    this.rejectReceipt(wire.to, message.message_id, Object.assign(error, { code, retryable }));
+    this.diagnostics?.log('graph.delivery-failed', { session_id: message.correlation_id, correlation_id: message.correlation_id, service: wire.to, input_message_id: message.message_id, message_type: message.message_type, code, retryable, error: error.message });
+    this.onStatus({ type: 'service-failure', service: wire.to, code, message: error.message, retryable, correlation_id: message.correlation_id, input_message_id: message.message_id, operation: message.message_type });
   }
 
   receiveRuntime(endpoint, message, from) {
@@ -193,13 +255,21 @@ export class InteractiveGraph {
       }
       if (message.message_type === 'operation.completed') { this.resolveReceipt(from, message.payload.input_message_id); return; }
       if (message.message_type === 'operation.rejected') {
-        this.rejectReceipt(from, message.payload.input_message_id, new Error(message.payload.reason?.message || 'Operation rejected'));
+        const error = Object.assign(new Error(message.payload.reason?.message || 'Operation rejected'), {
+          code: message.payload.reason?.code,
+          retryable: message.payload.reason?.retryable
+        });
+        this.rejectReceipt(from, message.payload.input_message_id, error);
         this.onStatus({ type: 'operation-rejected', service: message.payload.service || from, operation: message.payload.operation, code: message.payload.reason?.code, message: message.payload.reason?.message, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
         return;
       }
       if (message.message_type === 'service.failure') {
-        this.rejectReceipt(message.payload.service, message.payload.input_message_id, new Error(message.payload.error?.message || 'Service failure'));
-        this.onStatus({ type: 'service-failure', service: message.payload.service, operation: message.payload.operation, code: message.payload.error?.code, message: message.payload.error?.message, retryable: message.payload.error?.retryable, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
+        const error = Object.assign(new Error(message.payload.error?.message || 'Service failure'), {
+          code: message.payload.error?.code,
+          retryable: message.payload.error?.retryable
+        });
+        this.rejectReceipt(message.payload.service, message.payload.input_message_id, error);
+        this.onStatus({ type: 'service-failure', service: message.payload.service, operation: message.payload.operation, code: message.payload.error?.code, message: message.payload.error?.message, retryable: message.payload.error?.retryable, expected: message.payload.error?.details?.expected, received: message.payload.error?.details?.received, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
         return;
       }
       if (message.message_type === 'service.drained') { this.drained.add(from); if (this.draining && this.drained.size === this.prepared.services.size) this.stopProcesses(); return; }
@@ -239,17 +309,33 @@ export class InteractiveGraph {
     this.closed = true;
     this.diagnostics?.log('shutdown.graph-drain-completed', { session_id: this.sessionId() });
     this.drainResolve?.();
-    for (const waiter of this.waiters.values()) waiter.reject(new Error('Argus graph drained'));
+    for (const waiters of this.waiters.values()) for (const waiter of waiters) waiter.reject(new Error('Argus graph drained'));
     this.waiters.clear();
   }
 
   waitForReceipt(service, messageId) {
     const key = `${service}:${messageId}`;
-    return new Promise((resolve, reject) => this.waiters.set(key, { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      const waiters = this.waiters.get(key) || new Set();
+      waiters.add({ resolve, reject });
+      this.waiters.set(key, waiters);
+    });
   }
 
-  resolveReceipt(service, messageId) { const waiter = this.waiters.get(`${service}:${messageId}`); if (waiter) { this.waiters.delete(`${service}:${messageId}`); waiter.resolve(); } }
-  rejectReceipt(service, messageId, error) { const waiter = this.waiters.get(`${service}:${messageId}`); if (waiter) { this.waiters.delete(`${service}:${messageId}`); waiter.reject(error); } }
+  resolveReceipt(service, messageId) {
+    const key = `${service}:${messageId}`;
+    const waiters = this.waiters.get(key);
+    if (!waiters) return;
+    this.waiters.delete(key);
+    for (const waiter of waiters) waiter.resolve();
+  }
+  rejectReceipt(service, messageId, error) {
+    const key = `${service}:${messageId}`;
+    const waiters = this.waiters.get(key);
+    if (!waiters) return;
+    this.waiters.delete(key);
+    for (const waiter of waiters) waiter.reject(error);
+  }
   wiresFor(from, plane, type) { return (plane === 'domain' ? this.prepared.definition.domain_wires : this.prepared.definition.control_wires).filter((wire) => wire.from === from && wire.contract === type); }
   wireKey(wire) { return `${wire.from}:${wire.contract}:${wire.to}`; }
   sessionController() { return this.prepared.endpoints.get(this.prepared.definition.run.session_controller); }

@@ -200,7 +200,7 @@ function finalOutputs(state, result, reason = 'flush', requestedUtteranceId, ide
       start_time: offsetTime(first.start_time, firstToken.fromMs ?? word.segment.fromMs),
       end_time: offsetTime(first.start_time, lastToken.toMs ?? word.segment.toMs),
       text: word.text, confidence: word.confidence,
-      evidence: { provider: SERVICE, chunk_ids: state.chunks.map((chunk) => chunk.chunk_id), alternatives: [] }
+      evidence: { provider: SERVICE, audio_window_id: windowId, chunk_ids: state.chunks.map((chunk) => chunk.chunk_id), alternatives: [] }
     } });
   }
   if (!words.length) {
@@ -235,6 +235,7 @@ function finalOutputs(state, result, reason = 'flush', requestedUtteranceId, ide
     ...words,
     { messageType: 'transcript.utterance-boundary', identityKey: `${SERVICE}:boundary:${utteranceId}:${state.nextWordSequence}`, payload: {
       boundary_id: boundaryId, session_id: first.session_id, utterance_id: utteranceId, reason,
+      audio_window_id: windowId,
       first_word_sequence: words[0].payload.sequence, last_word_sequence: words.at(-1).payload.sequence,
       start_time: first.start_time, end_time: last.end_time, punctuation_hint: punctuationHint(result.text), source_chunk_ids: state.chunks.map((chunk) => chunk.chunk_id)
     } }

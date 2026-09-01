@@ -6,6 +6,7 @@ Plane: `domain`
 ## 1.4.0 — 2026-08-12
 
 - Added optional review flags for unresolved ambiguity or meaningful correction review; ordinary low-confidence words remain visually quiet.
+- Finalized word provenance may retain each source sequence, immutable audio-window identity, and source chunk identities.
 
 ## 1.3.0 — 2026-08-12
 

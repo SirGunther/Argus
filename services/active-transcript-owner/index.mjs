@@ -40,7 +40,18 @@ runLineService({ service: SERVICE, operations: {
       return maybeRequestCorrection(word.utterance_id);
     }
     try { wordOrdering.accept(word.session_id, word.sequence); }
-    catch (error) { if (error instanceof OrderedStreamError) throw new ServiceOperationError(error.message, { code: error.code, category: 'conflict', retryable: error.retryable, rejected: error.code === 'LATE_MESSAGE' }); throw error; }
+    catch (error) {
+      if (error instanceof OrderedStreamError) {
+        throw new ServiceOperationError(error.message, {
+          code: error.code,
+          category: 'conflict',
+          retryable: error.retryable,
+          rejected: error.code === 'LATE_MESSAGE',
+          details: { expected: error.expected, received: error.received, stream_id: error.streamId }
+        });
+      }
+      throw error;
+    }
     const words = wordsByUtterance.get(word.utterance_id) || [];
     words.push(word); wordsByUtterance.set(word.utterance_id, words);
     committedWords.set(word.word_id, { fingerprint: fingerprintValue(word) });
@@ -72,7 +83,15 @@ runLineService({ service: SERVICE, operations: {
     }
     const provenance = words.map((word) => {
       const proposal = accepted.get(word.word_id);
-      return { word_id: word.word_id, source_text: word.text, rendered_text: proposal?.proposed_text || word.text, ...(proposal ? { correction_proposal_id: proposal.proposal_id } : {}) };
+      return {
+        word_id: word.word_id,
+        source_text: word.text,
+        rendered_text: proposal?.proposed_text || word.text,
+        source_sequence: word.sequence,
+        ...(word.evidence.audio_window_id ? { source_audio_window_id: word.evidence.audio_window_id } : {}),
+        source_chunk_ids: word.evidence.chunk_ids,
+        ...(proposal ? { correction_proposal_id: proposal.proposal_id } : {})
+      };
     });
     const proposedWordIds = new Set(resolution.proposals.map((proposal) => proposal.target_word_id));
     const punctuation = new Map((resolution.punctuation_after || [])
@@ -128,6 +147,7 @@ function maybeRequestCorrection(utteranceId) {
   const boundary = boundaryByUtterance.get(utteranceId);
   const words = wordsByUtterance.get(utteranceId) || [];
   if (!boundary || words.length !== boundary.last_word_sequence - boundary.first_word_sequence + 1) return [];
+  assertWindowProvenance(boundary, words);
   const requestId = `${boundary.boundary_id}-correction`;
   if (requestById.has(requestId)) return [];
   const request = {
@@ -139,6 +159,18 @@ function maybeRequestCorrection(utteranceId) {
   requestById.set(requestId, request);
   diagnostics.log('transcript.correction-requested', { session_id: request.session_id, utterance_id: request.utterance_id, boundary_id: request.boundary_id, request_id: request.request_id, word_count: request.words.length, formatting_hint: request.formatting_hint });
   return [{ messageType: 'transcript.correction-request', identityKey: `transcript.correction-request:${requestId}`, payload: request }];
+}
+
+function assertWindowProvenance(boundary, words) {
+  const sourceChunks = new Set(boundary.source_chunk_ids);
+  for (const word of words) {
+    if (boundary.audio_window_id && word.evidence.audio_window_id && boundary.audio_window_id !== word.evidence.audio_window_id) {
+      throw rejected('WORD_WINDOW_MISMATCH', `Word ${word.word_id} belongs to ${word.evidence.audio_window_id}, boundary belongs to ${boundary.audio_window_id}`);
+    }
+    if (word.evidence.chunk_ids.some((chunkId) => !sourceChunks.has(chunkId))) {
+      throw rejected('WORD_PROVENANCE_MISMATCH', `Word ${word.word_id} is sourced from audio outside boundary ${boundary.boundary_id}`);
+    }
+  }
 }
 
 function segmentOutputs(stored, causationId, emitFinalizedSegment = true) {

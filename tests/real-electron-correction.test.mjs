@@ -5,12 +5,13 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { DesktopApplication } from '../runtime/desktop-application.mjs';
+import { InteractiveGraph } from '../runtime/interactive-graph.mjs';
 import { MessageIntegrityLedger } from '../runtime/message-identity.mjs';
 import { createEnvelope } from '../runtime/orchestrator.mjs';
 import { SessionLifecycle } from '../runtime/session-lifecycle.mjs';
 import { SessionStorage } from '../runtime/session-storage.mjs';
 import { createSessionTimer } from '../ui/session-timer.mjs';
-import { runServiceBatches } from './helpers/process-harness.mjs';
+import { runService, runServiceBatches } from './helpers/process-harness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const whisperManifest = path.join(root, 'services', 'whisper-cpp-stt', 'service.json');
@@ -56,6 +57,76 @@ test('New Session emits an authoritative recording projection for its new identi
   assert.equal(result.status, 'accepted');
   assert.equal(result.session_id, application.sessionId);
   assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0, audio_processing: { state: 'listening', queue_depth: 0, capture_state: 'idle', transcription_state: 'idle' } } });
+});
+
+test('sequence 67 to 128 gap remains guarded and becomes a visible finalization failure', async () => {
+  const sessionId = 'finalization-sequence-gap-session';
+  const word = (sequence) => createEnvelope({
+    plane: 'domain', messageType: 'transcript.word-committed', producer: 'gap-repro', correlationId: sessionId,
+    idempotencyKey: `${sessionId}:word:${sequence}`,
+    payload: {
+      word_id: `${sessionId}-word-${sequence}`, session_id: sessionId, utterance_id: `${sessionId}-utterance-0`, sequence,
+      start_time: '00:00:00.000', end_time: '00:00:00.100', text: `word-${sequence}`, confidence: 0.99,
+      evidence: { provider: 'gap-repro', chunk_ids: [`${sessionId}-chunk-0`], alternatives: [] }
+    }
+  });
+  const result = await runService(path.join(root, 'services', 'active-transcript-owner', 'service.json'), [
+    ...Array.from({ length: 67 }, (_, sequence) => word(sequence)), word(128)
+  ], 68, 10000, { env: { ARGUS_SESSION_ROOT: '' } });
+  const failure = result.outputs.find((message) => message.message_type === 'service.failure');
+  assert.equal(failure.payload.error.code, 'SEQUENCE_GAP');
+  assert.equal(failure.payload.error.details.expected, 67);
+  assert.equal(failure.payload.error.details.received, 128);
+  assert.equal(result.outputs.filter((message) => message.message_type === 'transcript.segment').length, 0);
+
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-gap-ui-${Date.now()}`) });
+  application.sessionId = sessionId;
+  application.metadata = { session_id: sessionId, state: 'recording', created_at: '2026-09-01T00:00:00.000Z' };
+  application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+  application.started = true;
+  application.handleGraphMessage(failure);
+  assert.equal(application.sessionProjection().audio_processing.state, 'error');
+  assert.match(application.sessionProjection().audio_processing.detail, /Stop recording and start a new session/);
+  assert.equal(application.capabilitySnapshot().find((item) => item.capability === 'transcript').status, 'unavailable');
+});
+
+test('interactive graph defers final-word delivery until each active-owner receipt without dropping a burst', async () => {
+  const delivered = [];
+  const statuses = [];
+  const prepared = {
+    definition: { domain_wires: [{ from: 'speech-to-text', contract: 'transcript.word-committed', to: 'active-transcript' }], control_wires: [], supervision: { queue: { capacity: 32 } } },
+    endpoints: new Map([
+      ['active-transcript', { endpointType: 'service', serviceName: 'active-transcript' }],
+      ['@supervisor', { endpointType: 'runtime', kind: 'supervisor' }]
+    ]),
+    providers: new Map(),
+    services: new Map()
+  };
+  let graph;
+  graph = new InteractiveGraph(prepared, { onStatus: (status) => statuses.push(status) });
+  graph.running.set('active-transcript', {
+    exited: false,
+    handle: {
+      write: async (message) => {
+        delivered.push(message.payload.sequence);
+        graph.receiveRuntime(prepared.endpoints.get('@supervisor'), { message_type: 'operation.completed', payload: { input_message_id: message.message_id } }, 'active-transcript');
+      }
+    }
+  });
+  for (let sequence = 0; sequence < 128; sequence += 1) {
+    graph.route('speech-to-text', createEnvelope({
+      plane: 'domain', messageType: 'transcript.word-committed', producer: 'speech-to-text', correlationId: 'burst-session',
+      idempotencyKey: `burst-session:word:${sequence}`,
+      payload: {
+        word_id: `burst-session-word-${sequence}`, session_id: 'burst-session', utterance_id: 'burst-session-utterance-0', sequence,
+        start_time: '00:00:00.000', end_time: '00:00:00.100', text: `word-${sequence}`, confidence: 0.99,
+        evidence: { provider: 'speech-to-text', chunk_ids: ['burst-session-chunk-0'], alternatives: [] }
+      }
+    }));
+  }
+  await graph.waitForIdle();
+  assert.deepEqual(delivered, Array.from({ length: 128 }, (_, sequence) => sequence));
+  assert.equal(statuses.some((status) => status.type === 'service-failure'), false);
 });
 
 test('delayed transcription accepts later chunks and completes FIFO without mixing utterances', async () => {
@@ -372,6 +443,74 @@ test('Whisper buffers many chunks without launching and launches exactly once on
     assert.equal(JSON.stringify(result.outputs).includes('<|'), false);
     await assert.rejects(readFile(path.join(tempRoot, '99999-1-dead.wav')), /ENOENT/);
     await assert.rejects(readFile(path.join(tempRoot, '99999-1-dead.json')), /ENOENT/);
+  } finally {
+    await rm(sessionRoot, { recursive: true, force: true });
+    await rm(probeRoot, { recursive: true, force: true });
+  }
+});
+
+test('three delayed Whisper windows preserve one authoritative word sequence and immutable window provenance', async () => {
+  const sessionRoot = await mkdtemp(path.join(os.tmpdir(), 'argus-sequence-windows-'));
+  const probeRoot = await mkdtemp(path.join(os.tmpdir(), 'argus-sequence-windows-probe-'));
+  const binary = path.join(probeRoot, 'whisper-sequence-probe.cmd');
+  const model = path.join(probeRoot, 'model.bin');
+  const counter = path.join(probeRoot, 'launches.txt');
+  const sessionId = 'three-window-sequence-session';
+  await writeFile(model, 'model');
+  await writeFile(binary, [
+    '@echo off',
+    'setlocal EnableDelayedExpansion',
+    'if not exist "%ARGUS_PROBE_COUNTER%" echo 0>"%ARGUS_PROBE_COUNTER%"',
+    'set /p count=<"%ARGUS_PROBE_COUNTER%"',
+    'set /a count+=1',
+    'echo !count!>"%ARGUS_PROBE_COUNTER%"',
+    'ping 127.0.0.1 -n 2 >nul',
+    'if "!count!"=="1" ( >"%~7.json" echo {"transcription":[{"text":" First.","offsets":{"from":0,"to":1000},"tokens":[{"text":" First","p":0.95,"offsets":{"from":0,"to":800}},{"text":".","p":0.95,"offsets":{"from":800,"to":1000}}]}]} )',
+    'if "!count!"=="2" ( >"%~7.json" echo {"transcription":[{"text":" Second.","offsets":{"from":0,"to":1000},"tokens":[{"text":" Second","p":0.95,"offsets":{"from":0,"to":800}},{"text":".","p":0.95,"offsets":{"from":800,"to":1000}}]}]} )',
+    'if "!count!"=="3" ( >"%~7.json" echo {"transcription":[{"text":" Third.","offsets":{"from":0,"to":1000},"tokens":[{"text":" Third","p":0.95,"offsets":{"from":0,"to":800}},{"text":".","p":0.95,"offsets":{"from":800,"to":1000}}]}]} )'
+  ].join('\r\n') + '\r\n');
+  const flush = (sequence, reason) => envelope('audio.flush', `${sessionId}:flush:${sequence}`, {
+    session_id: sessionId, utterance_id: `${sessionId}-utterance-${sequence}`, requested_at: '2026-09-01T00:00:00.000Z', reason
+  });
+  try {
+    const whisper = await runServiceBatches(path.join(root, 'services', 'whisper-cpp-stt', 'service.json'), [
+      { inputs: [whisperChunk(0, sessionId), flush(0, 'pause')], expectedOutputCount: 4 },
+      { inputs: [whisperChunk(1, sessionId), flush(1, 'size')], expectedOutputCount: 4 },
+      { inputs: [whisperChunk(2, sessionId), flush(2, 'flush')], expectedOutputCount: 4 }
+    ], 10000, { env: { ARGUS_SESSION_ROOT: sessionRoot, ARGUS_WHISPER_BINARY: binary, ARGUS_WHISPER_MODEL: model, ARGUS_PROBE_COUNTER: counter, ARGUS_WHISPER_DELAYED_MS: '10', ARGUS_DIAGNOSTICS: '1' } });
+    const domain = whisper.outputs.filter((message) => message.plane === 'domain');
+    const words = domain.filter((message) => message.message_type === 'transcript.word-committed');
+    const boundaries = domain.filter((message) => message.message_type === 'transcript.utterance-boundary');
+    assert.deepEqual(words.map((message) => message.payload.sequence), [0, 1, 2]);
+    assert.equal(new Set(words.map((message) => message.payload.word_id)).size, 3);
+    assert.deepEqual(words.map((message) => message.payload.evidence.audio_window_id), [
+      `${sessionId}-audio-window-0`, `${sessionId}-audio-window-1`, `${sessionId}-audio-window-2`
+    ]);
+    assert.deepEqual(boundaries.map((message) => message.payload.reason), ['pause', 'size', 'flush']);
+    assert.ok(whisper.diagnostics.filter((line) => line.trimStart().startsWith('{')).map((line) => JSON.parse(line)).filter((record) => record.event === 'whisper.delayed').length >= 3);
+
+    const resolutions = boundaries.map((boundary) => createEnvelope({
+      plane: 'domain', messageType: 'transcript.correction-resolved', producer: 'sequence-window-test', correlationId: sessionId,
+      idempotencyKey: `${boundary.payload.boundary_id}:resolution`,
+      payload: {
+        request_id: `${boundary.payload.boundary_id}-correction`, session_id: sessionId, utterance_id: boundary.payload.utterance_id,
+        boundary_id: boundary.payload.boundary_id, proposals: [],
+        formatting: { terminal_mark: '.', capitalize_first_word: false, confidence: 0.99 },
+        generator: { implementation: 'sequence-window-test', policy_profile: 'test', instruction_version: '1.0.0' }
+      }
+    }));
+    const owner = await runServiceBatches(path.join(root, 'services', 'active-transcript-owner', 'service.json'), [
+      { inputs: domain, expectedOutputCount: 9 },
+      { inputs: resolutions, expectedOutputCount: 12 }
+    ], 10000, { env: { ARGUS_SESSION_ROOT: '' } });
+    const segments = owner.outputs.filter((message) => message.message_type === 'transcript.segment');
+    assert.deepEqual(segments.map((message) => message.payload.sequence), [0, 1, 2]);
+    assert.deepEqual(segments.flatMap((message) => message.payload.word_provenance.map((word) => [word.source_sequence, word.source_audio_window_id, word.source_chunk_ids])), [
+      [0, `${sessionId}-audio-window-0`, [`${sessionId}-chunk-0`]],
+      [1, `${sessionId}-audio-window-1`, [`${sessionId}-chunk-1`]],
+      [2, `${sessionId}-audio-window-2`, [`${sessionId}-chunk-2`]]
+    ]);
+    assert.equal(owner.outputs.some((message) => message.message_type === 'service.failure'), false);
   } finally {
     await rm(sessionRoot, { recursive: true, force: true });
     await rm(probeRoot, { recursive: true, force: true });
