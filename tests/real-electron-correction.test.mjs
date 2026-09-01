@@ -231,6 +231,99 @@ test('sustained capture rolls over after 120 chunks without dropping or mixing a
   assert.equal(application.audioProcessingError, undefined);
 });
 
+test('continuous finalization survives the worker completion gap across 300 chunks and a later pause', async () => {
+  const sessionId = 'continuous-finalization-session';
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-continuous-finalization-${Date.now()}`) });
+  application.sessionId = sessionId;
+  application.metadata = { session_id: sessionId, state: 'recording', revision: 1, created_at: '2026-08-30T00:00:00.000Z', started_at: '2026-08-30T00:00:00.000Z' };
+  application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+  application.started = true;
+  const projections = [];
+  const deliveredChunks = [];
+  const finalizedWindows = [];
+  const flushes = [];
+  let currentWindow = [];
+  let releaseFirstFlush;
+  let firstFlushStarted;
+  const firstFlushGate = new Promise((resolve) => { releaseFirstFlush = resolve; });
+  const firstFlush = new Promise((resolve) => { firstFlushStarted = resolve; });
+
+  const emitFinalRow = (window, flush) => {
+    const rowSequence = finalizedWindows.length;
+    const utteranceId = flush.utterance_id;
+    const startTime = window[0].start_time;
+    const endTime = window.at(-1).end_time;
+    finalizedWindows.push({ utterance_id: utteranceId, sequences: window.map((chunk) => chunk.sequence), reason: flush.reason || 'rollover' });
+    application.handleGraphMessage({ message_id: `boundary-${rowSequence}`, message_type: 'transcript.utterance-boundary', payload: {
+      boundary_id: `${utteranceId}-boundary`, session_id: sessionId, utterance_id: utteranceId, reason: 'flush', first_word_sequence: rowSequence,
+      last_word_sequence: rowSequence, start_time: startTime, end_time: endTime, punctuation_hint: 'statement', source_chunk_ids: window.map((chunk) => chunk.chunk_id)
+    } });
+    application.handleGraphMessage({ message_id: `segment-${rowSequence}`, message_type: 'transcript.segment', payload: {
+      segment_id: `${sessionId}-segment-${rowSequence}`, session_id: sessionId, sequence: rowSequence, revision: 0,
+      start_time: startTime, end_time: endTime, text: `Final window ${rowSequence}.`, boundary: 'flush'
+    } });
+  };
+
+  application.graph = {
+    closed: false,
+    dispatchFrom(_from, _plane, type, _correlationId, payload) {
+      if (type === 'audio.chunk') {
+        deliveredChunks.push(payload);
+        currentWindow.push(payload);
+        return Promise.resolve();
+      }
+      if (type !== 'audio.flush') return Promise.resolve();
+      const window = currentWindow.splice(0);
+      const flushIndex = flushes.push({ ...payload, sequences: window.map((chunk) => chunk.sequence) }) - 1;
+      if (flushIndex === 0) {
+        firstFlushStarted();
+        firstFlushGate.then(() => emitFinalRow(window, payload));
+        return firstFlushGate;
+      }
+      emitFinalRow(window, payload);
+      return Promise.resolve();
+    }
+  };
+  application.onProjection((message) => projections.push(message));
+
+  const chunk = (sequence) => ({
+    chunk_id: `${sessionId}-source-${sequence}`, session_id: sessionId, sequence,
+    start_time: clock(sequence * 256), end_time: clock((sequence + 1) * 256),
+    format: { encoding: 'pcm-signed-integer', sample_rate_hz: 16000, channels: 1, bits_per_sample: 16, byte_order: 'little-endian' },
+    sample_count: 2, byte_length: 4, audio_base64: 'AAABAA==', checksum: 'sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93'
+  });
+
+  for (let sequence = 0; sequence < 240; sequence += 1) await application.acceptAudioChunk(chunk(sequence));
+  await firstFlush;
+  assert.deepEqual(application.audioCurrentUtterance.map((item) => item.sequence), Array.from({ length: 120 }, (_, sequence) => sequence + 120));
+
+  // Release the first final, then admit the next rollover in the precise
+  // completion microtask gap where the old worker has already observed an
+  // empty queue but its cleanup callback has not run yet.
+  releaseFirstFlush();
+  await Promise.resolve().then(() => application.acceptAudioChunk(chunk(240)));
+  for (let sequence = 241; sequence < 300; sequence += 1) await application.acceptAudioChunk(chunk(sequence));
+  assert.equal((await application.acceptAudioFlush({ session_id: sessionId, reason: 'pause' })).queued, true);
+  await application.waitForAudioIdle();
+
+  const rows = projections.filter((message) => message.message_type === 'ui.transcript-row' && !message.payload.provisional);
+  assert.deepEqual(finalizedWindows.map((window) => window.sequences), [
+    Array.from({ length: 120 }, (_, sequence) => sequence),
+    Array.from({ length: 120 }, (_, sequence) => sequence + 120),
+    Array.from({ length: 60 }, (_, sequence) => sequence + 240)
+  ]);
+  assert.equal(rows.length, 3, 'each bounded utterance must produce a finalized transcript row');
+  assert.deepEqual(rows.map((row) => row.payload.sequence), [0, 1, 2]);
+  assert.equal(flushes.length, 3);
+  assert.equal(flushes.at(-1).reason, 'pause');
+  assert.deepEqual(deliveredChunks.map((item) => item.sequence), Array.from({ length: 300 }, (_, sequence) => sequence));
+  assert.deepEqual([...application.audioChunkIdentities.values()].map((item) => item.sequence), Array.from({ length: 300 }, (_, sequence) => sequence));
+  assert.equal(application.audioProcessingError, undefined);
+  assert.deepEqual(application.audioQueueDiagnostics(), {
+    capturing_chunk_count: 0, queued_window_count: 0, queued_chunk_count: 0, active_window_id: undefined, active_chunk_count: 0, audio_in_flight: 0
+  });
+});
+
 test('startup recovery routes an unclean recording through the lifecycle owner and preserves duration', async () => {
   const sessionRoot = await mkdtemp(path.join(os.tmpdir(), 'argus-recovery-correction-'));
   const sessionId = 'unclean-recording-session';
@@ -327,6 +420,13 @@ function lifecycleChunk(sessionId, sequence, audio_base64, checksum, start_time,
     byte_length: Buffer.from(audio_base64, 'base64').byteLength,
     audio_base64, checksum
   };
+}
+
+function clock(milliseconds) {
+  const hours = Math.floor(milliseconds / 3600000);
+  const minutes = Math.floor((milliseconds % 3600000) / 60000);
+  const seconds = Math.floor((milliseconds % 60000) / 1000);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milliseconds % 1000).padStart(3, '0')}`;
 }
 
 function envelope(messageType, idempotencyKey, payload) {

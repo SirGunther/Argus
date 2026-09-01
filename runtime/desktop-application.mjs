@@ -400,12 +400,16 @@ export class DesktopApplication {
     this.audioInFlight += 1;
     this.diagnostics.log('audio-queue.snapshot', { session_id: this.sessionId, ...this.audioQueueDiagnostics() });
     this.updateAudioProcessing();
-    if (!this.audioWorkerPromise) {
-      this.audioWorkerPromise = this.processAudioQueue().finally(() => {
-        this.audioWorkerPromise = undefined;
-        this.resolveAudioIdleWaiters();
-      });
-    }
+    this.enqueueAudioWorkWorker();
+  }
+
+  enqueueAudioWorkWorker() {
+    if (this.audioWorkerPromise || !this.audioUtteranceQueue.length || this.audioProcessingError) return;
+    this.audioWorkerPromise = this.processAudioQueue().finally(() => {
+      this.audioWorkerPromise = undefined;
+      if (this.audioUtteranceQueue.length && !this.audioProcessingError) this.enqueueAudioWorkWorker();
+      this.resolveAudioIdleWaiters();
+    });
   }
 
   async processAudioQueue() {
