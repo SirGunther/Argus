@@ -186,19 +186,21 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   min-width: 0;
   padding: 0 18px;
   border-bottom: 1px solid var(--line-soft);
 }
 
+.pane-title-group, .pane-title-line { min-width: 0; }
 .eyebrow, .drawer-label { color: var(--text-muted); font: 500 8px/1.1 var(--mono); letter-spacing: .14em; }
 .pane-title-line { gap: 9px; margin-top: 8px; }
-.pane-title-line h2 { margin: 0; font-size: 16px; line-height: 1; letter-spacing: -.015em; }
-.count-badge { padding: 3px 6px; border: 1px solid var(--line); border-radius: 10px; color: var(--text-muted); font: 400 8px/1 var(--mono); }
-.pane-actions { gap: 8px; }
+.pane-title-line h2 { min-width: 0; margin: 0; overflow: hidden; font-size: 16px; line-height: 1; letter-spacing: -.015em; text-overflow: ellipsis; white-space: nowrap; }
+.count-badge { flex: 0 0 auto; padding: 3px 6px; border: 1px solid var(--line); border-radius: 10px; color: var(--text-muted); font: 400 8px/1 var(--mono); }
+.pane-actions { flex: 0 0 auto; gap: 8px; min-width: max-content; }
 .text-button { padding: 4px; border: 0; background: none; color: var(--text-muted); font-size: 10px; cursor: pointer; }
 .text-button:hover { color: var(--text); }
-.select-all-control { display: inline-flex; align-items: center; gap: 6px; padding: 4px; color: var(--text-muted); font-size: 10px; cursor: pointer; }
+.select-all-control { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 6px; padding: 4px; color: var(--text-muted); font-size: 10px; cursor: pointer; white-space: nowrap; }
 .select-all-control:hover { color: var(--text); }
 .select-all-control input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .select-all-box { display: grid; place-items: center; width: 15px; height: 15px; border: 1px solid #4a5651; border-radius: 2px; color: #101410; transition: .14s ease; }
@@ -583,6 +585,12 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
   .footer-actions { gap: 8px; }
   .folder-button span { display: none; }
   .folder-button { width: 28px; padding: 0; justify-content: center; }
+}
+
+@media (max-width: 480px) {
+  .pane { grid-template-rows: auto 27px minmax(0, 1fr); }
+  .pane-header { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; align-content: center; padding-top: 8px; padding-bottom: 8px; }
+  .pane-actions { justify-content: flex-end; min-width: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

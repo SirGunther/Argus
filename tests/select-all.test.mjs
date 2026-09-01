@@ -19,4 +19,7 @@ test('each list header exposes an accessible three-state master checkbox', async
   assert.match(app, /setAllSelected\(ui, kind, ids, checkbox\.checked\)/);
   assert.match(css, /input\[aria-checked="mixed"\]/);
   assert.doesNotMatch(css, /\.select-all-button\s*\{\s*display:\s*none/);
+  assert.match(css, /\.pane-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*min-width:\s*max-content;/);
+  assert.match(css, /\.select-all-control\s*\{[^}]*flex:\s*0 0 auto;[^}]*white-space:\s*nowrap;/);
+  assert.match(css, /@media \(max-width:\s*480px\)[\s\S]*?\.pane\s*\{\s*grid-template-rows:\s*auto 27px minmax\(0, 1fr\);\s*\}[\s\S]*?\.pane-header\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/);
 });
