@@ -272,9 +272,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
 
   function renderLiveTranscript() {
     const item = state.liveProvisional.current?.item;
-    els.transcriptScroll.classList.toggle('has-live-transcript', Boolean(item));
-    els.liveTranscript.hidden = !item;
-    els.liveTranscriptText.textContent = item?.text || '';
+    els.liveTranscriptText.textContent = item?.text || 'Listening for speech...';
   }
 
   function renderRows(kind, animate = false) {
