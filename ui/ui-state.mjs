@@ -85,6 +85,20 @@ export function setAllSelected(uiState, kind, ids, selected) {
   return uiState;
 }
 
+export function selectRange(uiState, kind, ids, startIndex, endIndex) {
+  assertKind(kind);
+  if (!Array.isArray(ids) || !Number.isInteger(startIndex) || !Number.isInteger(endIndex)) return [];
+  if (startIndex < 0 || endIndex < 0 || startIndex >= ids.length || endIndex >= ids.length) return [];
+
+  const first = Math.min(startIndex, endIndex);
+  const last = Math.max(startIndex, endIndex);
+  const range = ids.slice(first, last + 1);
+  const nextSelected = new Set(uiState.selected[kind]);
+  range.forEach((id) => nextSelected.add(id));
+  uiState.selected[kind] = nextSelected;
+  return range;
+}
+
 export function selectionSummary(uiState, kind, ids = []) {
   assertKind(kind);
   const selected = uiState.selected[kind];

@@ -1,7 +1,7 @@
 import {
   createUiState, describeClassification, isSelected, isSourceHighlighted, jumpToLive,
   noteIncomingContent, notePaneScroll, reconcileKeyedRows, replaceSourceHighlights,
-  resolveSourceRangeIds, selectionSummary, setAllSelected, toggleSelected
+  resolveSourceRangeIds, selectRange, selectionSummary, setAllSelected, toggleSelected
 } from './ui/ui-state.mjs';
 import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from './ui/audio-capture.mjs';
 import { acceptLiveTranscript, createLiveTranscriptState, finalizeLiveTranscript, resetLiveTranscriptState } from './ui/live-transcript.mjs';
@@ -48,6 +48,45 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     transcript: { list: 'transcriptList', scroll: 'transcriptScroll', count: 'transcriptCount', label: 'transcript entry', allLabel: 'transcript entries' },
     derived: { list: 'derivedList', scroll: 'derivedScroll', count: 'derivedCount', label: 'logged item', allLabel: 'logged items' }
   };
+  const lastSelectedIndex = { transcript: -1, derived: -1 };
+  const lastSelectedId = { transcript: null, derived: null };
+  let shiftKeyDown = false;
+
+  function updateShiftKeyState(event) {
+    if (event.key !== 'Shift') return;
+    shiftKeyDown = event.type === 'keydown';
+  }
+
+  function isShiftPressed(event) {
+    return Boolean(event.shiftKey || shiftKeyDown);
+  }
+
+  function rememberSelectionAnchor(kind, id, index) {
+    lastSelectedId[kind] = id;
+    lastSelectedIndex[kind] = index;
+  }
+
+  function resetSelectionAnchor(kind) {
+    lastSelectedId[kind] = null;
+    lastSelectedIndex[kind] = -1;
+  }
+
+  function findSelectionAnchor(kind, ids) {
+    if (lastSelectedId[kind] !== null) return ids.indexOf(lastSelectedId[kind]);
+    return lastSelectedIndex[kind] >= 0 && lastSelectedIndex[kind] < ids.length ? lastSelectedIndex[kind] : -1;
+  }
+
+  function syncSelectionRows(kind, ids) {
+    const selectedIds = new Set(ids);
+    const list = els[kindConfig[kind].list];
+    list.querySelectorAll('.data-row').forEach((row) => {
+      if (!selectedIds.has(row.dataset.id)) return;
+      const selected = isSelected(ui, kind, row.dataset.id);
+      row.classList.toggle('selected', selected);
+      row.querySelector('input').checked = selected;
+    });
+    updateSelectionUI(kind);
+  }
 
   function readRememberedAudioInput() {
     try {
@@ -358,10 +397,23 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       row.classList.add('review-needed');
       editable.title = item.review_flags.map((flag) => `${flag.reason}: ${flag.candidates.join(', ')}`).join(' · ');
     }
-    checkbox.addEventListener('change', () => {
-      toggleSelected(ui, kind, id, checkbox.checked);
-      row.classList.toggle('selected', checkbox.checked);
-      updateSelectionUI(kind);
+    checkbox.addEventListener('click', (event) => {
+      const ids = itemIds(kind);
+      const clickedIndex = ids.indexOf(id);
+      const anchorIndex = findSelectionAnchor(kind, ids);
+
+      event.preventDefault();
+      if (isShiftPressed(event) && anchorIndex >= 0 && clickedIndex >= 0) {
+        const range = selectRange(ui, kind, ids, anchorIndex, clickedIndex);
+        rememberSelectionAnchor(kind, id, clickedIndex);
+        syncSelectionRows(kind, range);
+        return;
+      }
+
+      const selected = !isSelected(ui, kind, id);
+      toggleSelected(ui, kind, id, selected);
+      rememberSelectionAnchor(kind, id, clickedIndex);
+      syncSelectionRows(kind, [id]);
     });
     editable.addEventListener('focus', () => {
       row.classList.add('editing');
@@ -644,6 +696,8 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       state.pending.clear();
       ui.selected.transcript.clear();
       ui.selected.derived.clear();
+      resetSelectionAnchor('transcript');
+      resetSelectionAnchor('derived');
       ui.sourceHighlights.clear();
       ui.panes.transcript = { followingLive: true, unseen: 0 };
       ui.panes.derived = { followingLive: true, unseen: 0 };
@@ -785,10 +839,14 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     }
   }
 
+  window.addEventListener('keydown', updateShiftKeyState);
+  window.addEventListener('keyup', updateShiftKeyState);
+  window.addEventListener('blur', () => { shiftKeyDown = false; });
   document.querySelectorAll('.select-all-checkbox').forEach((checkbox) => checkbox.addEventListener('change', () => {
     const kind = checkbox.dataset.kind;
     const ids = itemIds(kind);
     setAllSelected(ui, kind, ids, checkbox.checked);
+    resetSelectionAnchor(kind);
     renderRows(kind); updateSelectionUI(kind);
   }));
   document.querySelectorAll('.batch-copy-button').forEach((button) => button.addEventListener('click', () => sendCopy(button.dataset.kind, selectedIds(button.dataset.kind), button)));

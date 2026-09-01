@@ -5,7 +5,7 @@ import { createDemoAuthority } from '../ui/demo-state.mjs';
 import { createUiBridge } from '../ui/bridge.mjs';
 import { createUiContractBoundary } from '../ui/bridge-contracts.mjs';
 import { createFakeCapabilities } from '../ui/platform-capabilities.mjs';
-import { createUiState, noteIncomingContent, notePaneScroll, selectionCount, selectionSummary, setAllSelected, toggleSelected } from '../ui/ui-state.mjs';
+import { createUiState, noteIncomingContent, notePaneScroll, selectRange, selectionCount, selectionSummary, setAllSelected, toggleSelected } from '../ui/ui-state.mjs';
 
 const root = new URL('..', import.meta.url).pathname.replace(/^\/(\w):/, '$1:').replaceAll('/', '\\').replace(/\\$/, '');
 
@@ -109,6 +109,16 @@ test('selection summary drives the master control through unchecked, indetermina
 
   toggleSelected(ui, 'derived', 'stale-item', true);
   assert.deepEqual(selectionSummary(ui, 'derived', ids), { selectedCount: 0, totalCount: 3, state: 'none' }, 'stale selections do not affect current-pane state');
+});
+
+test('shift-click range selection is inclusive, bidirectional, and additive per pane', () => {
+  const ui = createUiState();
+  const ids = ['segment-0', 'segment-1', 'segment-2', 'segment-3'];
+
+  assert.deepEqual(selectRange(ui, 'transcript', ids, 0, 2), ['segment-0', 'segment-1', 'segment-2']);
+  assert.deepEqual(selectRange(ui, 'transcript', ids, 3, 1), ['segment-1', 'segment-2', 'segment-3']);
+  assert.deepEqual([...ui.selected.transcript], ids);
+  assert.equal(selectionCount(ui, 'derived'), 0);
 });
 
 test('loopback bridge starts deterministically, validates projections, and exposes no arbitrary file route', async () => {
