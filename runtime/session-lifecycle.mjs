@@ -568,6 +568,16 @@ export class SessionLifecycle {
       const id = candidate.revisionId;
       const existing = historyById.get(id);
       const active = activeByRevision.get(id);
+      if (historyConflicts.has(id)) {
+        reject(id, integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Permanent history entry ${id} has conflicting copies`));
+        continue;
+      }
+      const candidateFingerprint = fingerprintValue(candidate.segment);
+      if (existing && active && existing.fingerprint === candidateFingerprint && fingerprintValue(active.segment) === candidateFingerprint) {
+        for (const pendingIndex of candidate.pendingIndexes) completedPending.add(pendingIndex);
+        alreadyPresent.push(id);
+        continue;
+      }
       let normalized;
       try {
         normalized = compactLegacyTranscriptSegment(candidate.segment);
@@ -575,16 +585,7 @@ export class SessionLifecycle {
         reject(id, error);
         continue;
       }
-      if (historyConflicts.has(id)) {
-        reject(id, integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Permanent history entry ${id} has conflicting copies`));
-        continue;
-      }
       const normalizedFingerprint = fingerprintValue(normalized);
-      if (existing && active && existing.fingerprint === normalizedFingerprint && fingerprintValue(active.segment) === existing.fingerprint && fingerprintValue(candidate.segment) === existing.fingerprint) {
-        for (const pendingIndex of candidate.pendingIndexes) completedPending.add(pendingIndex);
-        alreadyPresent.push(id);
-        continue;
-      }
       try { validateRecoveredTranscriptAppend(sessionId, id, normalized); }
       catch (error) {
         reject(id, error);
