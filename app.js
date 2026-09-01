@@ -1,7 +1,7 @@
 import {
   createUiState, describeClassification, isSelected, isSourceHighlighted, jumpToLive,
   noteIncomingContent, notePaneScroll, reconcileKeyedRows, replaceSourceHighlights,
-  resolveSourceRangeIds, selectionCount, setAllSelected, toggleSelected
+  resolveSourceRangeIds, selectionSummary, setAllSelected, toggleSelected
 } from './ui/ui-state.mjs';
 import { canChangeAudioInput, createAudioCapture, describeCaptureFailure } from './ui/audio-capture.mjs';
 import { acceptLiveTranscript, createLiveTranscriptState, finalizeLiveTranscript, resetLiveTranscriptState } from './ui/live-transcript.mjs';
@@ -45,8 +45,8 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   els.audioInputDetails.hidden = !desktop;
 
   const kindConfig = {
-    transcript: { list: 'transcriptList', scroll: 'transcriptScroll', count: 'transcriptCount', label: 'transcript entry' },
-    derived: { list: 'derivedList', scroll: 'derivedScroll', count: 'derivedCount', label: 'logged item' }
+    transcript: { list: 'transcriptList', scroll: 'transcriptScroll', count: 'transcriptCount', label: 'transcript entry', allLabel: 'transcript entries' },
+    derived: { list: 'derivedList', scroll: 'derivedScroll', count: 'derivedCount', label: 'logged item', allLabel: 'logged items' }
   };
 
   function readRememberedAudioInput() {
@@ -469,13 +469,23 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     updateSelectionUI('derived');
   }
 
+  function itemIds(kind) {
+    return state[kind].map((item) => kind === 'transcript' ? item.segment_id : item.item_id);
+  }
+
   function updateSelectionUI(kind) {
-    const count = selectionCount(ui, kind);
+    const ids = itemIds(kind);
+    const { selectedCount, totalCount, state: selectionState } = selectionSummary(ui, kind, ids);
     const button = document.querySelector(`.batch-copy-button[data-kind="${kind}"]`);
-    const selectAll = document.querySelector(`.select-all-button[data-kind="${kind}"]`);
-    button.disabled = count === 0;
-    button.querySelector('.selected-count').textContent = count;
-    selectAll.textContent = count === state[kind].length && count > 0 ? 'Clear all' : 'Select all';
+    const selectAll = document.querySelector(`.select-all-checkbox[data-kind="${kind}"]`);
+    button.disabled = selectedCount === 0;
+    button.querySelector('.selected-count').textContent = selectedCount;
+    selectAll.checked = selectionState === 'all';
+    selectAll.indeterminate = selectionState === 'some';
+    selectAll.disabled = totalCount === 0;
+    selectAll.setAttribute('aria-checked', selectionState === 'some' ? 'mixed' : String(selectionState === 'all'));
+    selectAll.setAttribute('aria-label', `${selectionState === 'all' ? 'Deselect' : 'Select'} all ${kindConfig[kind].allLabel}`);
+    selectAll.closest('.select-all-control').querySelector('.select-all-label').textContent = selectionState === 'all' ? 'Deselect all' : 'Select all';
   }
 
   function renderSession() {
@@ -775,10 +785,10 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     }
   }
 
-  document.querySelectorAll('.select-all-button').forEach((button) => button.addEventListener('click', () => {
-    const kind = button.dataset.kind;
-    const ids = state[kind].map((item) => kind === 'transcript' ? item.segment_id : item.item_id);
-    setAllSelected(ui, kind, ids, selectionCount(ui, kind) !== ids.length);
+  document.querySelectorAll('.select-all-checkbox').forEach((checkbox) => checkbox.addEventListener('change', () => {
+    const kind = checkbox.dataset.kind;
+    const ids = itemIds(kind);
+    setAllSelected(ui, kind, ids, checkbox.checked);
     renderRows(kind); updateSelectionUI(kind);
   }));
   document.querySelectorAll('.batch-copy-button').forEach((button) => button.addEventListener('click', () => sendCopy(button.dataset.kind, selectedIds(button.dataset.kind), button)));

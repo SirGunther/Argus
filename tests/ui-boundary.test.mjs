@@ -5,7 +5,7 @@ import { createDemoAuthority } from '../ui/demo-state.mjs';
 import { createUiBridge } from '../ui/bridge.mjs';
 import { createUiContractBoundary } from '../ui/bridge-contracts.mjs';
 import { createFakeCapabilities } from '../ui/platform-capabilities.mjs';
-import { createUiState, noteIncomingContent, notePaneScroll, selectionCount, setAllSelected, toggleSelected } from '../ui/ui-state.mjs';
+import { createUiState, noteIncomingContent, notePaneScroll, selectionCount, selectionSummary, setAllSelected, toggleSelected } from '../ui/ui-state.mjs';
 
 const root = new URL('..', import.meta.url).pathname.replace(/^\/(\w):/, '$1:').replaceAll('/', '\\').replace(/\\$/, '');
 
@@ -93,6 +93,22 @@ test('selection and pane-following state remain independent UI concerns', () => 
   notePaneScroll(ui, 'derived', { distanceFromBottom: 0 });
   noteIncomingContent(ui, 'derived');
   assert.equal(ui.panes.derived.unseen, 0);
+});
+
+test('selection summary drives the master control through unchecked, indeterminate, and checked states', () => {
+  const ui = createUiState();
+  const ids = ['item-1', 'item-2', 'item-3'];
+
+  assert.deepEqual(selectionSummary(ui, 'derived', ids), { selectedCount: 0, totalCount: 3, state: 'none' });
+  toggleSelected(ui, 'derived', 'item-1', true);
+  assert.deepEqual(selectionSummary(ui, 'derived', ids), { selectedCount: 1, totalCount: 3, state: 'some' });
+  setAllSelected(ui, 'derived', ids, true);
+  assert.deepEqual(selectionSummary(ui, 'derived', ids), { selectedCount: 3, totalCount: 3, state: 'all' });
+  setAllSelected(ui, 'derived', ids, false);
+  assert.deepEqual(selectionSummary(ui, 'derived', ids), { selectedCount: 0, totalCount: 3, state: 'none' });
+
+  toggleSelected(ui, 'derived', 'stale-item', true);
+  assert.deepEqual(selectionSummary(ui, 'derived', ids), { selectedCount: 0, totalCount: 3, state: 'none' }, 'stale selections do not affect current-pane state');
 });
 
 test('loopback bridge starts deterministically, validates projections, and exposes no arbitrary file route', async () => {

@@ -198,6 +198,18 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .pane-actions { gap: 8px; }
 .text-button { padding: 4px; border: 0; background: none; color: var(--text-muted); font-size: 10px; cursor: pointer; }
 .text-button:hover { color: var(--text); }
+.select-all-control { display: inline-flex; align-items: center; gap: 6px; padding: 4px; color: var(--text-muted); font-size: 10px; cursor: pointer; }
+.select-all-control:hover { color: var(--text); }
+.select-all-control input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.select-all-box { display: grid; place-items: center; width: 15px; height: 15px; border: 1px solid #4a5651; border-radius: 2px; color: #101410; transition: .14s ease; }
+.select-all-box svg { width: 12px; height: 12px; opacity: 0; stroke-width: 2.3; }
+.select-all-control input:focus-visible + .select-all-box { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+.select-all-control input:checked + .select-all-box { border-color: var(--accent); background: var(--accent); }
+.select-all-control input:checked + .select-all-box svg { opacity: 1; }
+.select-all-control input[aria-checked="mixed"] + .select-all-box { border-color: var(--accent); background: var(--accent); }
+.select-all-control input[aria-checked="mixed"] + .select-all-box::after { width: 8px; height: 2px; background: #101410; content: ''; }
+.select-all-control input:disabled ~ .select-all-box, .select-all-control input:disabled ~ .select-all-label { opacity: .45; }
+.select-all-control input:disabled, .select-all-control input:disabled ~ * { cursor: default; }
 
 .column-labels, .data-row {
   display: grid;
@@ -556,7 +568,6 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
   .topbar { padding: 0 16px; }
   .product-label { display: none; }
   .pane-header, .column-labels, .data-row { padding-left: 14px; padding-right: 14px; }
-  .select-all-button { display: none; }
 }
 
 @media (max-width: 840px) {
