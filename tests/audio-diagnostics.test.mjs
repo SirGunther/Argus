@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createDiagnosticLogger } from '../runtime/diagnostics.mjs';
+import { createDiagnosticFileOutput, createDiagnosticLogger } from '../runtime/diagnostics.mjs';
 import { DesktopApplication } from '../runtime/desktop-application.mjs';
 import { runServiceBatches } from './helpers/process-harness.mjs';
 
@@ -17,14 +17,75 @@ test('diagnostic logger removes raw audio fields and caps transcript previews', 
   logger.log('sanitizer.check', {
     session_id: 'diagnostic-session',
     audio_base64: 'AAABAA==',
+    pcm_base64: 'AAABAA==',
+    apiKey: 'must-not-appear',
+    environment: { ARGUS_SECRET: 'must-not-appear' },
     samples: [0.1, 0.2],
     payload: { audio_base64: 'AAABAA==' },
     transcript_preview: 'x'.repeat(400)
   });
   const line = lines.join('');
   assert.equal(line.includes('audio_base64'), false);
+  assert.equal(line.includes('pcm_base64'), false);
+  assert.equal(line.includes('must-not-appear'), false);
   assert.equal(line.includes('AAABAA=='), false);
   assert.equal(JSON.parse(line).transcript_preview.length, 160);
+});
+
+test('diagnostic JSONL output stays valid and bounded through rotation', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'argus-diagnostic-file-'));
+  const filePath = path.join(directory, 'run.jsonl');
+  const terminal = [];
+  const output = createDiagnosticFileOutput({ filePath, terminal: { write: (line) => terminal.push(line) }, maxBytes: 1024, maxRotations: 2 });
+  const logger = createDiagnosticLogger({ enabled: true, output, clock: () => '2026-08-30T00:00:00.000Z' });
+  for (let index = 0; index < 80; index += 1) logger.log('bounded.event', { sequence: index, transcript_preview: 'diagnostic text' });
+  output.close();
+  try {
+    const names = (await readdir(directory)).filter((name) => name.startsWith('run.jsonl'));
+    assert.deepEqual(names.sort(), ['run.jsonl', 'run.jsonl.1', 'run.jsonl.2']);
+    const contents = await Promise.all(names.map((name) => readFile(path.join(directory, name), 'utf8')));
+    assert.ok(contents.every((content) => Buffer.byteLength(content) <= 1024));
+    assert.ok(contents.flatMap((content) => content.trim().split('\n')).every((line) => JSON.parse(line).event === 'bounded.event'));
+    assert.equal(terminal.length, 80);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('preview progress emits an observational possible-stall warning with queue state', async () => {
+  const lines = [];
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-stall-${Date.now()}`), diagnosticsEnabled: true, diagnosticsOutput: { write: (line) => lines.push(line) }, diagnosticStallThresholdMs: 10 });
+  application.observePreviewRevision({ session_id: 'stall-session', utterance_id: 'stall-session-utterance-0', preview_id: 'stall-preview-1', revision: 1, first_sequence: 0, last_sequence: 7, chunk_count: 8 });
+  application.markPreviewStage('stall-session-utterance-0', 'whisper.preview');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const warning = lines.map((line) => JSON.parse(line)).find((record) => record.event === 'pipeline.possible-stall');
+  assert.equal(warning.utterance_id, 'stall-session-utterance-0');
+  assert.equal(warning.preview_revision, 1);
+  assert.equal(warning.last_successfully_completed_stage, 'whisper.preview');
+  assert.equal(warning.active_worker_state, 'idle');
+  application.clearPipelineStallDetection();
+});
+
+test('host worker and flush diagnostics retain shared correlation identities', async () => {
+  const lines = [];
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-host-diagnostics-${Date.now()}`), diagnosticsEnabled: true, diagnosticsOutput: { write: (line) => lines.push(line) } });
+  application.sessionId = 'host-diagnostics-session';
+  application.graph = { closed: false, dispatchFrom: async (_from, _plane, messageType, sessionId, payload, idempotencyKey) => ({ message_id: `${messageType}:${idempotencyKey}`, message_type: messageType, correlation_id: sessionId, payload }) };
+  const makeWork = (sequence) => ({ idempotencyKey: `host-diagnostics-flush-${sequence}`, utterance: { session_id: application.sessionId, utterance_id: `${application.sessionId}-utterance-${sequence}`, audio_window_id: `${application.sessionId}-audio-window-${sequence}`, chunks: [{ chunk_id: `${application.sessionId}-chunk-${sequence}`, sequence, start_time: '00:00:00.000', end_time: '00:00:00.256', audio_base64: 'AAABAA==' }], requested_at: '2026-08-30T00:00:00.000Z', reason: 'pause' } });
+  application.audioQueuedUtterances = 2;
+  application.audioQueuedChunkCount = 2;
+  application.enqueueAudioWork(makeWork(0));
+  application.enqueueAudioWork(makeWork(1));
+  await application.waitForAudioIdle();
+  const records = lines.map((line) => JSON.parse(line));
+  const worker = records.find((record) => record.event === 'audio.worker-started');
+  const flushBeginning = records.find((record) => record.event === 'audio.flush-dispatch-beginning');
+  const flushCompleted = records.find((record) => record.event === 'audio.flush-dispatch-completed');
+  assert.ok(worker.worker_invocation_id);
+  assert.equal(flushBeginning.flush_id, flushCompleted.flush_id);
+  assert.equal(flushBeginning.utterance_id, flushCompleted.utterance_id);
+  assert.ok(records.some((record) => record.event === 'audio.queue-state-after-terminal-outcome' && record.outcome === 'completed'));
+  assert.equal(lines.join('').includes('audio_base64'), false);
 });
 
 test('empty Whisper result is observable and the next queued window still transcribes', async () => {
@@ -61,6 +122,11 @@ test('empty Whisper result is observable and the next queued window still transc
     assert.equal(result.outputs.filter((message) => message.message_type === 'transcript.empty').length, 1);
     assert.deepEqual(result.outputs.filter((message) => message.message_type === 'transcript.word-committed').map((message) => message.payload.text), ['Next.']);
     assert.ok(result.diagnostics.filter((line) => line.trimStart().startsWith('{')).some((line) => JSON.parse(line).event === 'whisper.empty'));
+    const diagnostics = result.diagnostics.filter((line) => line.trimStart().startsWith('{')).map((line) => JSON.parse(line));
+    const flushDiagnostic = diagnostics.find((record) => record.event === 'audio.flush-received');
+    const emission = diagnostics.find((record) => record.event === 'transcript.final-emission-summary');
+    assert.equal(flushDiagnostic.utterance_id, emission.utterance_id);
+    assert.equal(flushDiagnostic.audio_window_id, emission.audio_window_id);
     assert.equal(result.diagnostics.join('\n').includes('audio_base64'), false);
   } finally {
     await rm(sessionRoot, { recursive: true, force: true });

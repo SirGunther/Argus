@@ -1,10 +1,13 @@
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
+import { createDiagnosticLogger } from '../../runtime/diagnostics.mjs';
 
 const SERVICE = 'contextual-transcript-corrector';
+const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS === '1', source: SERVICE });
 runLineService({ service: SERVICE, operations: {
   'transcript.correction-request': { name: 'resolve-contextual-transcript', handle(message) {
     const request = message.payload;
     if (!request?.request_id || !request.words?.length) throw invalid('request_id and words are required');
+    diagnostics.log('transcript.correction-request-received', { session_id: request.session_id, utterance_id: request.utterance_id, boundary_id: request.boundary_id, request_id: request.request_id, word_count: request.words.length, input_message_id: message.message_id });
     const firstWord = request.words[0];
     const argusAlternative = firstWord.alternatives.find((candidate) => candidate.text.toLowerCase() === 'argus');
     const remaining = request.words.slice(1).map((word) => word.text.toLowerCase()).join(' ');
@@ -14,6 +17,7 @@ runLineService({ service: SERVICE, operations: {
       basis: 'acoustic-and-contextual', context: { first_word_id: request.words[0].word_id, last_word_id: request.words.at(-1).word_id }
     }] : [];
     const terminalMark = request.formatting_hint === 'question' ? '?' : request.formatting_hint === 'exclamation' ? '!' : '.';
+    diagnostics.log('transcript.correction-resolution-emitting', { session_id: request.session_id, utterance_id: request.utterance_id, boundary_id: request.boundary_id, request_id: request.request_id, proposal_count: proposals.length, formatting_hint: request.formatting_hint });
     return [{ messageType: 'transcript.correction-resolved', identityKey: `transcript.correction-resolved:${request.request_id}`, payload: {
       request_id: request.request_id, session_id: request.session_id, utterance_id: request.utterance_id, boundary_id: request.boundary_id,
       proposals, formatting: { terminal_mark: terminalMark, capitalize_first_word: true, confidence: 0.97 },

@@ -55,11 +55,43 @@ export class InteractiveGraph {
     this.assertEmission(endpoint, message);
     const wires = this.wiresFor(from, plane, messageType);
     if (!wires.length) throw new Error(`No declared ${plane} wire accepts ${messageType} from ${from}`);
+    const traceDispatch = messageType !== 'audio.chunk';
+    if (traceDispatch) this.diagnostics?.log('graph.dispatch-beginning', {
+      session_id: correlationId,
+      correlation_id: correlationId,
+      input_message_id: message.message_id,
+      idempotency_key: message.idempotency_key,
+      message_type: messageType,
+      producer: from,
+      targets: wires.map((wire) => wire.to)
+    });
     const receipts = wires.filter((wire) => this.prepared.endpoints.get(wire.to)?.endpointType === 'service' && !NO_RECEIPT.has(messageType))
       .map((wire) => this.waitForReceipt(wire.to, message.message_id));
     this.route(from, message);
-    await Promise.all(receipts);
-    return message;
+    try {
+      await Promise.all(receipts);
+      if (traceDispatch) this.diagnostics?.log('graph.dispatch-completed', {
+        session_id: correlationId,
+        correlation_id: correlationId,
+        input_message_id: message.message_id,
+        idempotency_key: message.idempotency_key,
+        message_type: messageType,
+        producer: from
+      });
+      return message;
+    } catch (error) {
+      if (traceDispatch) this.diagnostics?.log('graph.dispatch-failed', {
+        session_id: correlationId,
+        correlation_id: correlationId,
+        input_message_id: message.message_id,
+        idempotency_key: message.idempotency_key,
+        message_type: messageType,
+        producer: from,
+        error_code: error.code,
+        error: error.message
+      });
+      throw error;
+    }
   }
 
   async drain(reason = 'shutdown') {
@@ -92,6 +124,7 @@ export class InteractiveGraph {
       onExit: ({ code, signal }) => {
         record.exited = true;
         record.handle.dispose();
+        this.diagnostics?.log('child-process.exit', { session_id: this.sessionId(), correlation_id: this.sessionId(), service: instance.id, pid: record.handle.pid, code, signal, expected: record.expected });
         this.diagnostics?.log('graph.service-exited', { session_id: this.sessionId(), correlation_id: this.sessionId(), service: instance.id, pid: record.handle.pid, code, signal, expected: record.expected });
         this.onStatus({ type: 'service-exit', service: instance.id, code, signal, expected: record.expected });
         if (!record.expected && !this.draining) this.fail(new Error(`${instance.id} exited unexpectedly with code ${code ?? 'none'}`));

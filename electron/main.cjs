@@ -7,6 +7,8 @@ let application;
 let quitting = false;
 let shutdownPromise;
 let rendererShutdownTimer;
+let diagnosticOutput;
+let removeProcessDiagnosticHandlers;
 
 // Keep the standalone host usable on Windows images where Chromium's GPU helper
 // cannot load its optional graphics dependency. Audio capture and all Argus
@@ -54,13 +56,21 @@ async function start() {
   process.env.ARGUS_SESSION_ROOT = sessionRoot;
   const diagnosticsEnabled = shouldEnableDiagnostics();
   process.env.ARGUS_DIAGNOSTICS = diagnosticsEnabled ? '1' : '0';
+  if (diagnosticsEnabled) {
+    const { createDiagnosticFileOutput, installProcessDiagnosticHandlers } = await import('../runtime/diagnostics.mjs');
+    const defaultFile = path.join(app.getPath('userData'), 'diagnostics', `argus-${Date.now()}-${process.pid}.jsonl`);
+    diagnosticOutput = createDiagnosticFileOutput({ filePath: process.env.ARGUS_DIAGNOSTIC_FILE || defaultFile });
+    process.stderr.write(`Argus diagnostics file: ${diagnosticOutput.filePath}\n`);
+  }
   application = new DesktopApplication({
     root: ROOT,
     graphFile: path.join(ROOT, 'wiring', 'production-electron.json'),
     sessionRoot,
     environment: process.env,
-    diagnosticsEnabled
+    diagnosticsEnabled,
+    diagnosticsOutput: diagnosticOutput
   });
+  removeProcessDiagnosticHandlers = (await import('../runtime/diagnostics.mjs')).installProcessDiagnosticHandlers(application.diagnostics);
   application.diagnostics.log('electron.starting', { packaged: app.isPackaged, session_root_configured: Boolean(sessionRoot) });
   application.onProjection((message) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -103,6 +113,10 @@ function completeShutdown(reason) {
     finally {
       quitting = true;
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+      removeProcessDiagnosticHandlers?.();
+      removeProcessDiagnosticHandlers = undefined;
+      diagnosticOutput?.close();
+      diagnosticOutput = undefined;
       if (app.isReady()) app.quit();
     }
   })();
@@ -111,6 +125,8 @@ function completeShutdown(reason) {
 
 app.whenReady().then(start).catch((error) => {
   console.error(`Argus startup failed: ${error.stack || error.message}`);
+  removeProcessDiagnosticHandlers?.();
+  diagnosticOutput?.close();
   app.exit(1);
 });
 
