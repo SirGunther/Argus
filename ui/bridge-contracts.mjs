@@ -23,7 +23,7 @@ export async function createUiContractBoundary(root) {
       if (!UI_PROJECTION_TYPES.has(messageType)) throw new Error(`Not a browser projection: ${messageType}`);
       const plane = messageType === 'ui.service-status' || messageType === 'ui.command-result' ? 'control' : 'domain';
       const message = createEnvelope({
-        plane, messageType, producer: 'ui-bridge', correlationId, schemaVersion: messageType === 'ui.session-status' ? '1.2.0' : messageType === 'ui.transcript-row' ? '1.2.0' : '1.0.0',
+        plane, messageType, producer: 'ui-bridge', correlationId, schemaVersion: messageType === 'ui.session-status' ? '1.2.0' : messageType === 'ui.transcript-row' ? '1.1.0' : '1.0.0',
         idempotencyKey: idempotencyKey || `${messageType}:${correlationId}:${Date.now()}`, payload
       });
       registry.assertEnvelope(message);

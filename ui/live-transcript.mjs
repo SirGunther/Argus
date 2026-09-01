@@ -52,8 +52,7 @@ function dismissLiveTranscript(state, identity, revision) {
 
 export function finalizeLiveTranscript(state, item) {
   if (!item || item.provisional) return result(false, false, 'invalid');
-  const record = (state.current && matches(state.current, item) ? state.current : undefined)
-    || [...state.records.values()].find((candidate) => matches(candidate, item));
+  const record = [...state.records.values()].find((candidate) => matches(candidate, item));
   if (!record) return result(false, false, 'unmatched');
 
   record.finalized = true;
@@ -85,7 +84,6 @@ function primaryIdentity(item) {
 function identities(item) {
   return [
     item?.utterance_id ? `utterance:${item.utterance_id}` : null,
-    ...(Array.isArray(item?.utterance_ids) ? item.utterance_ids : []).map((utteranceId) => `utterance:${utteranceId}`),
     item?.segment_id ? `segment:${item.segment_id}` : null
   ].filter(Boolean);
 }

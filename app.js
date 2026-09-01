@@ -49,10 +49,6 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     derived: { list: 'derivedList', scroll: 'derivedScroll', count: 'derivedCount', label: 'logged item' }
   };
 
-  function visibleItemId(kind, item) {
-    return kind === 'transcript' ? (item.row_id || item.segment_id) : item.item_id;
-  }
-
   function readRememberedAudioInput() {
     try {
       const value = window.localStorage.getItem(AUDIO_INPUT_STORAGE_KEY);
@@ -249,9 +245,9 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       const liveResult = finalizeLiveTranscript(state.liveProvisional, item);
       if (liveResult.cleared) renderLiveTranscript();
     }
-    const id = visibleItemId(kind, item);
+    const id = kind === 'transcript' ? item.segment_id : item.item_id;
     const collection = state[kind];
-    const index = collection.findIndex((entry) => visibleItemId(kind, entry) === id);
+    const index = collection.findIndex((entry) => (kind === 'transcript' ? entry.segment_id : entry.item_id) === id);
     const wasPresent = index >= 0;
     if (wasPresent) collection[index] = { ...collection[index], ...item };
     else collection.push({ ...item });
@@ -285,34 +281,11 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     reconcileKeyedRows({
       list,
       items: state[kind],
-      itemId: (item) => visibleItemId(kind, item),
+      itemId: (item) => kind === 'transcript' ? item.segment_id : item.item_id,
       createRow: (item) => createRow(kind, item, animate),
       updateRow: (row, item, options) => updateRow(kind, row, item, options),
       preserveRow: (row) => Boolean(activeElement && row.contains(activeElement))
     });
-  }
-
-  function setTranscriptSource(row, item, sourceRange, sourceIdentity, provenance, bind = false) {
-    const source = item.source;
-    const validSource = source && source.first_segment_id && source.last_segment_id && source.start_time && source.end_time;
-    row.classList.toggle('has-source', Boolean(validSource));
-    if (!validSource) {
-      sourceRange.hidden = true;
-      sourceRange.disabled = true;
-      provenance.hidden = true;
-      return;
-    }
-    sourceRange.hidden = false;
-    sourceRange.disabled = false;
-    sourceRange.querySelector('.source-start').textContent = source.start_time;
-    sourceRange.querySelector('.source-end').textContent = source.end_time;
-    const segmentCount = item.source_segment_ids?.length || 0;
-    sourceIdentity.textContent = `${source.first_segment_id} -> ${source.last_segment_id}${segmentCount > 2 ? ` · ${segmentCount} segments` : ''}`;
-    sourceRange.title = `Show exact source range ${source.first_segment_id} (${source.start_time}) through ${source.last_segment_id} (${source.end_time})`;
-    sourceRange.setAttribute('aria-label', `Show exact source range ${source.first_segment_id} at ${source.start_time} through ${source.last_segment_id} at ${source.end_time}`);
-    provenance.hidden = false;
-    provenance.querySelector('strong').textContent = segmentCount > 1 ? 'Sources' : 'Source';
-    if (bind) sourceRange.addEventListener('click', () => showSourceContext(row.argusItem));
   }
 
   function createRow(kind, item, animate) {
@@ -325,7 +298,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     const editable = row.querySelector('.editable-text');
     const copyButton = row.querySelector('.row-copy');
     const suggestion = row.querySelector('.classification-suggestion');
-    const id = visibleItemId(kind, item);
+    const id = kind === 'transcript' ? item.segment_id : item.item_id;
     const pending = state.pending.has(`${kind}:${id}`);
     const editableAllowed = kind === 'transcript' ? !item.provisional && !item.read_only && state.session?.state !== 'closed' : state.session?.state !== 'closed';
 
@@ -352,8 +325,6 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       provenance.querySelector('strong').textContent = 'Live';
       sourceIdentity.textContent = 'Read-only provisional transcript';
     }
-
-    if (kind === 'transcript' && !item.provisional) setTranscriptSource(row, item, sourceRange, sourceIdentity, provenance, true);
 
     if (kind === 'derived') {
       row.classList.add('derived-row');
@@ -417,7 +388,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     const provenance = row.querySelector('.row-provenance');
     const editable = row.querySelector('.editable-text');
     const suggestion = row.querySelector('.classification-suggestion');
-    const id = visibleItemId(kind, item);
+    const id = kind === 'transcript' ? item.segment_id : item.item_id;
     const pending = state.pending.has(`${kind}:${id}`);
     const editableAllowed = kind === 'transcript' ? !item.provisional && !item.read_only && state.session?.state !== 'closed' : state.session?.state !== 'closed';
     const displayTime = item.start_time || item.logged_at;
@@ -448,7 +419,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       provenance.querySelector('strong').textContent = 'Live';
       sourceIdentity.textContent = 'Read-only provisional transcript';
     } else if (kind === 'transcript') {
-      setTranscriptSource(row, item, sourceRange, sourceIdentity, provenance);
+      provenance.hidden = true;
     }
 
     row.classList.remove('degraded', 'review-needed');
@@ -567,7 +538,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   }
 
   async function submitEdit(kind, item, text) {
-    const id = visibleItemId(kind, item);
+    const id = kind === 'transcript' ? item.segment_id : item.item_id;
     const command = kind === 'transcript' ? 'transcript.edit' : 'logged-item.edit';
     const payload = { command_id: createCommandId(), session_id: item.session_id, command, expected_revision: item.revision, text, ...(kind === 'transcript' ? { segment_id: id } : { item_id: id }) };
     state.pending.add(`${kind}:${id}`);
@@ -717,7 +688,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   }
 
   function selectedIds(kind) {
-    return state[kind].filter((item) => isSelected(ui, kind, visibleItemId(kind, item))).map((item) => visibleItemId(kind, item));
+    return state[kind].filter((item) => isSelected(ui, kind, kind === 'transcript' ? item.segment_id : item.item_id)).map((item) => kind === 'transcript' ? item.segment_id : item.item_id);
   }
 
   function handlePaneScroll(kind) {
@@ -806,7 +777,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
 
   document.querySelectorAll('.select-all-button').forEach((button) => button.addEventListener('click', () => {
     const kind = button.dataset.kind;
-    const ids = state[kind].map((item) => visibleItemId(kind, item));
+    const ids = state[kind].map((item) => kind === 'transcript' ? item.segment_id : item.item_id);
     setAllSelected(ui, kind, ids, selectionCount(ui, kind) !== ids.length);
     renderRows(kind); updateSelectionUI(kind);
   }));

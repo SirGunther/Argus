@@ -35,8 +35,7 @@ export function createDemoAuthority({ sessionId = 'AA-260811-042', now = () => n
   const createdAt = '2026-08-11T20:23:00.000Z';
   TRANSCRIPT_SEED.forEach(([time, text], sequence) => transcript.set(`segment-${sequence}`, {
     session_id: sessionId, segment_id: `segment-${sequence}`, revision: 0, sequence,
-    start_time: time, end_time: time, text, provisional: false, read_only: false,
-    source_segment_ids: [`segment-${sequence}`], source: { first_segment_id: `segment-${sequence}`, last_segment_id: `segment-${sequence}`, start_time: time, end_time: time }, review_flags: []
+    start_time: time, end_time: time, text, provisional: false, read_only: false, review_flags: []
   }));
   LOGGED_SEED.forEach(([time, first, last, text], index) => loggedItems.set(`item-${index}`, {
     session_id: sessionId, item_id: `item-${index}`, revision: 0, revision_id: `item-${index}:r0`, logged_at: time, text,
@@ -119,7 +118,7 @@ export function createDemoAuthority({ sessionId = 'AA-260811-042', now = () => n
       transcript.set(row.segment_id, row);
       const item = { session_id: state.sessionId, item_id: `item-${loggedItems.size}`, revision: 0, revision_id: `item-${loggedItems.size}:r0`, logged_at: time, text: derivedText,
         source: { first_segment_id: row.segment_id, last_segment_id: row.segment_id, start_time: row.start_time, end_time: row.end_time }, classification_suggestion: null };
-      return { provisional: structuredClone(row), finalize: () => { const finalized = { ...row, provisional: false, read_only: false, source_segment_ids: [row.segment_id], source: { first_segment_id: row.segment_id, last_segment_id: row.segment_id, start_time: row.start_time, end_time: row.end_time } }; transcript.set(row.segment_id, finalized); loggedItems.set(item.item_id, item); return { transcript: structuredClone(finalized), loggedItem: structuredClone(item) }; } };
+      return { provisional: structuredClone(row), finalize: () => { const finalized = { ...row, provisional: false, read_only: false }; transcript.set(row.segment_id, finalized); loggedItems.set(item.item_id, item); return { transcript: structuredClone(finalized), loggedItem: structuredClone(item) }; } };
     },
     tick() { if (state.status === 'recording') state.elapsedSeconds += 1; }
   };

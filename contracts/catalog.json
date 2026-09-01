@@ -315,7 +315,7 @@
     "ui.command": { "plane": "control", "version": "1.0.0", "owner": "ui/bridge", "schema": "ui-command.schema.json", "max_payload_bytes": 32768, "changelog": "history/ui.command.md" },
     "ui.command-result": { "plane": "control", "version": "1.0.0", "owner": "ui/bridge", "schema": "ui-command-result.schema.json", "max_payload_bytes": 16384, "changelog": "history/ui.command-result.md" },
     "ui.session-status": { "plane": "domain", "version": "1.2.0", "owner": "ui/projection", "schema": "ui-session-status.schema.json", "max_payload_bytes": 16384, "changelog": "history/ui.session-status.md" },
-    "ui.transcript-row": { "plane": "domain", "version": "1.2.0", "owner": "ui/projection", "schema": "ui-transcript-row.schema.json", "max_payload_bytes": 32768, "changelog": "history/ui.transcript-row.md" },
+    "ui.transcript-row": { "plane": "domain", "version": "1.1.0", "owner": "ui/projection", "schema": "ui-transcript-row.schema.json", "max_payload_bytes": 32768, "changelog": "history/ui.transcript-row.md" },
     "ui.logged-item-row": { "plane": "domain", "version": "1.0.0", "owner": "ui/projection", "schema": "ui-logged-item-row.schema.json", "max_payload_bytes": 32768, "changelog": "history/ui.logged-item-row.md" },
     "ui.service-status": { "plane": "control", "version": "1.0.0", "owner": "ui/projection", "schema": "ui-service-status.schema.json", "max_payload_bytes": 16384, "changelog": "history/ui.service-status.md" }
   }
