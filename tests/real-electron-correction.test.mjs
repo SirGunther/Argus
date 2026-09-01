@@ -263,7 +263,7 @@ test('governed new-session recovery rebuilds failed delivery and accepts sequenc
       formatting: { terminal_mark: '.', capitalize_first_word: false, confidence: 0.99 }, generator: { implementation: 'sequence-window-test', policy_profile: 'test', instruction_version: '1.0.0' }
     }
   });
-  const owner = await runService(path.join(root, 'services', 'active-transcript-owner', 'service.json'), [next, boundary, resolution], 7, 10000, { env: { ARGUS_SESSION_ROOT: '' } });
+  const owner = await runService(path.join(root, 'services', 'active-transcript-owner', 'service.json'), [next, boundary, resolution, transcriptHistoryAck('new-session', 0)], 8, 10000, { env: { ARGUS_SESSION_ROOT: '' } });
   assert.deepEqual(owner.outputs.filter((message) => message.message_type === 'transcript.segment').map((message) => message.payload.sequence), [0]);
 });
 
@@ -463,7 +463,7 @@ test('sustained capture rolls over after 120 chunks without dropping or mixing a
   assert.equal(application.audioProcessingError, undefined);
 });
 
-test('continuous finalization survives the worker completion gap across 300 chunks and a later pause', async () => {
+test('continuous two-minute capture survives pause and forced windows across the worker completion gap', async () => {
   const sessionId = 'continuous-finalization-session';
   const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-continuous-finalization-${Date.now()}`) });
   application.sessionId = sessionId;
@@ -490,8 +490,12 @@ test('continuous finalization survives the worker completion gap across 300 chun
       boundary_id: `${utteranceId}-boundary`, session_id: sessionId, utterance_id: utteranceId, reason: 'flush', first_word_sequence: rowSequence,
       last_word_sequence: rowSequence, start_time: startTime, end_time: endTime, punctuation_hint: 'statement', source_chunk_ids: window.map((chunk) => chunk.chunk_id)
     } });
+    const revisionId = `${sessionId}-segment-${rowSequence}-r0`;
+    application.handleGraphMessage({ message_id: `history-${rowSequence}`, message_type: 'transcript.history-appended', payload: {
+      history_entry_id: revisionId, session_id: sessionId, segment_id: `${sessionId}-segment-${rowSequence}`, segment_revision: 0, revision_id: revisionId, appended_at: '2026-09-01T00:00:00.000Z'
+    } });
     application.handleGraphMessage({ message_id: `segment-${rowSequence}`, message_type: 'transcript.segment', payload: {
-      segment_id: `${sessionId}-segment-${rowSequence}`, session_id: sessionId, sequence: rowSequence, revision: 0,
+      segment_id: `${sessionId}-segment-${rowSequence}`, revision_id: revisionId, session_id: sessionId, sequence: rowSequence, revision: 0,
       start_time: startTime, end_time: endTime, text: `Final window ${rowSequence}.`, boundary: 'flush'
     } });
   };
@@ -525,31 +529,36 @@ test('continuous finalization survives the worker completion gap across 300 chun
     sample_count: 2, byte_length: 4, audio_base64: 'AAABAA==', checksum: 'sha256:6b1e73a0094b7b812d3b9e22cffb4f8239319847522c4fa103753b6950020f93'
   });
 
-  for (let sequence = 0; sequence < 240; sequence += 1) await application.acceptAudioChunk(chunk(sequence));
+  for (let sequence = 0; sequence < 120; sequence += 1) await application.acceptAudioChunk(chunk(sequence));
   await firstFlush;
-  assert.deepEqual(application.audioCurrentUtterance.map((item) => item.sequence), Array.from({ length: 120 }, (_, sequence) => sequence + 120));
+  assert.deepEqual(application.audioCurrentUtterance.map((item) => item.sequence), Array.from({ length: 40 }, (_, sequence) => sequence + 80));
+  assert.equal((await application.acceptAudioFlush({ session_id: sessionId, reason: 'pause' })).queued, true);
 
   // Release the first final, then admit the next rollover in the precise
   // completion microtask gap where the old worker has already observed an
   // empty queue but its cleanup callback has not run yet.
   releaseFirstFlush();
-  await Promise.resolve().then(() => application.acceptAudioChunk(chunk(240)));
-  for (let sequence = 241; sequence < 300; sequence += 1) await application.acceptAudioChunk(chunk(sequence));
+  await Promise.resolve().then(() => application.acceptAudioChunk(chunk(120)));
+  for (let sequence = 121; sequence < 480; sequence += 1) await application.acceptAudioChunk(chunk(sequence));
   assert.equal((await application.acceptAudioFlush({ session_id: sessionId, reason: 'pause' })).queued, true);
   await application.waitForAudioIdle();
 
   const rows = projections.filter((message) => message.message_type === 'ui.transcript-row' && !message.payload.provisional);
   assert.deepEqual(finalizedWindows.map((window) => window.sequences), [
-    Array.from({ length: 120 }, (_, sequence) => sequence),
-    Array.from({ length: 120 }, (_, sequence) => sequence + 120),
-    Array.from({ length: 60 }, (_, sequence) => sequence + 240)
+    Array.from({ length: 40 }, (_, sequence) => sequence),
+    Array.from({ length: 40 }, (_, sequence) => sequence + 40),
+    Array.from({ length: 40 }, (_, sequence) => sequence + 80),
+    ...Array.from({ length: 8 }, (_, window) => Array.from({ length: 40 }, (_, sequence) => sequence + 120 + (window * 40))),
+    Array.from({ length: 40 }, (_, sequence) => sequence + 440)
   ]);
-  assert.equal(rows.length, 3, 'each bounded utterance must produce a finalized transcript row');
-  assert.deepEqual(rows.map((row) => row.payload.sequence), [0, 1, 2]);
-  assert.equal(flushes.length, 3);
+  assert.equal(rows.length, 12, 'each bounded utterance must produce a finalized transcript row');
+  assert.deepEqual(rows.map((row) => row.payload.sequence), Array.from({ length: 12 }, (_, sequence) => sequence));
+  assert.equal(flushes.length, 12);
   assert.equal(flushes.at(-1).reason, 'pause');
-  assert.deepEqual(deliveredChunks.map((item) => item.sequence), Array.from({ length: 300 }, (_, sequence) => sequence));
-  assert.deepEqual([...application.audioChunkIdentities.values()].map((item) => item.sequence), Array.from({ length: 300 }, (_, sequence) => sequence));
+  assert.equal(flushes.filter((flush) => flush.reason === 'pause').length, 2);
+  assert.equal(flushes.filter((flush) => flush.reason === 'size').length, 10);
+  assert.deepEqual(deliveredChunks.map((item) => item.sequence), Array.from({ length: 480 }, (_, sequence) => sequence));
+  assert.deepEqual([...application.audioChunkIdentities.values()].map((item) => item.sequence), Array.from({ length: 480 }, (_, sequence) => sequence));
   assert.equal(application.audioProcessingError, undefined);
   assert.deepEqual(application.audioQueueDiagnostics(), {
     capturing_chunk_count: 0, queued_window_count: 0, queued_chunk_count: 0, active_window_id: undefined, active_chunk_count: 0, audio_in_flight: 0
@@ -573,6 +582,31 @@ test('startup recovery routes an unclean recording through the lifecycle owner a
   await application.loadLatestSession(sessionId);
   assert.equal(application.metadata.state, 'stopped');
   assert.equal(application.sessionProjection().elapsed_seconds, 6);
+  await rm(sessionRoot, { recursive: true, force: true });
+});
+
+test('startup recovery resumes an interrupted close through the original close operation', async () => {
+  const sessionRoot = await mkdtemp(path.join(os.tmpdir(), 'argus-close-recovery-correction-'));
+  const sessionId = 'interrupted-close-session';
+  const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: sessionRoot }) });
+  await lifecycle.record({ operation_id: 'record-interrupted-close', session_id: sessionId, requested_at: '2026-08-30T00:00:00.000Z' });
+  const close = { operation_id: 'close-interrupted', session_id: sessionId, requested_at: '2026-08-30T00:00:01.000Z' };
+  await assert.rejects(() => lifecycle.close(close, { failAfterPhase: 'drained' }), /Test interruption after finalization phase drained/);
+
+  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot });
+  const calls = [];
+  application.graph = {
+    async dispatchFrom(_from, plane, type, _correlationId, payload) {
+      calls.push(`${plane}:${type}`);
+      if (type === 'session.close') await lifecycle.close(payload);
+    },
+    async waitForIdle() {}
+  };
+  await application.recoverUncleanRecordings();
+  assert.deepEqual(calls, ['control:session.close']);
+  await application.loadLatestSession(sessionId);
+  assert.equal(application.metadata.state, 'closed');
+  assert.equal(application.sessionProjection().state, 'closed');
   await rm(sessionRoot, { recursive: true, force: true });
 });
 
@@ -662,7 +696,7 @@ test('three delayed Whisper windows preserve one authoritative word sequence and
     }));
     const owner = await runServiceBatches(path.join(root, 'services', 'active-transcript-owner', 'service.json'), [
       { inputs: domain, expectedOutputCount: 9 },
-      { inputs: resolutions, expectedOutputCount: 12 }
+      { inputs: resolutions.flatMap((resolution, index) => [resolution, transcriptHistoryAck(sessionId, index)]), expectedOutputCount: 15 }
     ], 10000, { env: { ARGUS_SESSION_ROOT: '' } });
     const segments = owner.outputs.filter((message) => message.message_type === 'transcript.segment');
     assert.deepEqual(segments.map((message) => message.payload.sequence), [0, 1, 2]);
@@ -670,6 +704,11 @@ test('three delayed Whisper windows preserve one authoritative word sequence and
       [0, `${sessionId}-audio-window-0`, [`${sessionId}-chunk-0`]],
       [1, `${sessionId}-audio-window-1`, [`${sessionId}-chunk-1`]],
       [2, `${sessionId}-audio-window-2`, [`${sessionId}-chunk-2`]]
+    ]);
+    assert.deepEqual(boundaries.map((message) => [message.payload.audio_window_span.first_chunk_id, message.payload.audio_window_span.last_chunk_id, message.payload.audio_window_span.chunk_count]), [
+      [`${sessionId}-chunk-0`, `${sessionId}-chunk-0`, 1],
+      [`${sessionId}-chunk-1`, `${sessionId}-chunk-1`, 1],
+      [`${sessionId}-chunk-2`, `${sessionId}-chunk-2`, 1]
     ]);
     assert.equal(owner.outputs.some((message) => message.message_type === 'service.failure'), false);
   } finally {
@@ -724,6 +763,16 @@ function graphWord(sessionId, sequence) {
       start_time: '00:00:00.000', end_time: '00:00:00.100', text: `word-${sequence}`, confidence: 0.99,
       evidence: { provider: 'speech-to-text', chunk_ids: [`${sessionId}-chunk-0`], alternatives: [] }
     }
+  });
+}
+
+function transcriptHistoryAck(sessionId, sequence, revision = 0) {
+  const segmentId = `${sessionId}-segment-${sequence}`;
+  const revisionId = `${segmentId}-r${revision}`;
+  return createEnvelope({
+    plane: 'domain', messageType: 'transcript.history-appended', producer: 'permanent-transcript-history', correlationId: sessionId,
+    schemaVersion: '1.3.0', idempotencyKey: `history-ack:${revisionId}`,
+    payload: { history_entry_id: revisionId, session_id: sessionId, segment_id: segmentId, segment_revision: revision, revision_id: revisionId, appended_at: '2026-09-01T00:00:00.000Z' }
   });
 }
 

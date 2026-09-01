@@ -112,18 +112,17 @@ test('at-least-once replay re-emits ephemeral PCM and creates no duplicate words
   const resolution = correctionResolution(sessionId);
   const active = await runServiceBatches(manifest('active-transcript-owner'), [
     { inputs: sttDomain, expectedOutputCount: 16 },
-    { inputs: [resolution, structuredClone(resolution)], expectedOutputCount: 8 }
+    { inputs: [resolution, structuredClone(resolution), historyAcknowledgement(sessionId, 0)], expectedOutputCount: 7 }
   ], 5000);
   const finalized = active.outputs.filter((message) => message.message_type === 'transcript.segment');
-  assert.equal(finalized.length, 2);
-  assert.deepEqual(finalized[0].payload, finalized[1].payload);
+  assert.equal(finalized.length, 1);
   assert.equal(new Set(finalized[0].payload.word_provenance.map((word) => word.word_id)).size, 3);
   assert.deepEqual(new Set(active.outputs.filter((message) => message.message_type === 'transcript.segment-stored').map((message) => message.payload.revision)), new Set([0]));
 
   const appends = active.outputs.filter((message) => message.message_type === 'transcript.history-append');
   const conflict = createEnvelope({
     plane: 'domain', messageType: 'transcript.history-append', producer: 'phase4e-test', correlationId: sessionId,
-    schemaVersion: '1.3.0', idempotencyKey: 'phase4e-replay-conflict',
+    schemaVersion: '1.4.0', idempotencyKey: 'phase4e-replay-conflict',
     payload: { ...appends[0].payload, segment: { ...appends[0].payload.segment, text: 'Conflicting replay.' } }
   });
   const history = await runService(manifest('permanent-transcript-history'), [...appends, conflict], 5);
@@ -153,8 +152,10 @@ test('paused intake preserves active ownership and resumed input continues the s
   const active = await runServiceBatches(manifest('active-transcript-owner'), [
     { inputs: domain.slice(0, 5), expectedOutputCount: 5, pauseAfterMs: 30 },
     { inputs: domain.slice(5), expectedOutputCount: 3 },
-    { inputs: [correctionResolution(sessionId)], expectedOutputCount: 4 },
-    { inputs: [update], expectedOutputCount: 3 },
+    { inputs: [correctionResolution(sessionId)], expectedOutputCount: 2 },
+    { inputs: [historyAcknowledgement(sessionId, 0)], expectedOutputCount: 3 },
+    { inputs: [update], expectedOutputCount: 2 },
+    { inputs: [historyAcknowledgement(sessionId, 1)], expectedOutputCount: 2 },
     { inputs: [latePartial, staleUpdate], expectedOutputCount: 2 }
   ], 5000);
 
@@ -162,14 +163,14 @@ test('paused intake preserves active ownership and resumed input continues the s
   const request = active.batchOutputs[1].find((message) => message.message_type === 'transcript.correction-request');
   assert.equal(request.payload.session_id, sessionId);
   assert.deepEqual(request.payload.words.map((word) => word.sequence), [0, 1, 2]);
-  const revision0 = active.batchOutputs[2].find((message) => message.message_type === 'transcript.segment-stored');
-  const revision1 = active.batchOutputs[3].find((message) => message.message_type === 'transcript.segment-stored');
+  const revision0 = active.batchOutputs[3].find((message) => message.message_type === 'transcript.segment-stored');
+  const revision1 = active.batchOutputs[5].find((message) => message.message_type === 'transcript.segment-stored');
   assert.equal(revision0.payload.sequence, 0);
   assert.equal(revision0.payload.session_id, sessionId);
   assert.deepEqual([revision0.payload.revision, revision1.payload.revision], [0, 1]);
   assert.equal(revision1.payload.original_stt_text, revision0.payload.original_stt_text);
   assert.deepEqual(revision1.payload.word_provenance, revision0.payload.word_provenance);
-  assert.deepEqual(active.batchOutputs[4].map((message) => message.payload.reason.code), ['LATE_PROJECTION', 'STALE_REVISION']);
+  assert.deepEqual(active.batchOutputs[6].map((message) => message.payload.reason.code), ['LATE_PROJECTION', 'STALE_REVISION']);
 });
 
 function contextPolicy(sessionId, triggers, context) {
@@ -205,6 +206,14 @@ function correctionResolution(sessionId) {
     proposals: [{ proposal_id: `${sessionId}-proposal-0`, target_word_id: firstWordId, target_word_sequence: 0, expected_text: 'are', proposed_text: 'Argus', confidence: 0.96, basis: 'acoustic-and-contextual', context: { first_word_id: firstWordId, last_word_id: `${sessionId}-word-2` } }],
     formatting: { terminal_mark: '?', capitalize_first_word: true, confidence: 0.97 }, punctuation_after: [{ word_id: firstWordId, mark: ',' }],
     generator: { implementation: 'phase4e-test-corrector', policy_profile: 'working-document-default', instruction_version: '1.0.0' }
+  } });
+}
+
+function historyAcknowledgement(sessionId, revision) {
+  const segmentId = `${sessionId}-segment-0`;
+  const revisionId = `${segmentId}-r${revision}`;
+  return createEnvelope({ plane: 'domain', messageType: 'transcript.history-appended', producer: 'permanent-transcript-history', correlationId: sessionId, schemaVersion: '1.3.0', idempotencyKey: `history-ack:${revisionId}`, payload: {
+    history_entry_id: revisionId, session_id: sessionId, segment_id: segmentId, segment_revision: revision, revision_id: revisionId, appended_at: '2026-08-19T00:00:00.000Z'
   } });
 }
 

@@ -16,6 +16,7 @@ const MAX_AUDIO_QUEUE_ITEMS = 256;
 const MAX_AUDIO_UTTERANCES = 16;
 const DELAYED_AUDIO_UTTERANCES = 4;
 const MAX_UTTERANCE_CHUNKS = 120;
+const MAX_AUDIO_WINDOW_DURATION_MS = 10000;
 const PIPELINE_STALL_THRESHOLD_MS = 30000;
 
 export class DesktopApplication {
@@ -37,6 +38,8 @@ export class DesktopApplication {
     this.loggedItems = [];
     this.transcriptPartials = new Map();
     this.transcriptBoundaries = new Map();
+    this.transcriptHistoryAcknowledgements = new Map();
+    this.transcriptPendingFinalSegments = new Map();
     this.projectionListeners = new Set();
     this.commandResults = new Map();
     this.capabilityState = new Map();
@@ -208,7 +211,8 @@ export class DesktopApplication {
     this.audioProcessingOverride = undefined;
     this.audioProcessingNotice = undefined;
     const snapshot = this.canonicalAudioChunk(chunk);
-    if (this.audioCurrentUtterance.length >= MAX_UTTERANCE_CHUNKS) {
+    const currentWindowDurationMs = audioDurationMs(this.audioCurrentUtterance);
+    if (currentWindowDurationMs >= MAX_AUDIO_WINDOW_DURATION_MS || this.audioCurrentUtterance.length >= MAX_UTTERANCE_CHUNKS) {
       this.diagnostics.log('audio.rollover-boundary-triggered', {
         session_id: chunk.session_id,
         utterance_id: this.audioCurrentUtteranceId,
@@ -217,7 +221,7 @@ export class DesktopApplication {
         last_sequence: this.audioCurrentUtterance.at(-1).sequence,
         chunk_count: this.audioCurrentUtterance.length,
         trigger_sequence: chunk.sequence,
-        reason: 'size',
+        reason: currentWindowDurationMs >= MAX_AUDIO_WINDOW_DURATION_MS ? 'duration' : 'size',
         ...this.audioQueueDiagnostics({ extended: true })
       });
       this.enqueueCurrentUtterance(`${chunk.session_id}:audio.rollover:${this.audioCurrentUtterance[0].sequence}`, { reason: 'rollover' });
@@ -363,6 +367,8 @@ export class DesktopApplication {
     }
     this.transcriptPartials.clear();
     this.transcriptBoundaries.clear();
+    this.transcriptHistoryAcknowledgements.clear();
+    this.transcriptPendingFinalSegments.clear();
     this.clearPipelineStallDetection();
     this.emit('ui.session-status', this.sessionProjection());
     return this.accepted({ ...payload, session_id: sessionId }, 'runtime/session-lifecycle', sessionId, this.metadata?.revision, 'New Session accepted by the session lifecycle owner.');
@@ -791,10 +797,16 @@ export class DesktopApplication {
   async recoverUncleanRecordings() {
     const entries = await readdir(this.sessionRoot, { withFileTypes: true }).catch(() => []);
     const recordings = [];
+    const closing = [];
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
       const metadata = await this.storage.readMetadata(entry.name).catch(() => undefined);
       if (metadata?.state === 'recording') recordings.push(metadata.session_id);
+      if (metadata?.state === 'closing') {
+        const operationId = metadata.finalization?.operation_id;
+        if (!operationId) throw new Error(`Session ${metadata.session_id} is closing without a recoverable close operation.`);
+        closing.push({ sessionId: metadata.session_id, operationId });
+      }
     }
     for (const sessionId of recordings) {
       await this.graph.dispatchFrom('@desktop-controller', 'control', 'session.stop', sessionId, {
@@ -803,7 +815,14 @@ export class DesktopApplication {
         requested_at: new Date().toISOString()
       }, `startup-recovery:${sessionId}:${randomUUID()}`);
     }
-    if (recordings.length) await this.graph.waitForIdle();
+    for (const { sessionId, operationId } of closing) {
+      await this.graph.dispatchFrom('@desktop-controller', 'control', 'session.close', sessionId, {
+        operation_id: operationId,
+        session_id: sessionId,
+        requested_at: new Date().toISOString()
+      }, `startup-close-recovery:${sessionId}:${operationId}`);
+    }
+    if (recordings.length || closing.length) await this.graph.waitForIdle();
   }
 
   sessionProjection() {
@@ -863,18 +882,48 @@ export class DesktopApplication {
       return;
     }
     if (message.message_type === 'transcript.segment') {
-      const utteranceId = this.correlateTranscriptSegment(payload);
-      this.clearPipelineStall(utteranceId);
-      this.diagnostics.log('transcript.segment-received', { session_id: payload.session_id, utterance_id: utteranceId, segment_id: payload.segment_id, sequence: payload.sequence, boundary: payload.boundary, transcript_preview: payload.text });
-      const projection = this.emit('ui.transcript-row', this.transcriptRow(payload, utteranceId));
-      this.diagnostics.log('ui.transcript-row-projected', { session_id: payload.session_id, utterance_id: utteranceId, projection_id: projection.message_id, segment_id: payload.segment_id, revision: payload.revision || 0, provisional: false });
-      if (utteranceId) {
-        this.transcriptPartials.delete(utteranceId);
-        this.transcriptBoundaries.delete(utteranceId);
+      const revisionId = transcriptRevisionId(payload);
+      const acknowledgementKey = `${payload.session_id}:${revisionId}`;
+      const acknowledgement = this.transcriptHistoryAcknowledgements.get(acknowledgementKey);
+      if (!acknowledgement || acknowledgement.history_entry_id !== revisionId) {
+        if (!this.transcriptPendingFinalSegments.has(acknowledgementKey) && this.transcriptPendingFinalSegments.size >= MAX_AUDIO_UTTERANCES) {
+          this.failFinalization({ code: 'TRANSCRIPT_PRESENTATION_BACKLOG_FULL', message: 'Finalized transcript presentation is waiting on too many history acknowledgements.', retryable: false, service: 'permanent-transcript-history' });
+          return;
+        }
+        this.transcriptPendingFinalSegments.set(acknowledgementKey, payload);
+        this.diagnostics.log('transcript.segment-held', {
+          session_id: payload.session_id,
+          segment_id: payload.segment_id,
+          revision: payload.revision || 0,
+          revision_id: revisionId,
+          reason: 'history-not-acknowledged'
+        });
+        return;
       }
+      this.transcriptPendingFinalSegments.delete(acknowledgementKey);
+      this.transcriptHistoryAcknowledgements.delete(acknowledgementKey);
+      this.projectFinalTranscriptSegment(payload);
       return;
     }
     if (message.message_type === 'transcript.history-appended') {
+      const revisionId = payload.revision_id || `${payload.segment_id}-r${payload.segment_revision}`;
+      if (payload.history_entry_id !== revisionId) {
+        this.failFinalization({ code: 'HISTORY_REVISION_MISMATCH', message: `Permanent history acknowledged ${payload.history_entry_id}, expected ${revisionId}.`, retryable: false, service: 'permanent-transcript-history' });
+        return;
+      }
+      const acknowledgementKey = `${payload.session_id}:${revisionId}`;
+      this.transcriptHistoryAcknowledgements.set(acknowledgementKey, {
+        history_entry_id: payload.history_entry_id,
+        segment_id: payload.segment_id,
+        segment_revision: payload.segment_revision,
+        revision_id: revisionId
+      });
+      const pending = this.transcriptPendingFinalSegments.get(acknowledgementKey);
+      if (pending) {
+        this.transcriptPendingFinalSegments.delete(acknowledgementKey);
+        this.transcriptHistoryAcknowledgements.delete(acknowledgementKey);
+        this.projectFinalTranscriptSegment(pending);
+      }
       this.diagnostics.log('transcript.history-appended', { session_id: payload.session_id, history_entry_id: payload.history_entry_id, segment_id: payload.segment_id, revision: payload.segment_revision });
       return;
     }
@@ -899,6 +948,18 @@ export class DesktopApplication {
       }
       if (service.includes('speech') || service.includes('stt')) this.setCapability('stt', 'unavailable', message.payload.error?.message || 'The real Whisper transcription dependency failed.', true);
       if (service.includes('model')) this.setCapability('model', 'unavailable', message.payload.error?.message || 'The configured local model dependency failed.', true);
+    }
+  }
+
+  projectFinalTranscriptSegment(payload) {
+    const utteranceId = this.correlateTranscriptSegment(payload);
+    this.clearPipelineStall(utteranceId);
+    this.diagnostics.log('transcript.segment-received', { session_id: payload.session_id, utterance_id: utteranceId, segment_id: payload.segment_id, sequence: payload.sequence, boundary: payload.boundary, transcript_preview: payload.text });
+    const projection = this.emit('ui.transcript-row', this.transcriptRow(payload, utteranceId));
+    this.diagnostics.log('ui.transcript-row-projected', { session_id: payload.session_id, utterance_id: utteranceId, projection_id: projection.message_id, segment_id: payload.segment_id, revision: payload.revision || 0, provisional: false });
+    if (utteranceId) {
+      this.transcriptPartials.delete(utteranceId);
+      this.transcriptBoundaries.delete(utteranceId);
     }
   }
 
@@ -989,6 +1050,10 @@ function audioWorkDiagnostics(work) {
     duration_ms: audioDurationMs(chunks),
     reason: utterance?.reason || 'flush'
   };
+}
+
+function transcriptRevisionId(segment) {
+  return segment?.revision_id || `${segment?.segment_id}-r${segment?.revision || 0}`;
 }
 
 function audioChunkSourceIdentity(chunk) {

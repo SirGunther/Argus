@@ -9,6 +9,7 @@ import { createSerialWhisperLane } from './preview-scheduler.mjs';
 
 const SERVICE = 'whisper-cpp-stt';
 const MAX_WINDOW_CHUNKS = 120;
+const MAX_WINDOW_DURATION_MS = 10000;
 const stateBySession = new Map();
 const latestPreviewRevisionByUtterance = new Map();
 const diagnostics = createDiagnosticLogger({ enabled: process.env.ARGUS_DIAGNOSTICS === '1', source: SERVICE });
@@ -20,7 +21,7 @@ runLineService({ service: SERVICE, operations: {
     validateChunk(chunk);
     const state = stateFor(chunk.session_id);
     if (state.chunkIds.has(chunk.chunk_id)) return [];
-    if (state.chunks.length >= MAX_WINDOW_CHUNKS) throw boundedAudioWindow();
+    if (state.chunks.length >= MAX_WINDOW_CHUNKS || audioDurationMs(state.chunks) >= MAX_WINDOW_DURATION_MS) throw boundedAudioWindow();
     state.chunkIds.add(chunk.chunk_id);
     state.chunks.push({ ...chunk, bytes: Buffer.from(chunk.audio_base64, 'base64') });
     if (state.chunks.length === 1) diagnostics.log('audio-window.first-chunk-received', { ...audioWindowDetails(state), chunk_id: chunk.chunk_id });
@@ -102,6 +103,21 @@ function audioWindowDetails(state) {
 
 function audioWindowId(state) {
   return audioWindowDetails(state).audio_window_id;
+}
+
+function audioWindowSpan(state) {
+  const first = state.chunks[0];
+  const last = state.chunks.at(-1);
+  return {
+    audio_window_id: audioWindowId(state),
+    first_chunk_id: first.chunk_id,
+    last_chunk_id: last.chunk_id,
+    first_sequence: first.sequence,
+    last_sequence: last.sequence,
+    chunk_count: state.chunks.length,
+    start_time: first.start_time,
+    end_time: last.end_time
+  };
 }
 
 async function transcribe(state, identifiers = {}) {
@@ -190,17 +206,20 @@ function finalOutputs(state, result, reason = 'flush', requestedUtteranceId, ide
   const utteranceId = requestedUtteranceId || `${first.session_id}-utterance-${state.nextUtteranceSequence++}`;
   if (requestedUtteranceId) state.nextUtteranceSequence += 1;
   const windowId = audioWindowId(state);
+  const windowSpan = audioWindowSpan(state);
   const words = [];
   for (const word of lexicalWordsForSegments(result.segments)) {
     const firstToken = word.tokens[0];
     const lastToken = word.tokens.at(-1);
     const sequence = state.nextWordSequence++;
-    words.push({ messageType: 'transcript.word-committed', identityKey: `${SERVICE}:word:${first.session_id}:${sequence}`, payload: {
+    const startTime = offsetTime(first.start_time, firstToken.fromMs ?? word.segment.fromMs);
+    const endTime = offsetTime(first.start_time, lastToken.toMs ?? word.segment.toMs);
+    words.push({ messageType: 'transcript.word-committed', schemaVersion: '1.3.0', identityKey: `${SERVICE}:word:${first.session_id}:${sequence}`, payload: {
       word_id: `${first.session_id}-word-${sequence}`, session_id: first.session_id, utterance_id: utteranceId, sequence,
-      start_time: offsetTime(first.start_time, firstToken.fromMs ?? word.segment.fromMs),
-      end_time: offsetTime(first.start_time, lastToken.toMs ?? word.segment.toMs),
+      start_time: startTime,
+      end_time: endTime,
       text: word.text, confidence: word.confidence,
-      evidence: { provider: SERVICE, audio_window_id: windowId, chunk_ids: state.chunks.map((chunk) => chunk.chunk_id), alternatives: [] }
+      evidence: { provider: SERVICE, audio_window_id: windowId, chunk_ids: minimalChunkIds(state.chunks, startTime, endTime), alternatives: [] }
     } });
   }
   if (!words.length) {
@@ -233,11 +252,12 @@ function finalOutputs(state, result, reason = 'flush', requestedUtteranceId, ide
   diagnostics.log('transcript.boundary-emitted', { session_id: first.session_id, audio_window_id: windowId, utterance_id: utteranceId, boundary_id: boundaryId, flush_id: identifiers.flush_id, input_message_id: identifiers.input_message_id, first_word_sequence: words[0].payload.sequence, last_word_sequence: words.at(-1).payload.sequence, reason });
   return [
     ...words,
-    { messageType: 'transcript.utterance-boundary', identityKey: `${SERVICE}:boundary:${utteranceId}:${state.nextWordSequence}`, payload: {
+    { messageType: 'transcript.utterance-boundary', schemaVersion: '1.3.0', identityKey: `${SERVICE}:boundary:${utteranceId}:${state.nextWordSequence}`, payload: {
       boundary_id: boundaryId, session_id: first.session_id, utterance_id: utteranceId, reason,
       audio_window_id: windowId,
       first_word_sequence: words[0].payload.sequence, last_word_sequence: words.at(-1).payload.sequence,
-      start_time: first.start_time, end_time: last.end_time, punctuation_hint: punctuationHint(result.text), source_chunk_ids: state.chunks.map((chunk) => chunk.chunk_id)
+      start_time: first.start_time, end_time: last.end_time, punctuation_hint: punctuationHint(result.text), source_chunk_ids: state.chunks.map((chunk) => chunk.chunk_id),
+      audio_window_span: windowSpan
     } }
   ];
 }
@@ -390,11 +410,28 @@ function validatePreview(preview) {
 function offsetTime(base, offsetMs) { return formatClock(parseClock(base) + Math.max(0, offsetMs)); }
 function parseClock(value) { const match = /^(\d+):(\d+):(\d+)\.(\d{3})$/.exec(value); return match ? (((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3])) * 1000) + Number(match[4]) : 0; }
 function formatClock(value) { const ms = Math.max(0, Math.round(value)); const hours = Math.floor(ms / 3600000); const minutes = Math.floor((ms % 3600000) / 60000); const seconds = Math.floor((ms % 60000) / 1000); return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`; }
+function audioDurationMs(chunks) { if (!chunks?.length) return 0; return Math.max(0, parseClock(chunks.at(-1).end_time) - parseClock(chunks[0].start_time)); }
+function minimalChunkIds(chunks, startTime, endTime) {
+  const start = parseClock(startTime);
+  const end = Math.max(start + 1, parseClock(endTime));
+  const overlapping = chunks.map((chunk, index) => ({ chunk, index }))
+    .filter(({ chunk }) => parseClock(chunk.end_time) > start && parseClock(chunk.start_time) < end);
+  if (!overlapping.length) {
+    const midpoint = start + ((end - start) / 2);
+    const nearest = chunks.reduce((best, chunk, index) => {
+      const distance = Math.min(Math.abs(parseClock(chunk.start_time) - midpoint), Math.abs(parseClock(chunk.end_time) - midpoint));
+      return !best || distance < best.distance ? { chunk, index, distance } : best;
+    }, undefined);
+    if (!nearest) throw malformed('Whisper word timestamps did not overlap the immutable audio window');
+    return [nearest.chunk.chunk_id];
+  }
+  return chunks.slice(overlapping[0].index, overlapping.at(-1).index + 1).map((chunk) => chunk.chunk_id);
+}
 function punctuationHint(text) { return text.trim().endsWith('?') ? 'question' : text.trim().endsWith('!') ? 'exclamation' : 'statement'; }
 function invalid(message, code = 'INVALID_AUDIO_CHUNK') { return new ServiceOperationError(message, { code, category: 'validation' }); }
 function unavailable(message, options = {}) { return new ServiceOperationError(message, { code: 'STT_UNAVAILABLE', category: 'dependency', retryable: true, ...options }); }
 function malformed(message, stderr) { return new ServiceOperationError(`${message}${stderr ? ` Diagnostic: ${stderr.trim()}` : ''}`, { code: 'STT_MALFORMED_OUTPUT', category: 'validation', retryable: true }); }
-function boundedAudioWindow() { return new ServiceOperationError(`Whisper audio buffer reached its governed ${MAX_WINDOW_CHUNKS}-chunk limit; stop or pause recording to finalize it before continuing.`, { code: 'AUDIO_WINDOW_LIMIT', category: 'resource' }); }
+function boundedAudioWindow() { return new ServiceOperationError(`Whisper audio buffer reached its governed ${MAX_WINDOW_CHUNKS}-chunk or ${MAX_WINDOW_DURATION_MS} ms limit; stop or pause recording to finalize it before continuing.`, { code: 'AUDIO_WINDOW_LIMIT', category: 'resource' }); }
 
 function countWords(segments) { return lexicalWordsForSegments(segments).length; }
 

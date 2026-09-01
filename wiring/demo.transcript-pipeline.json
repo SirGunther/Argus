@@ -33,6 +33,7 @@
     { "from": "active-transcript", "contract": "transcript.segment", "to": "@result-collector" },
     { "from": "active-transcript", "contract": "transcript.segment-stored", "to": "@result-collector" },
     { "from": "active-transcript", "contract": "transcript.history-append", "to": "transcript-history" },
+    { "from": "transcript-history", "contract": "transcript.history-appended", "to": "active-transcript" },
     { "from": "transcript-history", "contract": "transcript.history-appended", "to": "@result-collector" }
   ],
   "control_wires": [

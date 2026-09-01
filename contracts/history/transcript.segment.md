@@ -3,6 +3,11 @@
 Owner: `transcript/active-state`  
 Plane: `domain`
 
+## 1.5.0 — 2026-09-01
+
+- Added immutable `revision_id` and one `audio_windows` span list per finalized segment so word provenance remains exact without repeating a complete window chunk list per word.
+- Finalized segment output is emitted only after permanent history acknowledges the exact revision.
+
 ## 1.4.0 — 2026-08-12
 
 - Added optional review flags for unresolved ambiguity or meaningful correction review; ordinary low-confidence words remain visually quiet.

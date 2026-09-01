@@ -1,6 +1,6 @@
 {
   "service_name": "whisper-cpp-stt",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "runtime": {
     "kind": "node",
     "entrypoint": "index.mjs",
@@ -23,6 +23,6 @@
       "emits": ["service.failure", "service.health", "service.drained", "operation.completed"]
     }
   },
-  "state": "bounded in-memory live PCM window; raw audio is temporary and deleted after each Whisper invocation",
+  "state": "bounded in-memory immutable PCM window capped at 10 seconds (with a 120-chunk safety ceiling); raw audio is temporary and deleted after each Whisper invocation",
   "side_effects": ["child-process:whisper.cpp", "filesystem:temporary-session-scoped-wav-and-json"]
 }

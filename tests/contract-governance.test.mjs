@@ -96,7 +96,7 @@ test('registry rejects unknown schema versions and oversized UTF-8 payloads befo
     plane: 'domain', messageType: 'transcript.segment', producer: 'governance-test', correlationId: 'governance-session',
     payload: { segment_id: 'segment-1', session_id: 'governance-session', sequence: 0, start_time: '0', end_time: '1', text: 'Valid text.', boundary: 'pause' }
   };
-  const future = createEnvelope({ ...base, schemaVersion: '1.5.0' });
+  const future = createEnvelope({ ...base, schemaVersion: '1.6.0' });
   assert.match(registry.validateEnvelope(future).join('\n'), /newer than registered minor/);
   const nextMajor = createEnvelope({ ...base, schemaVersion: '2.0.0' });
   assert.match(registry.validateEnvelope(nextMajor).join('\n'), /incompatible/);

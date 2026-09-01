@@ -48,6 +48,7 @@
     { "from": "active-transcript", "contract": "transcript.segment", "to": "@projection-gateway" },
     { "from": "active-transcript", "contract": "transcript.segment-stored", "to": "@projection-gateway" },
     { "from": "active-transcript", "contract": "transcript.history-append", "to": "transcript-history" },
+    { "from": "transcript-history", "contract": "transcript.history-appended", "to": "active-transcript" },
     { "from": "transcript-history", "contract": "transcript.history-appended", "to": "@projection-gateway" },
     { "from": "window-selector", "contract": "transcript.context-window", "to": "log-extractor" },
     { "from": "log-extractor", "contract": "logged-item.draft", "to": "active-logged-item" },

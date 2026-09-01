@@ -148,9 +148,15 @@ test('desktop UI projections carry utterance identity from provisional through f
   application.handleGraphMessage({ message_id: 'boundary-1', message_type: 'transcript.utterance-boundary', payload: {
     session_id: sessionId, utterance_id: 'utterance-1', start_time: '00:00:00.100', end_time: '00:00:01.900'
   } });
-  application.handleGraphMessage({ message_id: 'segment-1', message_type: 'transcript.segment', payload: {
-    session_id: sessionId, segment_id: 'segment-1', sequence: 0, revision: 0, start_time: '00:00:00.100', end_time: '00:00:01.900', text: 'Final text', boundary: 'pause'
+  const finalPayload = {
+    session_id: sessionId, segment_id: 'segment-1', sequence: 0, revision: 0, revision_id: 'segment-1-r0', start_time: '00:00:00.100', end_time: '00:00:01.900', text: 'Final text', boundary: 'pause'
+  };
+  application.handleGraphMessage({ message_id: 'segment-held', message_type: 'transcript.segment', payload: finalPayload });
+  assert.equal(emitted.length, 1, 'a finalized segment without the exact history acknowledgement must remain hidden');
+  application.handleGraphMessage({ message_id: 'history-1', message_type: 'transcript.history-appended', payload: {
+    history_entry_id: 'segment-1-r0', session_id: sessionId, segment_id: 'segment-1', segment_revision: 0, revision_id: 'segment-1-r0', appended_at: '2026-09-01T00:00:00.000Z'
   } });
+  assert.equal(emitted.length, 2, 'a held finalized segment is projected when its exact history acknowledgement arrives');
   assert.equal(emitted[0].payload.utterance_id, 'utterance-1');
   assert.equal(emitted[0].payload.provisional, true);
   assert.equal(emitted[1].payload.utterance_id, 'utterance-1');

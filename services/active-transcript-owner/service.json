@@ -1,6 +1,6 @@
 {
   "service_name": "active-transcript-owner",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "runtime": {
     "kind": "node",
     "entrypoint": "index.mjs",
@@ -28,7 +28,8 @@
         "transcript.word-committed",
         "transcript.utterance-boundary",
         "transcript.correction-resolved",
-        "transcript.segment-update"
+        "transcript.segment-update",
+        "transcript.history-appended"
       ],
       "emits": [
         "transcript.correction-request",
@@ -51,8 +52,9 @@
       ]
     }
   },
-  "state": "authoritative transcript projection and revisions with a durable current snapshot when a session root is configured",
+  "state": "authoritative transcript projection and revisions with a bounded durable pending outbox; active revisions become visible only after exact permanent-history acknowledgement",
   "side_effects": [
-    "filesystem:replace-active-transcript-snapshot"
+    "filesystem:replace-active-transcript-snapshot",
+    "filesystem:replace-transcript-pending-outbox"
   ]
 }

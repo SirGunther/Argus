@@ -1,6 +1,6 @@
 {
   "service_name": "permanent-transcript-history",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "runtime": {
     "kind": "node",
     "entrypoint": "index.mjs",
@@ -43,7 +43,7 @@
       ]
     }
   },
-  "state": "append-only authoritative transcript revision history with an in-memory fallback when no session root is configured",
+  "state": "append-only authoritative transcript revision history with exact segment-revision acknowledgement and an in-memory fallback when no session root is configured",
   "side_effects": [
     "filesystem:append-transcript-history"
   ]

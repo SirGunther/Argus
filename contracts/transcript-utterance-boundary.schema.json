@@ -8,6 +8,21 @@
     "utterance_id": { "type": "string", "minLength": 1 },
     "reason": { "type": "string", "enum": ["pause", "size", "latency", "flush"] },
     "audio_window_id": { "type": "string", "minLength": 1 },
+    "audio_window_span": {
+      "type": "object",
+      "required": ["audio_window_id", "first_chunk_id", "last_chunk_id", "first_sequence", "last_sequence", "chunk_count", "start_time", "end_time"],
+      "properties": {
+        "audio_window_id": { "type": "string", "minLength": 1 },
+        "first_chunk_id": { "type": "string", "minLength": 1 },
+        "last_chunk_id": { "type": "string", "minLength": 1 },
+        "first_sequence": { "type": "integer", "minimum": 0 },
+        "last_sequence": { "type": "integer", "minimum": 0 },
+        "chunk_count": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "first_word_sequence": { "type": "integer", "minimum": 0 },
     "last_word_sequence": { "type": "integer", "minimum": 0 },
     "start_time": { "type": "string", "minLength": 1 },

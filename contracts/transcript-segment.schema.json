@@ -19,6 +19,7 @@
     "text": { "type": "string", "minLength": 1 },
     "boundary": { "type": "string", "enum": ["continuation", "pause", "size", "latency", "flush"] },
     "revision": { "type": "integer", "minimum": 0 },
+    "revision_id": { "type": "string", "minLength": 1 },
     "original_stt_text": { "type": "string", "minLength": 1 },
     "word_provenance": {
       "type": "array",
@@ -34,6 +35,25 @@
           "source_audio_window_id": { "type": "string", "minLength": 1 },
           "source_chunk_ids": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
           "correction_proposal_id": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "audio_windows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["audio_window_id", "first_chunk_id", "last_chunk_id", "first_sequence", "last_sequence", "chunk_count", "start_time", "end_time"],
+        "properties": {
+          "audio_window_id": { "type": "string", "minLength": 1 },
+          "first_chunk_id": { "type": "string", "minLength": 1 },
+          "last_chunk_id": { "type": "string", "minLength": 1 },
+          "first_sequence": { "type": "integer", "minimum": 0 },
+          "last_sequence": { "type": "integer", "minimum": 0 },
+          "chunk_count": { "type": "integer", "minimum": 1, "maximum": 120 },
+          "start_time": { "type": "string", "minLength": 1 },
+          "end_time": { "type": "string", "minLength": 1 }
         },
         "additionalProperties": false
       }

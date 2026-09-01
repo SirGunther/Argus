@@ -67,6 +67,7 @@ export class SessionStorage {
       metadata: path.join(active, 'session.json'),
       transcriptActive: path.join(active, 'transcript.json'),
       loggedItemActive: path.join(active, 'logged-items.json'),
+      transcriptOutbox: path.join(active, 'transcript.outbox.json'),
       finalization: path.join(active, 'finalization.json'),
       transcriptHistory: path.join(permanent, HISTORY_FILE_BY_KIND.transcript),
       loggedItemHistory: path.join(permanent, HISTORY_FILE_BY_KIND['logged-item']),
@@ -127,6 +128,18 @@ export class SessionStorage {
     const paths = this.paths(sessionId);
     await this.#assertSafeSessionPaths(paths, ['finalization']);
     return this.#readJson(paths.finalization, { missing: undefined, label: 'finalization progress' });
+  }
+
+  async readTranscriptOutbox(sessionId) {
+    await this.ensureRoot();
+    const paths = this.paths(sessionId);
+    await this.#assertSafeSessionPaths(paths, ['transcriptOutbox']);
+    return this.#readJson(paths.transcriptOutbox, { missing: undefined, label: 'transcript pending outbox' });
+  }
+
+  async writeTranscriptOutbox(sessionId, outbox) {
+    const paths = await this.ensureSession(sessionId);
+    return this.#writeAtomic(paths.transcriptOutbox, outbox);
   }
 
   async writeFinalization(sessionId, progress) {

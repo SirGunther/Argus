@@ -1,0 +1,27 @@
+{
+  "$id": "argus.transcript-outbox.v1",
+  "type": "object",
+  "required": ["schema_version", "session_id", "saved_at", "pending"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "session_id": { "type": "string", "minLength": 1 },
+    "saved_at": { "type": "string", "minLength": 1 },
+    "pending": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["revision_id", "segment", "emit_segment"],
+        "properties": {
+          "revision_id": { "type": "string", "minLength": 1 },
+          "segment": { "type": "object" },
+          "utterance_id": { "type": "string", "minLength": 1 },
+          "request_id": { "type": "string", "minLength": 1 },
+          "emit_segment": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

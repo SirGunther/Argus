@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.10.0",
+  "schema_version": "1.11.0",
   "governance": {
     "compatibility_policy": "backward-compatible-minor",
     "plane_change": "breaking",
@@ -12,6 +12,7 @@
     "wiring_graph": "wiring-graph.schema.json",
     "session_metadata": "session-metadata.schema.json",
     "active_transcript_snapshot": "active-transcript-snapshot.schema.json",
+    "transcript_outbox": "transcript-outbox.schema.json",
     "active_logged_item_snapshot": "active-logged-item-snapshot.schema.json",
     "close_evidence": "close-evidence.schema.json"
   },
@@ -58,7 +59,7 @@
     },
     "transcript.word-committed": {
       "plane": "domain",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "owner": "transcript/stt",
       "schema": "transcript-word-committed.schema.json",
       "max_payload_bytes": 32768,
@@ -74,7 +75,7 @@
     },
     "transcript.utterance-boundary": {
       "plane": "domain",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "owner": "transcript/stt",
       "schema": "transcript-utterance-boundary.schema.json",
       "max_payload_bytes": 16384,
@@ -106,7 +107,7 @@
     },
     "transcript.segment-stored": {
       "plane": "domain",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "owner": "transcript/active-state",
       "schema": "transcript-segment-stored.schema.json",
       "max_payload_bytes": 65536,
@@ -114,7 +115,7 @@
     },
     "transcript.history-append": {
       "plane": "domain",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "owner": "transcript/permanent-history",
       "schema": "transcript-history-append.schema.json",
       "max_payload_bytes": 65536,
@@ -122,7 +123,7 @@
     },
     "transcript.history-appended": {
       "plane": "domain",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "owner": "transcript/permanent-history",
       "schema": "transcript-history-appended.schema.json",
       "max_payload_bytes": 16384,
@@ -266,7 +267,7 @@
     },
     "transcript.segment": {
       "plane": "domain",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "owner": "transcript/active-state",
       "schema": "transcript-segment.schema.json",
       "max_payload_bytes": 32768,

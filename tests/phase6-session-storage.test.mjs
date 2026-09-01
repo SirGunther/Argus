@@ -21,6 +21,15 @@ async function withRoot(callback) {
 function command(operationId, sessionId, requestedAt = '2026-08-19T00:00:00.000Z') { return { operation_id: operationId, session_id: sessionId, requested_at: requestedAt }; }
 function segment(sessionId, revision, text = `Transcript revision ${revision}.`) { return { segment_id: `${sessionId}-segment-0`, session_id: sessionId, sequence: 0, revision, start_time: '0', end_time: '1', text, original_stt_text: 'Transcript', boundary: 'pause', word_provenance: [], formatting: { source: 'test', provisional_until_finalized: true }, stored_at: `2026-08-19T00:00:${String(revision).padStart(2, '0')}.000Z` }; }
 function item(sessionId, revision) { return { item_id: `${sessionId}-item-0`, session_id: sessionId, revision, revision_id: `${sessionId}-item-0:r${revision}`, text: `Logged item ${revision}.`, source: { first_segment_id: `${sessionId}-segment-0`, last_segment_id: `${sessionId}-segment-0`, start_time: '0', end_time: '1' }, generator: { implementation: 'phase6-test', input_window_id: 'window-0' }, stored_at: `2026-08-19T00:00:${String(revision).padStart(2, '0')}.000Z` }; }
+function legacyRepeatedSegment(sessionId) {
+  const chunkIds = Array.from({ length: 103 }, (_, index) => `${sessionId}-chunk-${index + 45}`);
+  return {
+    segment_id: `${sessionId}-segment-0`, session_id: sessionId, sequence: 0, revision: 0,
+    start_time: '00:00:11.520', end_time: '00:00:37.888', text: 'Recovered legacy transcript.', original_stt_text: 'Recovered legacy transcript.', boundary: 'pause',
+    word_provenance: Array.from({ length: 30 }, (_, index) => ({ word_id: `${sessionId}-word-${index}`, source_text: `word-${index}`, rendered_text: `word-${index}`, source_sequence: index, source_audio_window_id: `${sessionId}-audio-window-45`, source_chunk_ids: chunkIds })),
+    formatting: { source: 'contextual-language', provisional_until_finalized: true }, review_flags: [], stored_at: '2026-08-19T00:00:38.000Z'
+  };
+}
 
 test('Phase 6 contract catalog and storage owners are governed', async () => {
   const registry = await loadContractRegistry(path.join(root, 'contracts', 'catalog.json'));
@@ -78,6 +87,53 @@ test('Close is recoverable and idempotent without duplicating permanent transcri
     assert.equal(metadata.state, 'closed');
     assert.equal(metadata.finalization.phase, 'released');
     assert.equal((await storage.readCloseEvidence(sessionId)).integrity, 'verified');
+  });
+});
+
+test('durable transcript outbox reconciles an acknowledged revision before close seals the session', async () => {
+  await withRoot(async (directory) => {
+    const storage = new SessionStorage({ root: directory });
+    const sessionId = 'transcript-outbox-recovery';
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    const pending = { ...segment(sessionId, 0, 'Recovered transcript.'), revision_id: `${sessionId}-segment-0-r0` };
+    await storage.appendHistory(sessionId, 'transcript', { historyEntryId: pending.revision_id, revision: pending.revision, record: pending, appendedAt: pending.stored_at });
+    await storage.writeTranscriptOutbox(sessionId, { schema_version: '1.0.0', session_id: sessionId, saved_at: pending.stored_at, pending: [{ revision_id: pending.revision_id, segment: pending, emit_segment: true }] });
+    assert.deepEqual((await storage.readActiveSnapshot(sessionId, 'transcript')).segments, []);
+    assert.deepEqual((await storage.readTranscriptOutbox(sessionId)).pending.map((entry) => entry.revision_id), [pending.revision_id]);
+
+    const recovered = await new SessionLifecycle({ storage: new SessionStorage({ root: directory }) }).close(command('close-1', sessionId));
+    const active = await storage.readActiveSnapshot(sessionId, 'transcript');
+    const outbox = await storage.readTranscriptOutbox(sessionId);
+    assert.deepEqual(active.segments, [pending]);
+    assert.deepEqual(outbox.pending, []);
+    assert.equal(recovered.transcript_history_count, 1);
+    assert.equal((await storage.readHistory(sessionId, 'transcript'))[0].history_entry_id, pending.revision_id);
+  });
+});
+
+test('close compacts a legacy repeated-provenance segment before durable history append', async () => {
+  await withRoot(async (directory) => {
+    const storage = new SessionStorage({ root: directory });
+    const sessionId = 'legacy-provenance-recovery';
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    const legacy = legacyRepeatedSegment(sessionId);
+    await storage.writeActiveSnapshot(sessionId, 'transcript', { schema_version: '1.0.0', session_id: sessionId, saved_at: legacy.stored_at, segments: [legacy] });
+
+    const closed = await lifecycle.close(command('close-1', sessionId));
+    assert.equal(closed.state, 'closed');
+    const active = (await storage.readActiveSnapshot(sessionId, 'transcript')).segments[0];
+    const history = (await storage.readHistory(sessionId, 'transcript'))[0];
+    assert.equal(active.revision_id, undefined);
+    assert.deepEqual(active.audio_windows, [{
+      audio_window_id: `${sessionId}-audio-window-45`, first_chunk_id: `${sessionId}-chunk-45`, last_chunk_id: `${sessionId}-chunk-147`,
+      first_sequence: 45, last_sequence: 147, chunk_count: 103, start_time: legacy.start_time, end_time: legacy.end_time
+    }]);
+    assert.equal(active.word_provenance.every((word) => !('source_chunk_ids' in word)), true);
+    assert.equal(history.history_entry_id, `${sessionId}-segment-0-r0`);
+    assert.deepEqual(history.record, active);
+    assert.ok(Buffer.byteLength(JSON.stringify(history.record), 'utf8') < 32768);
   });
 });
 

@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.10.0`
+- Catalog version: `1.11.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -19,15 +19,15 @@
 | `audio.preview` | domain | `1.2.0` | `audio/capture` | 4096 KiB |
 | `transcript.partial` | domain | `1.2.0` | `transcript/stt` | 32 KiB |
 | `transcript.empty` | domain | `1.0.0` | `transcript/stt` | 16 KiB |
-| `transcript.word-committed` | domain | `1.2.0` | `transcript/stt` | 32 KiB |
+| `transcript.word-committed` | domain | `1.3.0` | `transcript/stt` | 32 KiB |
 | `transcript.word-correction-proposed` | domain | `1.2.0` | `transcript/contextual-correction` | 32 KiB |
-| `transcript.utterance-boundary` | domain | `1.2.0` | `transcript/stt` | 16 KiB |
+| `transcript.utterance-boundary` | domain | `1.3.0` | `transcript/stt` | 16 KiB |
 | `transcript.correction-request` | domain | `1.2.0` | `transcript/active-state` | 64 KiB |
 | `transcript.correction-resolved` | domain | `1.2.0` | `transcript/contextual-correction` | 64 KiB |
 | `transcript.segment-update` | domain | `1.2.0` | `transcript/active-state` | 32 KiB |
-| `transcript.segment-stored` | domain | `1.3.0` | `transcript/active-state` | 64 KiB |
-| `transcript.history-append` | domain | `1.3.0` | `transcript/permanent-history` | 64 KiB |
-| `transcript.history-appended` | domain | `1.2.0` | `transcript/permanent-history` | 16 KiB |
+| `transcript.segment-stored` | domain | `1.4.0` | `transcript/active-state` | 64 KiB |
+| `transcript.history-append` | domain | `1.4.0` | `transcript/permanent-history` | 64 KiB |
+| `transcript.history-appended` | domain | `1.3.0` | `transcript/permanent-history` | 16 KiB |
 | `transcript.context-policy` | control | `1.2.0` | `transcript/context-selection` | 32 KiB |
 | `operation.rejected` | control | `1.2.0` | `runtime/operation-outcomes` | 16 KiB |
 | `ai.work-request` | control | `1.4.0` | `runtime/ai-scheduling` | 256 KiB |
@@ -45,7 +45,7 @@
 | `dead-letter.message` | control | `1.2.0` | `runtime/supervision` | 512 KiB |
 | `service.failure` | control | `1.2.0` | `runtime/supervision` | 32 KiB |
 | `workflow.completed` | control | `1.2.0` | `runtime/run-control` | 8 KiB |
-| `transcript.segment` | domain | `1.4.0` | `transcript/active-state` | 32 KiB |
+| `transcript.segment` | domain | `1.5.0` | `transcript/active-state` | 32 KiB |
 | `transcript.context-window` | domain | `1.4.0` | `transcript/context-selection` | 256 KiB |
 | `logged-item.draft` | domain | `1.3.0` | `logged-items/extraction` | 64 KiB |
 | `logged-item.stored` | domain | `1.3.0` | `logged-items/active-owner` | 64 KiB |
@@ -176,7 +176,7 @@
 ## `transcript.word-committed`
 
 - Plane: `domain`
-- Version: `1.2.0`
+- Version: `1.3.0`
 - Owner: `transcript/stt`
 - Schema: [`transcript-word-committed.schema.json`](../transcript-word-committed.schema.json)
 - History: [`history/transcript.word-committed.md`](../history/transcript.word-committed.md)
@@ -220,7 +220,7 @@
 ## `transcript.utterance-boundary`
 
 - Plane: `domain`
-- Version: `1.2.0`
+- Version: `1.3.0`
 - Owner: `transcript/stt`
 - Schema: [`transcript-utterance-boundary.schema.json`](../transcript-utterance-boundary.schema.json)
 - History: [`history/transcript.utterance-boundary.md`](../history/transcript.utterance-boundary.md)
@@ -233,6 +233,7 @@
 | `utterance_id` | yes | string | min length 1 |
 | `reason` | yes | string | `pause`, `size`, `latency`, `flush` |
 | `audio_window_id` | no | string | min length 1 |
+| `audio_window_span` | no | object | requires `audio_window_id`, `first_chunk_id`, `last_chunk_id`, `first_sequence`, `last_sequence`, `chunk_count`, `start_time`, `end_time` |
 | `first_word_sequence` | yes | integer | minimum 0 |
 | `last_word_sequence` | yes | integer | minimum 0 |
 | `start_time` | yes | string | min length 1 |
@@ -300,7 +301,7 @@
 ## `transcript.segment-stored`
 
 - Plane: `domain`
-- Version: `1.3.0`
+- Version: `1.4.0`
 - Owner: `transcript/active-state`
 - Schema: [`transcript-segment-stored.schema.json`](../transcript-segment-stored.schema.json)
 - History: [`history/transcript.segment-stored.md`](../history/transcript.segment-stored.md)
@@ -312,12 +313,14 @@
 | `session_id` | yes | string | min length 1 |
 | `sequence` | yes | integer | minimum 0 |
 | `revision` | yes | integer | minimum 0 |
+| `revision_id` | no | string | min length 1 |
 | `start_time` | yes | string | min length 1 |
 | `end_time` | yes | string | min length 1 |
 | `text` | yes | string | min length 1 |
 | `original_stt_text` | yes | string | min length 1 |
 | `boundary` | yes | string | `continuation`, `pause`, `size`, `latency`, `flush` |
 | `word_provenance` | yes | array<object> | min items 1 |
+| `audio_windows` | no | array<object> | min items 1 |
 | `formatting` | no | object | requires `source`, `provisional_until_finalized` |
 | `review_flags` | no | array<object> | — |
 | `stored_at` | yes | string | min length 1 |
@@ -325,7 +328,7 @@
 ## `transcript.history-append`
 
 - Plane: `domain`
-- Version: `1.3.0`
+- Version: `1.4.0`
 - Owner: `transcript/permanent-history`
 - Schema: [`transcript-history-append.schema.json`](../transcript-history-append.schema.json)
 - History: [`history/transcript.history-append.md`](../history/transcript.history-append.md)
@@ -341,7 +344,7 @@
 ## `transcript.history-appended`
 
 - Plane: `domain`
-- Version: `1.2.0`
+- Version: `1.3.0`
 - Owner: `transcript/permanent-history`
 - Schema: [`transcript-history-appended.schema.json`](../transcript-history-appended.schema.json)
 - History: [`history/transcript.history-appended.md`](../history/transcript.history-appended.md)
@@ -353,6 +356,7 @@
 | `session_id` | yes | string | min length 1 |
 | `segment_id` | yes | string | min length 1 |
 | `segment_revision` | yes | integer | minimum 0 |
+| `revision_id` | no | string | min length 1 |
 | `appended_at` | yes | string | min length 1 |
 
 ## `transcript.context-policy`
@@ -639,7 +643,7 @@
 ## `transcript.segment`
 
 - Plane: `domain`
-- Version: `1.4.0`
+- Version: `1.5.0`
 - Owner: `transcript/active-state`
 - Schema: [`transcript-segment.schema.json`](../transcript-segment.schema.json)
 - History: [`history/transcript.segment.md`](../history/transcript.segment.md)
@@ -655,8 +659,10 @@
 | `text` | yes | string | min length 1 |
 | `boundary` | yes | string | `continuation`, `pause`, `size`, `latency`, `flush` |
 | `revision` | no | integer | minimum 0 |
+| `revision_id` | no | string | min length 1 |
 | `original_stt_text` | no | string | min length 1 |
 | `word_provenance` | no | array<object> | min items 1 |
+| `audio_windows` | no | array<object> | min items 1 |
 | `formatting` | no | object | requires `source`, `provisional_until_finalized` |
 | `review_flags` | no | array<object> | — |
 

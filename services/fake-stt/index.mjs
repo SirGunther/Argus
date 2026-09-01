@@ -46,6 +46,7 @@ function fixtureOutputs(marker, chunk, state) {
   ];
   const long = { partial: `long monologue token ${marker - 19}`, words: [[`token${marker - 19}`, 0.96, []]], final: marker === 31, punctuation: 'statement' };
   const step = marker >= 1 && marker <= 3 ? correction[marker - 1] : marker >= 10 && marker <= 11 ? statement[marker - 10] : long;
+  const audioWindowId = `${chunk.session_id}-audio-window-0`;
   state.partialRevision += 1;
   const outputs = [{ messageType: 'transcript.partial', identityKey: `transcript.partial:${utteranceId}:r${state.partialRevision}`, payload: {
     projection_id: `${utteranceId}-partial`, session_id: chunk.session_id, utterance_id: utteranceId, revision: state.partialRevision,
@@ -54,16 +55,27 @@ function fixtureOutputs(marker, chunk, state) {
   } }];
   for (const [text, confidence, alternatives] of step.words) {
     const sequence = state.nextWordSequence++;
-    outputs.push({ messageType: 'transcript.word-committed', identityKey: `transcript.word-committed:${chunk.session_id}:${sequence}`, payload: {
+    outputs.push({ messageType: 'transcript.word-committed', schemaVersion: '1.3.0', identityKey: `transcript.word-committed:${chunk.session_id}:${sequence}`, payload: {
       word_id: `${chunk.session_id}-word-${sequence}`, session_id: chunk.session_id, utterance_id: utteranceId, sequence,
       start_time: chunk.start_time, end_time: chunk.end_time, text, confidence,
-      evidence: { provider: SERVICE, chunk_ids: [chunk.chunk_id], alternatives }
+      evidence: { provider: SERVICE, audio_window_id: audioWindowId, chunk_ids: [chunk.chunk_id], alternatives }
     } });
   }
-  if (step.final) outputs.push({ messageType: 'transcript.utterance-boundary', identityKey: `transcript.utterance-boundary:${utteranceId}`, payload: {
+  if (step.final) outputs.push({ messageType: 'transcript.utterance-boundary', schemaVersion: '1.3.0', identityKey: `transcript.utterance-boundary:${utteranceId}`, payload: {
     boundary_id: `${utteranceId}-boundary`, session_id: chunk.session_id, utterance_id: utteranceId, reason: 'pause',
     first_word_sequence: 0, last_word_sequence: state.nextWordSequence - 1, start_time: '00:00:00.000', end_time: chunk.end_time,
-    punctuation_hint: step.punctuation, source_chunk_ids: Array.from({ length: chunk.sequence + 1 }, (_, index) => `${chunk.session_id}-chunk-${index}`)
+    punctuation_hint: step.punctuation, source_chunk_ids: Array.from({ length: chunk.sequence + 1 }, (_, index) => `${chunk.session_id}-chunk-${index}`),
+    audio_window_id: audioWindowId,
+    audio_window_span: {
+      audio_window_id: audioWindowId,
+      first_chunk_id: `${chunk.session_id}-chunk-0`,
+      last_chunk_id: chunk.chunk_id,
+      first_sequence: 0,
+      last_sequence: chunk.sequence,
+      chunk_count: chunk.sequence + 1,
+      start_time: '00:00:00.000',
+      end_time: chunk.end_time
+    }
   } });
   return outputs;
 }

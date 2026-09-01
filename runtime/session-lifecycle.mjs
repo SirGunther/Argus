@@ -2,6 +2,7 @@ import { fingerprintValue, FINALIZATION_PHASES, SessionStorage, SessionStorageEr
 
 export const SESSION_METADATA_VERSION = '1.0.0';
 const ACTIVE_CACHE_LIMIT = 32;
+const TRANSCRIPT_HISTORY_PAYLOAD_LIMIT_BYTES = 65536;
 
 export function calculateRecordingDurationMs(metadata, nowMs = Date.now()) {
   let total = 0;
@@ -52,7 +53,7 @@ export class SessionLifecycle {
     }
     await this.storage.ensureSession(command.session_id);
     const paths = this.storage.paths(command.session_id);
-    const hasResidue = await Promise.all(['transcriptActive', 'loggedItemActive', 'finalization', 'closeEvidence'].map((name) => this.storage.hasFile(command.session_id, name)));
+    const hasResidue = await Promise.all(['transcriptActive', 'loggedItemActive', 'transcriptOutbox', 'finalization', 'closeEvidence'].map((name) => this.storage.hasFile(command.session_id, name)));
     if (hasResidue.some(Boolean)) throw integrity('SESSION_RESIDUE', `Session ${command.session_id} has files but no governed metadata`);
     const now = this.clock();
     const metadata = createMetadata(command.session_id, now);
@@ -70,6 +71,7 @@ export class SessionLifecycle {
     metadata.operations[command.operation_id] = operationRecord(command, fingerprint, 'session.record', outcome);
     await this.storage.writeActiveSnapshot(command.session_id, 'transcript', createTranscriptSnapshot(command.session_id, now, []));
     await this.storage.writeActiveSnapshot(command.session_id, 'logged-item', createLoggedItemSnapshot(command.session_id, now, []));
+    await this.storage.writeTranscriptOutbox(command.session_id, createTranscriptOutbox(command.session_id, now, []));
     await this.storage.writeFinalization(command.session_id, createFinalization(command.session_id, now));
     await this.storage.writeMetadata(command.session_id, metadata);
     return outcome;
@@ -162,7 +164,7 @@ export class SessionLifecycle {
   }
 
   async acceptTranscriptRevision(sessionId, segment, { appendedAt = this.clock() } = {}) {
-    return this.#acceptRevision(sessionId, 'transcript', segment, `${segment.segment_id}-r${segment.revision}`, appendedAt);
+    return this.#acceptRevision(sessionId, 'transcript', segment, segment.revision_id || `${segment.segment_id}-r${segment.revision}`, appendedAt);
   }
 
   async acceptLoggedItemRevision(sessionId, item, { appendedAt = this.clock() } = {}) {
@@ -377,14 +379,48 @@ export class SessionLifecycle {
   }
 
   async #reconcileHistory(sessionId) {
-    const projections = await this.getActiveProjections(sessionId);
+    const projections = await this.#reconcilePendingTranscriptOutbox(sessionId, await this.getActiveProjections(sessionId));
     const [transcript, loggedItems] = await Promise.all([
       this.storage.readHistory(sessionId, 'transcript'),
       this.storage.readHistory(sessionId, 'logged-item')
     ]);
-    for (const segment of projections.transcriptSegments) ensureLatestHistory(transcript, `${segment.segment_id}-r${segment.revision}`, segment);
+    let transcriptChanged = false;
+    const reconciledSegments = [];
+    for (const segment of projections.transcriptSegments) {
+      const revisionId = segment.revision_id || `${segment.segment_id}-r${segment.revision}`;
+      const reconciled = await reconcileTranscriptHistoryEntry(this.storage, sessionId, transcript, revisionId, segment);
+      reconciledSegments.push(reconciled);
+      transcriptChanged ||= fingerprintValue(reconciled) !== fingerprintValue(segment);
+    }
+    if (transcriptChanged) await this.persistActiveProjections(sessionId, { transcriptSegments: reconciledSegments, loggedItems: projections.loggedItems });
     for (const item of projections.loggedItems) ensureLatestHistory(loggedItems, item.revision_id || `${item.item_id}:r${item.revision}`, item);
     return { transcript: transcript.length, 'logged-item': loggedItems.length };
+  }
+
+  async #reconcilePendingTranscriptOutbox(sessionId, projections) {
+    const outbox = await this.storage.readTranscriptOutbox(sessionId);
+    const pending = Array.isArray(outbox?.pending) ? [...outbox.pending] : [];
+    if (!pending.length) return projections;
+    const history = await this.storage.readHistory(sessionId, 'transcript');
+    const segments = [...projections.transcriptSegments];
+    pending.sort((a, b) => (a.segment?.sequence ?? 0) - (b.segment?.sequence ?? 0) || (a.segment?.revision ?? 0) - (b.segment?.revision ?? 0));
+    for (const entry of pending) {
+      const segment = entry?.segment;
+      const revisionId = entry?.revision_id || `${segment?.segment_id}-r${segment?.revision}`;
+      if (!segment?.segment_id || segment.session_id !== sessionId || revisionId !== `${segment.segment_id}-r${segment.revision}`) {
+        throw integrity('PENDING_TRANSCRIPT_COMMIT_INVALID', `Pending transcript outbox contains an invalid revision for ${sessionId}`);
+      }
+      const reconciled = await reconcileTranscriptHistoryEntry(this.storage, sessionId, history, revisionId, segment);
+      const index = segments.findIndex((candidate) => candidate.segment_id === segment.segment_id);
+      if (index < 0) segments.push(structuredClone(reconciled));
+      else if (segments[index].revision < reconciled.revision) segments[index] = structuredClone(reconciled);
+      else if (segments[index].revision === reconciled.revision && fingerprintValue(segments[index]) !== fingerprintValue(reconciled)) {
+        throw integrity('AUTHORITATIVE_ACTIVE_CONFLICT', `Pending transcript revision ${revisionId} differs from active state`);
+      }
+    }
+    await this.persistActiveProjections(sessionId, { transcriptSegments: segments, loggedItems: projections.loggedItems });
+    await this.storage.writeTranscriptOutbox(sessionId, createTranscriptOutbox(sessionId, this.clock(), []));
+    return { ...projections, transcriptSegments: segments };
   }
 
   async #historyCounts(sessionId) {
@@ -419,6 +455,10 @@ function createFinalization(sessionId, now) {
   return { schema_version: STORAGE_SCHEMA_VERSION, session_id: sessionId, phase: 'none', operation_id: null, command: null, command_fingerprint: null, phase_history: [], updated_at: now };
 }
 
+function createTranscriptOutbox(sessionId, savedAt, pending) {
+  return { schema_version: STORAGE_SCHEMA_VERSION, session_id: sessionId, saved_at: savedAt, pending: structuredClone(pending) };
+}
+
 function createTranscriptSnapshot(sessionId, savedAt, segments) { return { schema_version: STORAGE_SCHEMA_VERSION, session_id: sessionId, saved_at: savedAt, segments: structuredClone(segments) }; }
 function createLoggedItemSnapshot(sessionId, savedAt, items) { return { schema_version: STORAGE_SCHEMA_VERSION, session_id: sessionId, saved_at: savedAt, items: structuredClone(items) }; }
 
@@ -441,6 +481,77 @@ function operationRecord(command, commandFingerprint, operation, outcome) { retu
 function basicOutcome(command, state, revision, completedAt) { return { operation_id: command.operation_id, session_id: command.session_id, state, session_revision: revision, completed_at: completedAt }; }
 function phaseIndex(phase) { const index = FINALIZATION_PHASES.indexOf(phase); if (index < 0) throw integrity('UNKNOWN_FINALIZATION_PHASE', `Unknown finalization phase ${phase}`); return index; }
 function maybeInterrupt(target, phase, edge) { if (target === phase) throw new SessionLifecycleError('FINALIZATION_INTERRUPTED', `Test interruption ${edge} finalization phase ${phase}`, { retryable: true, details: { phase, edge } }); }
+async function reconcileTranscriptHistoryEntry(storage, sessionId, history, revisionId, segment) {
+  const existing = history.find((item) => item.history_entry_id === revisionId);
+  if (existing?.fingerprint === fingerprintValue(segment)) return segment;
+  let candidate = segment;
+  candidate = compactLegacyTranscriptSegment(segment);
+  validateRecoveredTranscriptAppend(sessionId, revisionId, candidate);
+  if (existing) {
+    if (existing.fingerprint !== fingerprintValue(candidate)) throw integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${revisionId} differs from active state`);
+    return candidate;
+  }
+  const appended = await storage.appendHistory(sessionId, 'transcript', {
+    historyEntryId: revisionId,
+    revision: candidate.revision,
+    record: candidate,
+    appendedAt: candidate.stored_at
+  });
+  history.push(appended.entry);
+  return candidate;
+}
+
+function compactLegacyTranscriptSegment(segment) {
+  const words = Array.isArray(segment?.word_provenance) ? segment.word_provenance : [];
+  const groups = new Map();
+  for (const word of words) {
+    if (!Array.isArray(word?.source_chunk_ids) || word.source_chunk_ids.length < 2) continue;
+    const windowId = word.source_audio_window_id;
+    if (!windowId) throw integrity('LEGACY_PROVENANCE_UNRECOVERABLE', `Transcript segment ${segment.segment_id} has repeated chunks without an audio-window identity`);
+    const group = groups.get(windowId) || { chunkIds: word.source_chunk_ids, repeated: true };
+    if (fingerprintValue(group.chunkIds) !== fingerprintValue(word.source_chunk_ids)) group.repeated = false;
+    groups.set(windowId, group);
+  }
+  if (!groups.size || [...groups.values()].some((group) => !group.repeated)) return structuredClone(segment);
+  if (groups.size !== 1) throw integrity('LEGACY_PROVENANCE_UNRECOVERABLE', `Transcript segment ${segment.segment_id} repeats provenance for multiple windows without word timestamps`);
+
+  const [audioWindowId, group] = groups.entries().next().value;
+  const chunkIds = group.chunkIds;
+  const sequences = chunkIds.map(sequenceFromChunkId);
+  if (sequences.some((sequence) => !Number.isInteger(sequence)) || sequences.at(-1) - sequences[0] + 1 !== chunkIds.length || chunkIds.length > 120) {
+    throw integrity('LEGACY_PROVENANCE_UNRECOVERABLE', `Transcript segment ${segment.segment_id} has a non-contiguous or oversized legacy audio span`);
+  }
+  const compacted = structuredClone(segment);
+  compacted.audio_windows = [{
+    audio_window_id: audioWindowId,
+    first_chunk_id: chunkIds[0],
+    last_chunk_id: chunkIds.at(-1),
+    first_sequence: sequences[0],
+    last_sequence: sequences.at(-1),
+    chunk_count: chunkIds.length,
+    start_time: segment.start_time,
+    end_time: segment.end_time
+  }];
+  compacted.word_provenance = words.map((word) => {
+    const next = structuredClone(word);
+    if (Array.isArray(next.source_chunk_ids) && next.source_chunk_ids.length > 1) delete next.source_chunk_ids;
+    return next;
+  });
+  return compacted;
+}
+
+function sequenceFromChunkId(chunkId) {
+  const match = /(?:^|-)chunk-(\d+)$/.exec(String(chunkId || ''));
+  return match ? Number(match[1]) : undefined;
+}
+
+function validateRecoveredTranscriptAppend(sessionId, revisionId, segment) {
+  if (!segment || typeof segment !== 'object' || segment.session_id !== sessionId || revisionId !== `${segment.segment_id}-r${segment.revision}` || !Array.isArray(segment.word_provenance) || !segment.word_provenance.length) {
+    throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_INVALID', `Transcript revision ${revisionId} is not a governed stored segment`);
+  }
+  const bytes = Buffer.byteLength(JSON.stringify({ history_entry_id: revisionId, session_id: sessionId, segment, requested_at: segment.stored_at }), 'utf8');
+  if (bytes > TRANSCRIPT_HISTORY_PAYLOAD_LIMIT_BYTES) throw integrity('TRANSCRIPT_HISTORY_PAYLOAD_LIMIT', `Transcript revision ${revisionId} remains ${bytes} bytes after provenance compaction; maximum is ${TRANSCRIPT_HISTORY_PAYLOAD_LIMIT_BYTES}`);
+}
 function ensureLatestHistory(history, id, value) { const entry = history.find((item) => item.history_entry_id === id); if (!entry) throw integrity('MISSING_AUTHORITATIVE_HISTORY', `Missing authoritative history entry ${id}`); if (entry.fingerprint !== fingerprintValue(value)) throw integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${id} differs from active state`); }
 function invalid(message) { return new SessionLifecycleError('INVALID_INPUT', message); }
 function conflict(code, message) { return new SessionLifecycleError(code, message, { rejected: true }); }

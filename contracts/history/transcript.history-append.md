@@ -3,6 +3,10 @@
 Owner: `transcript/permanent-history`  
 Plane: `domain`
 
+## 1.4.0 — 2026-09-01
+
+- Appends identify the exact `revision_id` and preserve compact audio-window spans; active owners stage the revision in a bounded outbox before requesting this append.
+
 ## 1.3.0 — 2026-08-12
 
 - Preserves optional review flags alongside every appended authoritative segment revision.
