@@ -199,13 +199,14 @@ test('copied affected-session fixture reports active gaps and resumes acknowledg
     const sourceStorage = new SessionStorage({ root: sourceRoot });
     const sourceLifecycle = new SessionLifecycle({ storage: sourceStorage });
     await sourceLifecycle.record(command('record-1', sessionId));
-    const first = storedSegment(sessionId, 0, 0, 'First authoritative segment.');
-    const second = storedSegment(sessionId, 1, 0, 'Second authoritative segment.');
+    const first = legacyRepeatedSegment(sessionId, 0);
+    const second = legacyRepeatedSegment(sessionId, 1);
     const legacy = legacyRepeatedSegment(sessionId, 2);
     await sourceStorage.writeActiveSnapshot(sessionId, 'transcript', { schema_version: '1.0.0', session_id: sessionId, saved_at: legacy.stored_at, segments: [first, second, legacy] });
     for (const item of [first, second]) await sourceStorage.appendHistory(sessionId, 'transcript', { historyEntryId: `${item.segment_id}-r${item.revision}`, revision: item.revision, record: item, appendedAt: item.stored_at });
     await assert.rejects(() => sourceLifecycle.close(command('close-incident', sessionId)), (error) => error.code === 'LEGACY_RECOVERY_APPLY_REQUIRED');
     const sourceBefore = await readFile(sourceStorage.paths(sessionId).transcriptActive, 'utf8');
+    const historyBefore = await sourceStorage.readHistory(sessionId, 'transcript');
     await cp(path.join(sourceRoot, sessionId), path.join(copiedRoot, sessionId), { recursive: true });
 
     const copiedStorage = new SessionStorage({ root: copiedRoot });
@@ -215,16 +216,25 @@ test('copied affected-session fixture reports active gaps and resumes acknowledg
     assert.deepEqual(dryRun.recovered, [`${sessionId}-segment-2-r0`]);
     assert.deepEqual(dryRun.already_present, [`${sessionId}-segment-0-r0`, `${sessionId}-segment-1-r0`]);
     assert.deepEqual(dryRun.rejected, []);
+    assert.equal(dryRun.finalization.eligible, true);
     assert.equal(dryRun.state_after, 'closing');
     assert.equal(await readFile(copiedStorage.paths(sessionId).transcriptActive, 'utf8'), sourceBefore);
 
     const applied = await copiedLifecycle.recoverSession(sessionId, { apply: true });
     assert.equal(applied.state_after, 'closed');
     assert.equal(applied.finalization.completed, true);
+    assert.deepEqual(applied.recovered, [`${sessionId}-segment-2-r0`]);
     assert.ok(applied.backup_path);
-    assert.equal((await copiedStorage.readHistory(sessionId, 'transcript')).length, 3);
-    assert.equal((await copiedStorage.readActiveSnapshot(sessionId, 'transcript')).segments.length, 3);
-    assert.equal((await copiedStorage.readActiveSnapshot(sessionId, 'transcript')).segments[2].word_provenance.length, 30);
+    const historyAfter = await copiedStorage.readHistory(sessionId, 'transcript');
+    const activeAfter = (await copiedStorage.readActiveSnapshot(sessionId, 'transcript')).segments;
+    assert.equal(historyAfter.length, 3);
+    assert.deepEqual(historyAfter.slice(0, 2), historyBefore);
+    assert.equal(activeAfter.length, 3);
+    assert.deepEqual(activeAfter.slice(0, 2), [first, second]);
+    assert.equal(activeAfter[0].audio_windows, undefined);
+    assert.equal(activeAfter[1].audio_windows, undefined);
+    assert.equal(activeAfter[2].word_provenance.length, 30);
+    assert.equal(activeAfter[2].audio_windows.length, 1);
     assert.equal((await copiedStorage.readTranscriptOutbox(sessionId)).pending.length, 0);
     assert.ok(await readFile(path.join(applied.backup_path, 'transcript.json'), 'utf8'));
     assert.ok(await readFile(path.join(applied.backup_path, 'session.json'), 'utf8'));
@@ -238,6 +248,26 @@ test('copied affected-session fixture reports active gaps and resumes acknowledg
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+});
+
+test('recovery rejects a genuine active and permanent-history fingerprint mismatch', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'recovery-history-conflict';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    const active = storedSegment(sessionId, 0, 0, 'Active evidence.');
+    const authoritative = { ...active, text: 'Different authoritative evidence.' };
+    await storage.writeActiveSnapshot(sessionId, 'transcript', { schema_version: '1.0.0', session_id: sessionId, saved_at: active.stored_at, segments: [active] });
+    await storage.appendHistory(sessionId, 'transcript', { historyEntryId: active.revision_id, revision: active.revision, record: authoritative, appendedAt: authoritative.stored_at });
+
+    const dryRun = await lifecycle.recoverSession(sessionId, { dryRun: true });
+    assert.deepEqual(dryRun.recovered, []);
+    assert.deepEqual(dryRun.already_present, []);
+    assert.deepEqual(dryRun.rejected, [active.revision_id]);
+    assert.equal(dryRun.rejection_details[active.revision_id].code, 'AUTHORITATIVE_HISTORY_CONFLICT');
+    assert.equal(dryRun.finalization.eligible, false);
+  });
 });
 
 test('recovery applies only governed corrected pending commits and preserves rejected evidence', async () => {
