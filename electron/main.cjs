@@ -58,7 +58,7 @@ async function start() {
   process.env.ARGUS_DIAGNOSTICS = diagnosticsEnabled ? '1' : '0';
   if (diagnosticsEnabled) {
     const { createDiagnosticFileOutput, installProcessDiagnosticHandlers } = await import('../runtime/diagnostics.mjs');
-    const defaultFile = path.join(app.getPath('userData'), 'diagnostics', `argus-${Date.now()}-${process.pid}.jsonl`);
+    const defaultFile = path.join(app.getPath('userData'), 'diagnostics', 'argus-finalization.jsonl');
     diagnosticOutput = createDiagnosticFileOutput({ filePath: process.env.ARGUS_DIAGNOSTIC_FILE || defaultFile });
     process.stderr.write(`Argus diagnostics file: ${diagnosticOutput.filePath}\n`);
   }

@@ -30,7 +30,7 @@ Terminal diagnostics are disabled by default. For a correlated physical-micropho
 npm.cmd run start:diagnostics
 ```
 
-The command enables the existing sanitized diagnostics with `ARGUS_DIAGNOSTICS=1`, prints the exact JSONL diagnostic-file path once, and tees high-signal host/service events to the launching terminal. The file is bounded to 5 MiB and keeps two rotated files (`.1` and `.2`). Raw PCM/audio base64, credentials, unrestricted environment values, and unbounded transcript text are excluded. `npm.cmd start` remains quiet unless diagnostics are explicitly enabled.
+The command enables the existing sanitized diagnostics with `ARGUS_DIAGNOSTICS=1`, prints the exact JSONL diagnostic-file path once, and tees high-signal host/service events to the launching terminal. Source runs use `runtime-output/diagnostics/argus-finalization.jsonl`. The file is bounded to 5 MiB and keeps two rotated files (`.1` and `.2`), capping retained diagnostics at approximately 15 MiB across runs. Raw PCM/audio base64, credentials, unrestricted environment values, and unbounded transcript text are excluded. `npm.cmd start` remains quiet unless diagnostics are explicitly enabled.
 
 Provision the real local dependencies before expecting transcription or logged-item extraction:
 

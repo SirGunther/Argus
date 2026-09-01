@@ -52,6 +52,14 @@ test('diagnostic JSONL output stays valid and bounded through rotation', async (
   }
 });
 
+test('diagnostic launcher reuses one stable rotating file across runs', async () => {
+  const launcher = await readFile(path.join(root, 'scripts', 'start-diagnostics.mjs'), 'utf8');
+  const electron = await readFile(path.join(root, 'electron', 'main.cjs'), 'utf8');
+  assert.match(launcher, /runtime-output['"],\s*['"]diagnostics['"],\s*['"]argus-finalization\.jsonl['"]/);
+  assert.match(electron, /diagnostics['"],\s*['"]argus-finalization\.jsonl['"]/);
+  assert.doesNotMatch(launcher, /Date\.now\(\)|timestamp.*jsonl/);
+});
+
 test('preview progress emits an observational possible-stall warning with queue state', async () => {
   const lines = [];
   const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-stall-${Date.now()}`), diagnosticsEnabled: true, diagnosticsOutput: { write: (line) => lines.push(line) }, diagnosticStallThresholdMs: 10 });

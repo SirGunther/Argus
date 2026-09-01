@@ -3,9 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
 const diagnosticFile = path.resolve(
-  process.env.ARGUS_DIAGNOSTIC_FILE || path.join(root, 'runtime-output', 'diagnostics', `argus-${timestamp}-${process.pid}.jsonl`)
+  process.env.ARGUS_DIAGNOSTIC_FILE || path.join(root, 'runtime-output', 'diagnostics', 'argus-finalization.jsonl')
 );
 const electronCommand = process.platform === 'win32' ? 'electron.cmd' : 'electron';
 const launchEnvironment = { ...process.env, ARGUS_DIAGNOSTICS: '1', ARGUS_DIAGNOSTIC_FILE: diagnosticFile };
