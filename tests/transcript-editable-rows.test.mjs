@@ -27,19 +27,27 @@ test('an acknowledged finalized segment projects once with its real editable ide
   assert.equal(Object.hasOwn(emitted[0].payload, 'row_id'), false);
   assert.deepEqual(application.transcript.map((row) => row.segment_id), [segment.segment_id]);
 
+  application.handleGraphMessage({ message_id: 'segment-stored-duplicate', message_type: 'transcript.segment-stored', payload: segment });
   application.handleGraphMessage({ message_id: 'segment-duplicate', message_type: 'transcript.segment', payload: segment });
-  assert.equal(emitted.length, 1, 'the same acknowledged revision must not append a second visible row');
+  assert.equal(emitted.length, 1, 'segment and segment-stored for one acknowledged revision must not append a second visible row');
 });
 
-test('finalized transcript editing reaches the authoritative owner with the real segment identity', async () => {
+test('owner acknowledgement projects an accepted revision into the existing visible row', async () => {
   const sessionId = 'editable-owner-session';
   const application = createApplication(sessionId);
   const segment = segmentOf(sessionId, 'segment-owner-3', 3, 'Owner text.', '00:00:03.000', '00:00:04.000');
-  application.transcript = [application.transcriptRow(segment, undefined, 'recording')];
+  const emitted = [];
+  application.onProjection((message) => emitted.push(message));
+  application.handleGraphMessage({ message_id: 'initial-history-ack', message_type: 'transcript.history-appended', payload: acknowledgement(segment) });
+  application.handleGraphMessage({ message_id: 'initial-segment', message_type: 'transcript.segment', payload: segment });
+  const initialRow = application.transcript[0];
+  const revision = { ...segment, revision: 1, revision_id: `${segment.segment_id}-r1`, text: 'Edited owner text.', stored_at: '2026-09-01T00:00:01.000Z' };
   const calls = [];
   application.graph = {
     dispatchFrom(...args) {
       calls.push(args);
+      application.handleGraphMessage({ message_id: 'revision-history-ack', message_type: 'transcript.history-appended', payload: acknowledgement(revision) });
+      application.handleGraphMessage({ message_id: 'revision-segment-stored', message_type: 'transcript.segment-stored', payload: revision });
       return Promise.resolve();
     }
   };
@@ -60,6 +68,18 @@ test('finalized transcript editing reaches the authoritative owner with the real
   assert.equal(calls[0][4].segment_id, segment.segment_id);
   assert.equal(calls[0][4].expected_revision, segment.revision);
   assert.equal(calls[0][4].text, 'Edited owner text.');
+  assert.equal(application.transcript.length, 1);
+  assert.equal(application.transcript[0].segment_id, segment.segment_id);
+  assert.equal(application.transcript[0].revision, 1);
+  assert.equal(application.transcript[0].text, revision.text);
+  assert.equal(initialRow.segment_id, application.transcript[0].segment_id, 'the authoritative revision keeps the existing row identity');
+
+  application.handleGraphMessage({ message_id: 'revision-segment-stored-duplicate', message_type: 'transcript.segment-stored', payload: revision });
+  application.handleGraphMessage({ message_id: 'late-old-segment', message_type: 'transcript.segment', payload: segment });
+  assert.equal(application.transcript.length, 1);
+  assert.equal(application.transcript[0].revision, 1, 'a late older revision cannot downgrade the visible row');
+  assert.equal(application.transcript[0].text, revision.text);
+  assert.equal(emitted.filter((message) => !message.payload.provisional).length, 2, 'initial and accepted revisions each project once');
 });
 
 test('synthetic row IDs cannot enter transcript.edit and closed rows are read-only', async () => {

@@ -896,9 +896,12 @@ export class DesktopApplication {
       this.diagnostics.log('transcript.utterance-boundary-received', { session_id: payload.session_id, utterance_id: payload.utterance_id, boundary_id: payload.boundary_id, first_word_sequence: payload.first_word_sequence, last_word_sequence: payload.last_word_sequence, reason: payload.reason });
       return;
     }
-    if (message.message_type === 'transcript.segment') {
+    if (message.message_type === 'transcript.segment' || message.message_type === 'transcript.segment-stored') {
       const revisionId = transcriptRevisionId(payload);
+      const revision = Number.isInteger(payload.revision) ? payload.revision : 0;
       const acknowledgementKey = `${payload.session_id}:${revisionId}`;
+      const existing = this.transcript.find((item) => item.segment_id === payload.segment_id);
+      if (this.transcriptProjectedRevisions.has(acknowledgementKey) || (existing && existing.revision >= revision)) return;
       const acknowledgement = this.transcriptHistoryAcknowledgements.get(acknowledgementKey);
       if (!acknowledgement || acknowledgement.history_entry_id !== revisionId) {
         if (!this.transcriptPendingFinalSegments.has(acknowledgementKey) && this.transcriptPendingFinalSegments.size >= MAX_AUDIO_UTTERANCES) {
@@ -972,10 +975,14 @@ export class DesktopApplication {
     const revisionId = transcriptRevisionId(payload);
     const projectionKey = `${payload.session_id}:${revisionId}`;
     if (this.transcriptProjectedRevisions.has(projectionKey)) return;
-    this.transcriptProjectedRevisions.add(projectionKey);
-    this.diagnostics.log('transcript.segment-received', { session_id: payload.session_id, utterance_id: utteranceId, segment_id: payload.segment_id, sequence: payload.sequence, boundary: payload.boundary, transcript_preview: payload.text });
     const row = this.transcriptRow(payload, utteranceId, this.metadata?.state);
     const index = this.transcript.findIndex((item) => item.segment_id === row.segment_id);
+    if (index >= 0 && this.transcript[index].revision >= row.revision) {
+      this.transcriptProjectedRevisions.add(projectionKey);
+      return;
+    }
+    this.transcriptProjectedRevisions.add(projectionKey);
+    this.diagnostics.log('transcript.segment-received', { session_id: payload.session_id, utterance_id: utteranceId, segment_id: payload.segment_id, sequence: payload.sequence, boundary: payload.boundary, transcript_preview: payload.text });
     if (index >= 0) this.transcript[index] = { ...this.transcript[index], ...row };
     else this.transcript.push(row);
     this.transcript.sort((left, right) => left.sequence - right.sequence);
