@@ -1,6 +1,6 @@
 # Transcript Provenance Payload And History Divergence
 
-**Status:** Core correction merged in `fbc7d2f9c141fbded5a988920a61a9b18f8e2336`; presentation, recovery acceptance, and physical-microphone validation pending  
+**Status:** Core correction and recovery tooling merged; presentation correction, explicit recovery of the affected session, and physical-microphone validation pending
 **Observed:** 2026-09-01  
 **Affected session:** `session-922dc897-804b-4c0b-be5a-6357ff4496c6`  
 **Primary boundaries:** audio capture -> Whisper; Whisper -> active transcript; active transcript -> permanent history; permanent history -> UI projection  
@@ -147,3 +147,5 @@ This incident is resolved only when the core correction is merged and a real Ele
 The core correction was reviewed, fast-forwarded, and pushed to `main` in `fbc7d2f9c141fbded5a988920a61a9b18f8e2336`. It introduced pause/10-second window rollover, timestamp-overlapping per-word chunk spans, one window-level provenance span, governed payload preflight, a bounded durable transcript outbox, and exact permanent-history acknowledgement before active/UI finalization. Contract limits, the single FIFO Whisper worker, and validation guards were retained.
 
 Automated transcript/recovery, contract-governance, generated-document, syntax, and package-graph checks passed. Physical-microphone acceptance in the source Electron application remains pending and is required before this incident is marked resolved.
+
+The non-destructive recovery workflow was merged in `83635216a0cb890dd616a2fea2d76a1518e2714d`. It provides a non-mutating dry run, explicit `--apply`, deterministic pre-mutation backups, legacy provenance compaction, pending-outbox reconciliation, and idempotent Close recovery. The real affected session has not been modified; applying recovery to it remains an explicit user-authorized acceptance step.
