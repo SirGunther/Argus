@@ -16,7 +16,9 @@ test('each list header exposes an accessible three-state master checkbox', async
   assert.match(html, /class="select-all-checkbox" data-kind="derived"[^>]*aria-controls="derivedList"/);
   assert.match(app, /selectionSummary\(ui, kind, ids\)/);
   assert.match(app, /selectAll\.indeterminate = selectionState === 'some'/);
-  assert.match(app, /setAllSelected\(ui, kind, ids, checkbox\.checked\)/);
+  assert.match(app, /const action = selectionState === 'none' \? 'Select' : 'Deselect'/);
+  assert.match(app, /setAllSelected\(ui, kind, ids, selectedCount === 0\)/);
   assert.match(css, /input\[aria-checked="mixed"\]/);
+  assert.match(css, /input\[aria-checked="mixed"\][\s\S]*?background: var\(--surface-active\)/);
   assert.doesNotMatch(css, /\.select-all-button\s*\{\s*display:\s*none/);
 });

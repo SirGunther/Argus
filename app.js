@@ -484,8 +484,9 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     selectAll.indeterminate = selectionState === 'some';
     selectAll.disabled = totalCount === 0;
     selectAll.setAttribute('aria-checked', selectionState === 'some' ? 'mixed' : String(selectionState === 'all'));
-    selectAll.setAttribute('aria-label', `${selectionState === 'all' ? 'Deselect' : 'Select'} all ${kindConfig[kind].allLabel}`);
-    selectAll.closest('.select-all-control').querySelector('.select-all-label').textContent = selectionState === 'all' ? 'Deselect all' : 'Select all';
+    const action = selectionState === 'none' ? 'Select' : 'Deselect';
+    selectAll.setAttribute('aria-label', `${action} all ${kindConfig[kind].allLabel}`);
+    selectAll.closest('.select-all-control').querySelector('.select-all-label').textContent = `${action} all`;
   }
 
   function renderSession() {
@@ -788,7 +789,8 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   document.querySelectorAll('.select-all-checkbox').forEach((checkbox) => checkbox.addEventListener('change', () => {
     const kind = checkbox.dataset.kind;
     const ids = itemIds(kind);
-    setAllSelected(ui, kind, ids, checkbox.checked);
+    const { selectedCount } = selectionSummary(ui, kind, ids);
+    setAllSelected(ui, kind, ids, selectedCount === 0);
     renderRows(kind); updateSelectionUI(kind);
   }));
   document.querySelectorAll('.batch-copy-button').forEach((button) => button.addEventListener('click', () => sendCopy(button.dataset.kind, selectedIds(button.dataset.kind), button)));
