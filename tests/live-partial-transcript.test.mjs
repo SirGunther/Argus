@@ -117,7 +117,7 @@ test('renderer keeps provisional content out of finalized rows, counts, selectio
   ]);
   assert.match(app, /if \(kind === 'transcript' && item\.provisional\) \{\s+upsertLiveTranscript\(item, bootstrap\);\s+return;/);
   assert.match(app, /const transcriptCount = state\.transcript\.length/);
-  assert.match(app, /const ids = state\[kind\]\.map/);
+  assert.match(app, /function itemIds\(kind\) \{\s+return state\[kind\]\.map/);
   assert.match(app, /return state\[kind\]\.filter\(\(item\) => isSelected/);
   assert.doesNotMatch(app, /state\.transcript\.push\(\{ \.\.\.item, provisional: true/);
   const transcriptScrollStart = html.indexOf('<div class="rows-scroll" id="transcriptScroll">');

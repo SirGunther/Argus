@@ -57,7 +57,11 @@
               </div>
             </div>
             <div class="pane-actions">
-              <button class="text-button select-all-button" data-kind="transcript" type="button">Select all</button>
+              <label class="select-all-control" data-kind="transcript">
+                <input class="select-all-checkbox" data-kind="transcript" type="checkbox" aria-label="Select all transcript entries" aria-controls="transcriptList" disabled />
+                <span class="select-all-box" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m3.5 8 3 3 6-6" /></svg></span>
+                <span class="select-all-label">Select all</span>
+              </label>
               <button class="button button-secondary batch-copy-button" id="copyTranscriptSelected" data-kind="transcript" type="button" disabled>
                 <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg>
                 <span>Copy selected</span>
@@ -88,7 +92,11 @@
               </div>
             </div>
             <div class="pane-actions">
-              <button class="text-button select-all-button" data-kind="derived" type="button">Select all</button>
+              <label class="select-all-control" data-kind="derived">
+                <input class="select-all-checkbox" data-kind="derived" type="checkbox" aria-label="Select all logged items" aria-controls="derivedList" disabled />
+                <span class="select-all-box" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m3.5 8 3 3 6-6" /></svg></span>
+                <span class="select-all-label">Select all</span>
+              </label>
               <button class="button button-secondary batch-copy-button" id="copyDerivedSelected" data-kind="derived" type="button" disabled>
                 <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg>
                 <span>Copy selected</span>

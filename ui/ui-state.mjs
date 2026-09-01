@@ -85,6 +85,18 @@ export function setAllSelected(uiState, kind, ids, selected) {
   return uiState;
 }
 
+export function selectionSummary(uiState, kind, ids = []) {
+  assertKind(kind);
+  const selected = uiState.selected[kind];
+  let selectedCount = 0;
+  for (const id of ids) {
+    if (selected.has(id)) selectedCount += 1;
+  }
+  const totalCount = ids.length;
+  const state = selectedCount === 0 ? 'none' : selectedCount === totalCount ? 'all' : 'some';
+  return { selectedCount, totalCount, state };
+}
+
 export function isSelected(uiState, kind, id) {
   assertKind(kind);
   return uiState.selected[kind].has(id);
