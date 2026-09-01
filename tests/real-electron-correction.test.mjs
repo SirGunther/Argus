@@ -39,7 +39,12 @@ test('New Session emits an authoritative recording projection for its new identi
   application.metadata = { session_id: 'closed-session', state: 'closed' };
   application.sessionId = 'closed-session';
   application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
-  application.graph = { dispatchFrom: async () => {}, closed: false };
+  let recovery;
+  application.graph = {
+    dispatchFrom: async () => {},
+    recoverDeliveryForNewSession: async (boundary) => { recovery = boundary; return 1; },
+    closed: false
+  };
   const createdAt = new Date().toISOString();
   application.loadLatestSession = async (sessionId) => {
     application.sessionId = sessionId;
@@ -56,6 +61,7 @@ test('New Session emits an authoritative recording projection for its new identi
   assert.equal(result.command, 'session.new');
   assert.equal(result.status, 'accepted');
   assert.equal(result.session_id, application.sessionId);
+  assert.deepEqual(recovery, { currentSessionId: 'closed-session', nextSessionId: application.sessionId });
   assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0, audio_processing: { state: 'listening', queue_depth: 0, capture_state: 'idle', transcription_state: 'idle' } } });
 });
 
@@ -127,6 +133,161 @@ test('interactive graph defers final-word delivery until each active-owner recei
   await graph.waitForIdle();
   assert.deepEqual(delivered, Array.from({ length: 128 }, (_, sequence) => sequence));
   assert.equal(statuses.some((status) => status.type === 'service-failure'), false);
+});
+
+test('service.failure settles receipts by sending graph instance, not manifest service name', async () => {
+  const statuses = [];
+  const graph = new InteractiveGraph(graphPrepared({ timeout: 100 }), { onStatus: (status) => statuses.push(status) });
+  const receipt = graph.waitForReceipt('active-transcript', 'gap-word-67');
+  graph.receiveRuntime({ kind: 'supervisor' }, {
+    message_type: 'service.failure', correlation_id: 'gap-session',
+    payload: {
+      service: 'active-transcript-owner', operation: 'assemble-committed-word', input_message_id: 'gap-word-67',
+      error: { code: 'SEQUENCE_GAP', category: 'conflict', message: 'expected 67, received 128', retryable: true }
+    }
+  }, 'active-transcript');
+  await assert.rejects(receipt, (error) => error.code === 'SEQUENCE_GAP');
+  assert.equal(statuses.at(-1).service, 'active-transcript-owner');
+  assert.equal(statuses.at(-1).sender, 'active-transcript');
+});
+
+test('failed service operation settles queue drain and graph idle without hanging', async () => {
+  const statuses = [];
+  const prepared = graphPrepared({ timeout: 100 });
+  const graph = new InteractiveGraph(prepared, { onStatus: (status) => statuses.push(status) });
+  graph.running.set('active-transcript', {
+    exited: false,
+    handle: {
+      write: async (message) => graph.receiveRuntime(prepared.endpoints.get('@supervisor'), {
+        message_type: 'operation.rejected', correlation_id: message.correlation_id,
+        payload: { service: 'active-transcript-owner', operation: 'assemble-committed-word', input_message_id: message.message_id, reason: { code: 'WORD_ID_CONFLICT', message: 'conflicting word evidence', retryable: false } }
+      }, 'active-transcript')
+    }
+  });
+  graph.route('speech-to-text', graphWord('operation-failure-session', 0));
+  await graph.waitForIdle();
+  const wire = prepared.definition.domain_wires[0];
+  const state = graph.deferredDeliveries.get(graph.wireKey(wire));
+  assert.equal(state.failed, true);
+  assert.equal(graph.queues.get(graph.wireKey(wire)).failed, true);
+  assert.equal(statuses.some((status) => status.type === 'operation-rejected' && status.code === 'WORD_ID_CONFLICT'), true);
+});
+
+test('missing receipt fails at the wire operation timeout and reports delivery failure', async () => {
+  const statuses = [];
+  const prepared = graphPrepared({ timeout: 25 });
+  const graph = new InteractiveGraph(prepared, { onStatus: (status) => statuses.push(status) });
+  graph.running.set('active-transcript', { exited: false, handle: { write: async () => {} } });
+  const started = Date.now();
+  graph.route('speech-to-text', graphWord('timeout-session', 0));
+  await graph.waitForIdle();
+  assert.ok(Date.now() - started >= 20);
+  assert.ok(Date.now() - started < 500);
+  assert.equal(statuses.some((status) => status.type === 'service-failure' && status.code === 'OPERATION_TIMEOUT'), true);
+  assert.equal(graph.deferredDeliveries.get(graph.wireKey(prepared.definition.domain_wires[0])).failure.code, 'OPERATION_TIMEOUT');
+});
+
+test('terminal wire failure rejects every pending waiter and rejects later deliveries immediately', async () => {
+  const statuses = [];
+  const prepared = graphPrepared({ capacity: 1, timeout: 25 });
+  const graph = new InteractiveGraph(prepared, { onStatus: (status) => statuses.push(status) });
+  graph.running.set('active-transcript', { exited: false, handle: { write: async () => {} } });
+  const wire = prepared.definition.domain_wires[0];
+  const first = graphWord('pending-session', 0);
+  const second = graphWord('pending-session', 1);
+  const firstReceipt = graph.waitForReceipt('active-transcript', first.message_id, { wire, message: first });
+  const secondReceipt = graph.waitForReceipt('active-transcript', second.message_id, { wire, message: second });
+  graph.route('speech-to-text', first);
+  graph.route('speech-to-text', second);
+  const results = await Promise.allSettled([firstReceipt, secondReceipt]);
+  assert.deepEqual(results.map((result) => result.status), ['rejected', 'rejected']);
+  await graph.waitForIdle();
+  const later = graphWord('pending-session', 2);
+  const laterReceipt = graph.waitForReceipt('active-transcript', later.message_id, { wire, message: later });
+  const started = Date.now();
+  graph.route('speech-to-text', later);
+  await assert.rejects(laterReceipt, (error) => error.code === 'WIRE_FAILED');
+  assert.ok(Date.now() - started < 100);
+  assert.equal(statuses.some((status) => status.code === 'WIRE_FAILED'), true);
+});
+
+test('governed new-session recovery rebuilds failed delivery and accepts sequence zero', async () => {
+  const prepared = graphPrepared({ timeout: 100 });
+  const graph = new InteractiveGraph(prepared);
+  let fail = true;
+  const delivered = [];
+  graph.running.set('active-transcript', {
+    exited: false,
+    handle: {
+      write: async (message) => {
+        delivered.push([message.correlation_id, message.payload.sequence]);
+        if (fail) graph.receiveRuntime(prepared.endpoints.get('@supervisor'), {
+          message_type: 'operation.rejected', correlation_id: message.correlation_id,
+          payload: { service: 'active-transcript-owner', operation: 'assemble-committed-word', input_message_id: message.message_id, reason: { code: 'WORD_ID_CONFLICT', message: 'terminal current-session failure', retryable: false } }
+        }, 'active-transcript');
+        else graph.receiveRuntime(prepared.endpoints.get('@supervisor'), { message_type: 'operation.completed', payload: { input_message_id: message.message_id } }, 'active-transcript');
+      }
+    }
+  });
+  const old = graphWord('old-session', 0);
+  graph.route('speech-to-text', old);
+  await graph.waitForIdle();
+  const wire = prepared.definition.domain_wires[0];
+  const blocked = graphWord('old-session', 1);
+  const blockedReceipt = graph.waitForReceipt('active-transcript', blocked.message_id, { wire, message: blocked });
+  graph.route('speech-to-text', blocked);
+  await assert.rejects(blockedReceipt, (error) => error.code === 'WIRE_FAILED');
+  assert.equal(await graph.recoverDeliveryForNewSession({ currentSessionId: 'old-session', nextSessionId: 'new-session' }), 1);
+  fail = false;
+  const next = graphWord('new-session', 0);
+  const nextReceipt = graph.waitForReceipt('active-transcript', next.message_id, { wire, message: next });
+  graph.route('speech-to-text', next);
+  await nextReceipt;
+  await graph.waitForIdle();
+  assert.deepEqual(delivered, [['old-session', 0], ['new-session', 0]]);
+  assert.equal(graph.deferredDeliveries.get(graph.wireKey(wire)).failed, false);
+
+  const boundary = createEnvelope({
+    plane: 'domain', messageType: 'transcript.utterance-boundary', producer: 'speech-to-text', correlationId: 'new-session',
+    idempotencyKey: 'new-session:boundary:0',
+    payload: {
+      boundary_id: 'new-session-boundary-0', session_id: 'new-session', utterance_id: 'new-session-utterance-0', reason: 'flush',
+      first_word_sequence: 0, last_word_sequence: 0, start_time: '00:00:00.000', end_time: '00:00:00.100', punctuation_hint: '.', source_chunk_ids: ['new-session-chunk-0']
+    }
+  });
+  const resolution = createEnvelope({
+    plane: 'domain', messageType: 'transcript.correction-resolved', producer: 'sequence-window-test', correlationId: 'new-session',
+    idempotencyKey: 'new-session:boundary:0:resolution',
+    payload: {
+      request_id: 'new-session-boundary-0-correction', session_id: 'new-session', utterance_id: 'new-session-utterance-0', boundary_id: 'new-session-boundary-0', proposals: [],
+      formatting: { terminal_mark: '.', capitalize_first_word: false, confidence: 0.99 }, generator: { implementation: 'sequence-window-test', policy_profile: 'test', instruction_version: '1.0.0' }
+    }
+  });
+  const owner = await runService(path.join(root, 'services', 'active-transcript-owner', 'service.json'), [next, boundary, resolution], 7, 10000, { env: { ARGUS_SESSION_ROOT: '' } });
+  assert.deepEqual(owner.outputs.filter((message) => message.message_type === 'transcript.segment').map((message) => message.payload.sequence), [0]);
+});
+
+test('Stop and Close complete after a finalization failure', async () => {
+  for (const command of ['session.stop', 'session.close']) {
+    const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(os.tmpdir(), `argus-finalization-${command}-${Date.now()}`) });
+    application.sessionId = 'failed-finalization-session';
+    application.metadata = { session_id: application.sessionId, state: 'recording', revision: 1, created_at: '2026-08-30T00:00:00.000Z' };
+    application.audioProcessingError = Object.assign(new Error('expected 67, received 128'), { code: 'FINALIZATION_SEQUENCE_GAP', retryable: false });
+    application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+    const calls = [];
+    application.graph = {
+      closed: false,
+      async dispatchFrom(_from, plane, type) { calls.push(`${plane}:${type}`); },
+      async waitForIdle() { calls.push('waitForIdle'); }
+    };
+    application.loadLatestSession = async () => {};
+    const result = await Promise.race([
+      application.sessionCommand({ command, command_id: `${command}-command`, session_id: application.sessionId }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${command} hung`)), 500))
+    ]);
+    assert.equal(result.status, 'accepted');
+    assert.ok(calls.includes(`control:${command}`));
+  }
 });
 
 test('delayed transcription accepts later chunks and completes FIFO without mixing utterances', async () => {
@@ -540,6 +701,31 @@ test('shutdown waits for audio, routes stop before graph drain, and ignores late
   assert.ok(calls.indexOf('domain:audio.flush') < calls.indexOf('control:session.stop'));
   assert.equal(calls.at(-1), 'close');
 });
+
+function graphPrepared({ capacity = 1, timeout = 100 } = {}) {
+  const wire = { from: 'speech-to-text', contract: 'transcript.word-committed', to: 'active-transcript', delivery: { queue_capacity: capacity, operation_timeout_ms: timeout } };
+  return {
+    definition: { domain_wires: [wire], control_wires: [], supervision: { operation_timeout_ms: timeout, queue: { capacity } } },
+    endpoints: new Map([
+      ['active-transcript', { endpointType: 'service', serviceName: 'active-transcript-owner' }],
+      ['@supervisor', { endpointType: 'runtime', kind: 'supervisor' }]
+    ]),
+    providers: new Map(),
+    services: new Map()
+  };
+}
+
+function graphWord(sessionId, sequence) {
+  return createEnvelope({
+    plane: 'domain', messageType: 'transcript.word-committed', producer: 'speech-to-text', correlationId: sessionId,
+    idempotencyKey: `${sessionId}:word:${sequence}`,
+    payload: {
+      word_id: `${sessionId}-word-${sequence}`, session_id: sessionId, utterance_id: `${sessionId}-utterance-0`, sequence,
+      start_time: '00:00:00.000', end_time: '00:00:00.100', text: `word-${sequence}`, confidence: 0.99,
+      evidence: { provider: 'speech-to-text', chunk_ids: [`${sessionId}-chunk-0`], alternatives: [] }
+    }
+  });
+}
 
 function whisperChunk(sequence, sessionId) {
   return envelope('audio.chunk', `${sessionId}:chunk:${sequence}`, {

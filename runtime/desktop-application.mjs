@@ -347,10 +347,11 @@ export class DesktopApplication {
       session_id: sessionId,
       requested_at: new Date().toISOString()
     }, payload.command_id);
+    const recoveredDelivery = await this.graph.recoverDeliveryForNewSession?.({ currentSessionId: payload.session_id, nextSessionId: sessionId });
     await this.loadLatestSession(sessionId);
     this.transcript = [];
     this.loggedItems = [];
-    if (this.audioProcessingError?.code?.startsWith('FINALIZATION_')) {
+    if (recoveredDelivery || this.audioProcessingError?.code?.startsWith('FINALIZATION_')) {
       this.audioProcessingError = undefined;
       this.audioProcessingOverride = undefined;
       this.audioProcessingNotice = undefined;
@@ -886,7 +887,7 @@ export class DesktopApplication {
       const service = message.payload.service || '';
       this.diagnostics.log('service.failure', { session_id: message.correlation_id, correlation_id: message.correlation_id, service, operation: message.payload.operation, input_message_id: message.payload.input_message_id, error_code: message.payload.error?.code, retryable: message.payload.error?.retryable, error: message.payload.error?.message });
       this.clearPipelineStallDetection();
-      if (service === 'active-transcript' || message.payload.error?.code === 'SEQUENCE_GAP' || message.payload.error?.code === 'DELIVERY_BACKLOG_FULL') {
+      if (isFinalizationService(service) || message.payload.error?.code === 'SEQUENCE_GAP' || message.payload.error?.code === 'DELIVERY_BACKLOG_FULL') {
         this.failFinalization({
           code: message.payload.error?.code,
           message: message.payload.error?.message,
@@ -909,11 +910,11 @@ export class DesktopApplication {
     if (status.type === 'service-failure') {
       if (status.service === 'speech-to-text') this.setCapability('stt', 'unavailable', status.message, true);
       if (status.service === 'model-lane') this.setCapability('model', 'unavailable', status.message, true);
-      if (status.service === 'active-transcript' || status.code === 'SEQUENCE_GAP' || status.code === 'DELIVERY_BACKLOG_FULL') {
+      if (isFinalizationService(status.service) || status.code === 'SEQUENCE_GAP' || status.code === 'DELIVERY_BACKLOG_FULL') {
         this.failFinalization({ code: status.code, message: status.message, retryable: false, expected: status.expected, received: status.received, service: status.service });
       }
     }
-    if (status.type === 'operation-rejected' && status.service === 'active-transcript' && ['WORD_ID_CONFLICT', 'WORD_WINDOW_MISMATCH', 'WORD_PROVENANCE_MISMATCH'].includes(status.code)) {
+    if (status.type === 'operation-rejected' && isFinalizationService(status.service) && ['WORD_ID_CONFLICT', 'WORD_WINDOW_MISMATCH', 'WORD_PROVENANCE_MISMATCH'].includes(status.code)) {
       this.failFinalization({ code: status.code, message: status.message, retryable: false, service: status.service });
     }
   }
@@ -968,6 +969,8 @@ export class DesktopApplication {
 }
 
 function ownerFor(command) { if (command === 'transcript.edit') return 'transcript/active-state'; if (command === 'logged-item.edit') return 'logged-items/active-owner'; if (command === 'copy' || command === 'copy-session-path') return 'platform/clipboard'; if (command === 'open-folder') return 'platform/folder'; if (command?.startsWith('session.')) return 'runtime/session-lifecycle'; return 'ui/command'; }
+
+function isFinalizationService(service) { return service === 'active-transcript' || service === 'active-transcript-owner'; }
 
 function freezeAudioChunk(chunk) {
   return Object.freeze({ ...chunk, format: Object.freeze({ ...(chunk.format || {}) }) });

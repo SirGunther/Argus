@@ -12,6 +12,8 @@ export class BoundedWireQueue {
   #items = [];
   #waiters = [];
   #capacityWaiters = [];
+  #failed = false;
+  #failure;
 
   constructor({ wireKey, capacity, consume, observe = () => {}, onError = () => {} }) {
     this.wireKey = wireKey;
@@ -25,7 +27,10 @@ export class BoundedWireQueue {
     return this.#items.length + (this.#active ? 1 : 0);
   }
 
+  get failed() { return this.#failed; }
+
   enqueue(item) {
+    if (this.#failed) throw this.#failure;
     if (this.depth >= this.capacity) throw new QueueOverflowError(this.wireKey, this.capacity);
     this.#items.push(item);
     this.observe(this.depth);
@@ -38,11 +43,26 @@ export class BoundedWireQueue {
   }
 
   async drain() {
-    if (this.depth === 0) return;
+    if (this.#failed || this.depth === 0) return;
     await new Promise((resolve) => this.#waiters.push(resolve));
   }
 
+  fail(error) {
+    if (this.#failed) return;
+    this.#failed = true;
+    this.#failure = error;
+    this.#items.length = 0;
+    this.observe(this.depth);
+    for (const resolve of this.#capacityWaiters.splice(0)) resolve();
+    for (const resolve of this.#waiters.splice(0)) resolve();
+    if (!this.#active) void this.#pump();
+  }
+
   async #pump() {
+    if (this.#failed) {
+      for (const resolve of this.#waiters.splice(0)) resolve();
+      return;
+    }
     if (this.#active) return;
     const item = this.#items.shift();
     if (!item) {

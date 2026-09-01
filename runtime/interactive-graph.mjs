@@ -68,7 +68,7 @@ export class InteractiveGraph {
       targets: wires.map((wire) => wire.to)
     });
     const receipts = wires.filter((wire) => this.prepared.endpoints.get(wire.to)?.endpointType === 'service' && !NO_RECEIPT.has(messageType))
-      .map((wire) => this.waitForReceipt(wire.to, message.message_id));
+      .map((wire) => this.waitForReceipt(wire.to, message.message_id, { wire }));
     this.route(from, message);
     try {
       await Promise.all(receipts);
@@ -162,16 +162,22 @@ export class InteractiveGraph {
         continue;
       }
       const record = this.running.get(wire.to);
-      if (!record || record.exited) continue;
+      const state = this.deliveryState(wire);
+      if (state.failed) {
+        this.reportDeliveryFailure(wire, message, state.failure, 'WIRE_FAILED', false, false);
+        continue;
+      }
+      if (!record || record.exited) {
+        this.reportDeliveryFailure(wire, message, new Error(`Target service is unavailable: ${wire.to}`), 'TARGET_UNAVAILABLE', false);
+        continue;
+      }
       let queue = this.queues.get(this.wireKey(wire));
       if (!queue) {
         queue = new BoundedWireQueue({
           wireKey: this.wireKey(wire),
           capacity: wire.delivery?.queue_capacity || this.prepared.definition.supervision.queue.capacity,
           onError: (error, item) => {
-            const state = this.deferredDeliveries.get(this.wireKey(wire));
-            if (state) state.failed = true;
-            if (!error.code) this.reportDeliveryFailure(wire, item.message, error);
+            this.failWire(wire, item.message, error, { emit: !error.code });
           },
           observe: (depth) => {
             this.onStatus({ type: 'queue', wire: this.wireKey(wire), depth });
@@ -183,18 +189,22 @@ export class InteractiveGraph {
         queue.consume = async (item) => {
           const current = this.running.get(wire.to);
           if (!current || current.exited) throw new Error(`Target service is unavailable: ${wire.to}`);
-          const receipt = NO_RECEIPT.has(item.message.message_type) ? undefined : this.waitForReceipt(wire.to, item.message.message_id);
-          await current.handle.write(item.message);
-          await receipt;
+          const receipt = NO_RECEIPT.has(item.message.message_type) ? undefined : this.waitForReceipt(wire.to, item.message.message_id, { wire });
+          const write = current.handle.write(item.message);
+          if (receipt) {
+            await Promise.race([write, receipt]);
+            await receipt;
+          } else await write;
         };
         this.queues.set(this.wireKey(wire), queue);
       }
-      const wireState = this.deferredDeliveries.get(this.wireKey(wire)) || { pending: [], pumping: false, pumpPromise: undefined, failed: false };
-      this.deferredDeliveries.set(this.wireKey(wire), wireState);
-      if (wireState.failed) continue;
+      if (queue.failed) {
+        this.reportDeliveryFailure(wire, message, state.failure || new Error(`Wire ${this.wireKey(wire)} is failed`), 'WIRE_FAILED', false, false);
+        continue;
+      }
+      const wireState = state;
       if (wireState.pending.length || queue.depth >= queue.capacity) {
         if (wireState.pending.length >= MAX_DEFERRED_DELIVERIES) {
-          wireState.failed = true;
           this.reportDeliveryFailure(wire, message, new Error(`Reliable delivery backlog reached its governed limit of ${MAX_DEFERRED_DELIVERIES} messages`), 'DELIVERY_BACKLOG_FULL', false);
           continue;
         }
@@ -204,8 +214,11 @@ export class InteractiveGraph {
       }
       try { queue.enqueue({ message, attempt: 1 }); }
       catch (error) {
+        if (queue.failed) {
+          this.failWire(wire, message, error, { emit: false });
+          continue;
+        }
         if (wireState.pending.length >= MAX_DEFERRED_DELIVERIES) {
-          wireState.failed = true;
           this.reportDeliveryFailure(wire, message, new Error(`Reliable delivery backlog reached its governed limit of ${MAX_DEFERRED_DELIVERIES} messages`), 'DELIVERY_BACKLOG_FULL', false);
           continue;
         }
@@ -221,12 +234,21 @@ export class InteractiveGraph {
     state.pumpPromise = (async () => {
       try {
         while (state.pending.length && !state.failed && !this.closed) {
-          await queue.whenAvailable();
+          try { await queue.whenAvailable(); }
+          catch (error) {
+            this.failWire(wire, state.pending[0]?.message, error, { emit: false });
+            break;
+          }
           if (state.failed || this.closed) break;
           const item = state.pending.shift();
           try {
             queue.enqueue(item);
           } catch (error) {
+            if (queue.failed) {
+              state.pending.unshift(item);
+              this.failWire(wire, item.message, error, { emit: false });
+              break;
+            }
             state.pending.unshift(item);
             await new Promise((resolve) => setTimeout(resolve, 0));
           }
@@ -239,10 +261,92 @@ export class InteractiveGraph {
     })();
   }
 
-  reportDeliveryFailure(wire, message, error, code = error.code || 'DELIVERY_FAILED', retryable = Boolean(error.retryable)) {
-    this.rejectReceipt(wire.to, message.message_id, Object.assign(error, { code, retryable }));
-    this.diagnostics?.log('graph.delivery-failed', { session_id: message.correlation_id, correlation_id: message.correlation_id, service: wire.to, input_message_id: message.message_id, message_type: message.message_type, code, retryable, error: error.message });
-    this.onStatus({ type: 'service-failure', service: wire.to, code, message: error.message, retryable, correlation_id: message.correlation_id, input_message_id: message.message_id, operation: message.message_type });
+  deliveryState(wire) {
+    const key = this.wireKey(wire);
+    const state = this.deferredDeliveries.get(key) || { wire, pending: [], pumping: false, pumpPromise: undefined, failed: false, failure: undefined, failedSessionId: undefined };
+    state.wire = wire;
+    this.deferredDeliveries.set(key, state);
+    return state;
+  }
+
+  operationTimeout(wire) {
+    return wire?.delivery?.operation_timeout_ms || this.prepared.definition.supervision.operation_timeout_ms || 15000;
+  }
+
+  failWire(wire, message, error, { emit = true } = {}) {
+    const state = this.deliveryState(wire);
+    const failure = Object.assign(error instanceof Error ? error : new Error(String(error)), {
+      code: error?.code || 'DELIVERY_FAILED',
+      retryable: error?.retryable ?? false
+    });
+    if (state.failed) return state.failure || failure;
+    state.failed = true;
+    state.failure = failure;
+    state.failedSessionId = message?.correlation_id;
+    const pending = state.pending.splice(0);
+    this.rejectReceiptsForWire(this.wireKey(wire), failure);
+    for (const item of pending) this.rejectReceipt(wire.to, item.message.message_id, failure);
+    this.queues.get(this.wireKey(wire))?.fail(failure);
+    this.diagnostics?.log('graph.wire-failed', {
+      session_id: message?.correlation_id,
+      correlation_id: message?.correlation_id,
+      wire: this.wireKey(wire),
+      service: wire.to,
+      input_message_id: message?.message_id,
+      message_type: message?.message_type,
+      code: failure.code,
+      retryable: failure.retryable,
+      error: failure.message
+    });
+    if (emit && message) this.emitDeliveryFailure(wire, message, failure);
+    return failure;
+  }
+
+  failTargetService(instanceId, failureMessage, error) {
+    const wires = [...this.deferredDeliveries.values()]
+      .filter((state) => state.wire?.to === instanceId)
+      .map((state) => state.wire);
+    for (const wire of wires) this.failWire(wire, failureMessage, error, { emit: false });
+    this.rejectReceiptsForService(instanceId, error);
+    if (failureMessage?.payload?.input_message_id) this.rejectReceipt(instanceId, failureMessage.payload.input_message_id, error);
+  }
+
+  emitDeliveryFailure(wire, message, error) {
+    this.diagnostics?.log('graph.delivery-failed', {
+      session_id: message?.correlation_id,
+      correlation_id: message?.correlation_id,
+      service: wire.to,
+      wire: this.wireKey(wire),
+      input_message_id: message?.message_id,
+      message_type: message?.message_type,
+      code: error.code,
+      retryable: error.retryable,
+      error: error.message
+    });
+    this.onStatus({ type: 'service-failure', service: wire.to, code: error.code, message: error.message, retryable: error.retryable, correlation_id: message?.correlation_id, input_message_id: message?.message_id, operation: message?.message_type });
+  }
+
+  reportDeliveryFailure(wire, message, error, code = error.code || 'DELIVERY_FAILED', retryable = Boolean(error.retryable), terminal = true) {
+    const failure = Object.assign(new Error(error?.message || String(error)), { ...error, code, retryable });
+    if (terminal) this.failWire(wire, message, failure, { emit: false });
+    else this.rejectReceipt(wire.to, message.message_id, failure);
+    this.emitDeliveryFailure(wire, message, failure);
+  }
+
+  async recoverDeliveryForNewSession({ currentSessionId, nextSessionId } = {}) {
+    if (!currentSessionId || !nextSessionId || currentSessionId === nextSessionId) throw Object.assign(new Error('Delivery recovery requires distinct current and next session identities'), { code: 'WIRE_RECOVERY_REJECTED', retryable: false });
+    if (this.closed || this.draining) throw Object.assign(new Error('Delivery recovery is unavailable after graph shutdown has begun'), { code: 'WIRE_RECOVERY_REJECTED', retryable: false });
+    await this.waitForIdle();
+    const failed = [...this.deferredDeliveries.entries()].filter(([, state]) => state.failed);
+    for (const [, state] of failed) {
+      if (state.failedSessionId !== currentSessionId) throw Object.assign(new Error(`Wire ${this.wireKey(state.wire)} cannot be recovered across an unknown session boundary`), { code: 'WIRE_RECOVERY_REJECTED', retryable: false });
+    }
+    for (const [key] of failed) {
+      this.queues.delete(key);
+      this.deferredDeliveries.delete(key);
+      this.diagnostics?.log('graph.wire-recovered', { wire: key, previous_session_id: currentSessionId, session_id: nextSessionId });
+    }
+    return failed.length;
   }
 
   receiveRuntime(endpoint, message, from) {
@@ -260,16 +364,17 @@ export class InteractiveGraph {
           retryable: message.payload.reason?.retryable
         });
         this.rejectReceipt(from, message.payload.input_message_id, error);
-        this.onStatus({ type: 'operation-rejected', service: message.payload.service || from, operation: message.payload.operation, code: message.payload.reason?.code, message: message.payload.reason?.message, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
+        this.onStatus({ type: 'operation-rejected', service: message.payload.service || from, sender: from, operation: message.payload.operation, code: message.payload.reason?.code, message: message.payload.reason?.message, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
         return;
       }
       if (message.message_type === 'service.failure') {
         const error = Object.assign(new Error(message.payload.error?.message || 'Service failure'), {
           code: message.payload.error?.code,
-          retryable: message.payload.error?.retryable
+          retryable: message.payload.error?.retryable,
+          details: message.payload.error?.details
         });
-        this.rejectReceipt(message.payload.service, message.payload.input_message_id, error);
-        this.onStatus({ type: 'service-failure', service: message.payload.service, operation: message.payload.operation, code: message.payload.error?.code, message: message.payload.error?.message, retryable: message.payload.error?.retryable, expected: message.payload.error?.details?.expected, received: message.payload.error?.details?.received, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
+        this.failTargetService(from, message, error);
+        this.onStatus({ type: 'service-failure', service: message.payload.service || from, sender: from, operation: message.payload.operation, code: message.payload.error?.code, message: message.payload.error?.message, retryable: message.payload.error?.retryable, expected: message.payload.error?.details?.expected, received: message.payload.error?.details?.received, correlation_id: message.correlation_id, input_message_id: message.payload.input_message_id });
         return;
       }
       if (message.message_type === 'service.drained') { this.drained.add(from); if (this.draining && this.drained.size === this.prepared.services.size) this.stopProcesses(); return; }
@@ -309,17 +414,62 @@ export class InteractiveGraph {
     this.closed = true;
     this.diagnostics?.log('shutdown.graph-drain-completed', { session_id: this.sessionId() });
     this.drainResolve?.();
-    for (const waiters of this.waiters.values()) for (const waiter of waiters) waiter.reject(new Error('Argus graph drained'));
+    const error = Object.assign(new Error('Argus graph drained'), { code: 'GRAPH_DRAINED', retryable: false });
+    for (const waiters of this.waiters.values()) for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
     this.waiters.clear();
   }
 
-  waitForReceipt(service, messageId) {
+  waitForReceipt(service, messageId, { wire, message, timeoutMs = this.operationTimeout(wire) } = {}) {
     const key = `${service}:${messageId}`;
     return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject, service, messageId, wireKey: wire ? this.wireKey(wire) : undefined, timer: undefined };
+      waiter.timer = setTimeout(() => {
+        const timeout = Object.assign(new Error(`${wire?.to || service} did not complete ${message?.message_type || 'the operation'} within ${timeoutMs} ms`), {
+          code: 'OPERATION_TIMEOUT',
+          retryable: false,
+          timeout_ms: timeoutMs
+        });
+        if (wire) this.failWire(wire, message || { message_id: messageId, correlation_id: this.prepared.definition.run?.session_id || 'unknown-session', message_type: 'unknown' }, timeout);
+        else {
+          this.rejectReceipt(service, messageId, timeout);
+          this.onStatus({ type: 'service-failure', service, code: timeout.code, message: timeout.message, retryable: timeout.retryable, input_message_id: messageId, operation: 'receipt' });
+        }
+      }, timeoutMs);
       const waiters = this.waiters.get(key) || new Set();
-      waiters.add({ resolve, reject });
+      waiters.add(waiter);
       this.waiters.set(key, waiters);
     });
+  }
+
+  rejectReceiptsForWire(wireKey, error) {
+    for (const [key, waiters] of this.waiters) {
+      const matching = [...waiters].filter((waiter) => waiter.wireKey === wireKey);
+      if (!matching.length) continue;
+      const remaining = [...waiters].filter((waiter) => waiter.wireKey !== wireKey);
+      if (remaining.length) this.waiters.set(key, new Set(remaining));
+      else this.waiters.delete(key);
+      for (const waiter of matching) {
+        clearTimeout(waiter.timer);
+        waiter.reject(error);
+      }
+    }
+  }
+
+  rejectReceiptsForService(service, error) {
+    for (const [key, waiters] of this.waiters) {
+      const matching = [...waiters].filter((waiter) => waiter.service === service);
+      if (!matching.length) continue;
+      const remaining = [...waiters].filter((waiter) => waiter.service !== service);
+      if (remaining.length) this.waiters.set(key, new Set(remaining));
+      else this.waiters.delete(key);
+      for (const waiter of matching) {
+        clearTimeout(waiter.timer);
+        waiter.reject(error);
+      }
+    }
   }
 
   resolveReceipt(service, messageId) {
@@ -327,14 +477,20 @@ export class InteractiveGraph {
     const waiters = this.waiters.get(key);
     if (!waiters) return;
     this.waiters.delete(key);
-    for (const waiter of waiters) waiter.resolve();
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
   }
   rejectReceipt(service, messageId, error) {
     const key = `${service}:${messageId}`;
     const waiters = this.waiters.get(key);
     if (!waiters) return;
     this.waiters.delete(key);
-    for (const waiter of waiters) waiter.reject(error);
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
   }
   wiresFor(from, plane, type) { return (plane === 'domain' ? this.prepared.definition.domain_wires : this.prepared.definition.control_wires).filter((wire) => wire.from === from && wire.contract === type); }
   wireKey(wire) { return `${wire.from}:${wire.contract}:${wire.to}`; }
