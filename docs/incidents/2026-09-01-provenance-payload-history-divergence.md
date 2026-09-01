@@ -1,6 +1,6 @@
 # Transcript Provenance Payload And History Divergence
 
-**Status:** Confirmed; implementation pending  
+**Status:** Core correction merged in `fbc7d2f9c141fbded5a988920a61a9b18f8e2336`; presentation, recovery acceptance, and physical-microphone validation pending  
 **Observed:** 2026-09-01  
 **Affected session:** `session-922dc897-804b-4c0b-be5a-6357ff4496c6`  
 **Primary boundaries:** audio capture -> Whisper; Whisper -> active transcript; active transcript -> permanent history; permanent history -> UI projection  
@@ -141,3 +141,9 @@ Automated tests support the correction but do not replace physical-microphone ac
 ## Completion criteria
 
 This incident is resolved only when the core correction is merged and a real Electron session demonstrates uninterrupted capture, repeated bounded finalization, durable active/history agreement, successful Stop/Close, and no loss of finalized rows. UI row composition and legacy-session recovery may land immediately afterward, but neither may redefine or bypass the corrected core boundary.
+
+## Core implementation
+
+The core correction was reviewed, fast-forwarded, and pushed to `main` in `fbc7d2f9c141fbded5a988920a61a9b18f8e2336`. It introduced pause/10-second window rollover, timestamp-overlapping per-word chunk spans, one window-level provenance span, governed payload preflight, a bounded durable transcript outbox, and exact permanent-history acknowledgement before active/UI finalization. Contract limits, the single FIFO Whisper worker, and validation guards were retained.
+
+Automated transcript/recovery, contract-governance, generated-document, syntax, and package-graph checks passed. Physical-microphone acceptance in the source Electron application remains pending and is required before this incident is marked resolved.
