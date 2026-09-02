@@ -566,7 +566,9 @@ External API keys belong to the host. Electron `safeStorage` encrypts the key in
 store under the per-user application data directory. The renderer receives only `credential_configured`
 and never receives a saved key; the key is cleared from the settings control after save and is not
 written to localStorage, session files, ordinary JSON configuration, diagnostics, or model-request
-provenance. At runtime, only `serial-ai-model-lane` receives the resolved credential in memory.
+provenance. Each credential is bound to the exact normalized external provider and endpoint, so changing
+that identity never reuses the prior key. At runtime, only `serial-ai-model-lane` receives the resolved
+credential in memory.
 
 Provider configuration precedence is: saved host settings, explicit legacy `ARGUS_MODEL_*` environment
 configuration, provisioned Ollama manifest, then the unconfigured Ollama defaults shown by the UI.
@@ -579,4 +581,4 @@ unreachable runtime, or failed connection test produces an unavailable/degraded 
 - The provider-neutral `ai.work-request` and `ai.work-completed` contracts and the global serial AI scheduler remain unchanged for workloads.
 - The service manifest grants `external-https` and `model_credentials` only to the serial model adapter; the adapter enforces the selected endpoint class because the installed Node runtime has no network permission flag.
 - Provider switching is a host configuration operation and cannot create a renderer-to-model route or bypass the governed AI lane.
-- Credential storage remains unresolved because the selected initial local model path does not require credentials.
+- Credential persistence is transactional at the host boundary: if a credential mutation fails, the previous non-secret provider configuration is restored.

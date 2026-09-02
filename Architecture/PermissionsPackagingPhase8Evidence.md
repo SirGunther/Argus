@@ -64,7 +64,7 @@ The installed host is Node 24.11.1. Its permission model exposes `--permission`,
 | `network.listen` | **Deferred** | refused at declaration time; a component listener needs a provider that can bind and restrict sockets |
 | `microphone` | **Deferred** | refused at declaration time; device capture needs a host that owns the device boundary (`AUD-002`) |
 | `clipboard` | **Deferred** | refused at declaration time for components; the host capability adapter behind governed UI commands remains the only clipboard path (ADR-017) |
-| `model_credentials` | **Adapter-enforced** | Electron `safeStorage` encrypts the host-owned credential at rest; only `serial-ai-model-lane` receives it in the runtime configuration control message, and redacted state reaches the renderer |
+| `model_credentials` | **Adapter-enforced** | Electron `safeStorage` encrypts the host-owned credential at rest and binds it to the exact normalized external provider and endpoint; only `serial-ai-model-lane` receives it in the runtime configuration control message, redacted state reaches the renderer, and failed credential persistence restores the prior non-secret configuration |
 | `resources.memory_mb`, `resources.cpu_limit` | **Deferred** | refused outside a container runtime; no OCI engine is installed (`CNT-001`) |
 
 The matrix is exported as `ENFORCEMENT_MATRIX` and asserted by test, including the specific assertion that `network.outbound` is **not** claimed as Node-runtime-enforced. A capability the host cannot enforce is **refused at declaration time** rather than accepted and simulated, so a declaration never reads as a guarantee the runtime does not deliver.

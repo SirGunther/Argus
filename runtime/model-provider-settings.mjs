@@ -123,6 +123,12 @@ export function redactRuntimeSettings(settings, credentialConfigured = false) {
   return Object.freeze({ ...normalized, credential_configured: normalized.mode === 'external' && credentialConfigured === true });
 }
 
+export function modelProviderCredentialScope(settings) {
+  const normalized = normalizeModelProviderSettings(settings);
+  if (normalized.mode !== 'external') return undefined;
+  return `v${MODEL_PROVIDER_SETTINGS_VERSION}:${normalized.provider}:${normalized.endpoint}`;
+}
+
 export function isLoopbackHost(hostname) {
   const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
   return host === 'localhost' || host === '127.0.0.1' || host === '::1';
@@ -162,6 +168,10 @@ export function createModelProviderSettingsStore({ filePath } = {}) {
       await writeFile(temporary, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
       await rename(temporary, target);
       return normalized;
+    },
+    async remove() {
+      try { await unlink(target); }
+      catch (error) { if (error?.code !== 'ENOENT') throw error; }
     }
   });
 }
@@ -178,38 +188,58 @@ export function createSafeStorageCredentialStore({ safeStorage, filePath } = {})
       throw new Error('OS credential storage is unavailable on this host', { cause: { code: 'CREDENTIAL_STORE_UNAVAILABLE', category: 'unavailable' } });
     }
   }
+  async function readRecord() {
+    let encrypted;
+    try { encrypted = await readFile(target); }
+    catch (error) { if (error?.code === 'ENOENT') return undefined; throw error; }
+    assertAvailable();
+    let record;
+    try { record = JSON.parse(safeStorage.decryptString(encrypted)); }
+    catch { throw providerConfigurationError('Stored API credential is invalid and must be replaced'); }
+    if (record?.version !== MODEL_PROVIDER_SETTINGS_VERSION || typeof record.scope !== 'string' || !record.scope || typeof record.value !== 'string' || !record.value) {
+      throw providerConfigurationError('Stored API credential is invalid and must be replaced');
+    }
+    return record;
+  }
   return Object.freeze({
-    async has() {
-      try { await readFile(target); return true; }
-      catch (error) { if (error?.code === 'ENOENT') return false; throw error; }
+    async has(scope) {
+      const record = await readRecord();
+      return Boolean(record && (scope === undefined || record.scope === scope));
     },
-    async get() {
-      if (!await this.has()) return undefined;
-      assertAvailable();
-      return safeStorage.decryptString(await readFile(target));
+    async get(scope) {
+      if (!scope) return undefined;
+      const record = await readRecord();
+      return record?.scope === scope ? record.value : undefined;
     },
-    async set(value) {
+    async set(scope, value) {
+      if (typeof scope !== 'string' || !scope) throw providerConfigurationError('API key requires an external provider scope');
       const credential = String(value || '').trim();
-      if (!credential) throw providerConfigurationError('API key must not be empty');
+      if (!credential || credential.length > 4096) throw providerConfigurationError('API key must contain 1 to 4096 characters');
       assertAvailable();
       await mkdir(path.dirname(target), { recursive: true });
       const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-      await writeFile(temporary, safeStorage.encryptString(credential), { mode: 0o600 });
+      const record = JSON.stringify({ version: MODEL_PROVIDER_SETTINGS_VERSION, scope, value: credential });
+      await writeFile(temporary, safeStorage.encryptString(record), { mode: 0o600 });
       await rename(temporary, target);
     },
-    async remove() {
+    async remove(scope) {
+      if (scope !== undefined && !await this.has(scope)) return;
       try { await unlink(target); }
       catch (error) { if (error?.code !== 'ENOENT') throw error; }
     }
   });
 }
 
-export function createMemoryCredentialStore(initialValue) {
-  let value = initialValue ? String(initialValue) : undefined;
+export function createMemoryCredentialStore() {
+  let record;
   return Object.freeze({
-    async has() { return Boolean(value); },
-    async get() { return value; },
-    async set(next) { value = String(next || '').trim() || undefined; },
-    async remove() { value = undefined; }
+    async has(scope) { return Boolean(record && (scope === undefined || record.scope === scope)); },
+    async get(scope) { return record?.scope === scope ? record.value : undefined; },
+    async set(scope, value) {
+      const credential = String(value || '').trim();
+      if (!scope || !credential) throw providerConfigurationError('API key and external provider scope are required');
+      record = { scope, value: credential };
+    },
+    async remove(scope) { if (scope === undefined || record?.scope === scope) record = undefined; }
   });
 }

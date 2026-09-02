@@ -1,7 +1,7 @@
 # `ai.provider-configure`
 
-Plane: `control`  
-Owner: `runtime/ai-provider-settings`  
+Plane: `control`
+Owner: `runtime/ai-provider-settings`
 Version: `1.0.0`
 
 The trusted Electron host sends the one active, validated provider configuration to the serial AI

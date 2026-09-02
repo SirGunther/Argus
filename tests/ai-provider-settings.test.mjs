@@ -10,6 +10,7 @@ import {
   createMemoryCredentialStore,
   createModelProviderSettingsStore,
   createSafeStorageCredentialStore,
+  modelProviderCredentialScope,
   normalizeModelProviderSettings
 } from '../runtime/model-provider-settings.mjs';
 import { DesktopApplication } from '../runtime/desktop-application.mjs';
@@ -46,11 +47,15 @@ test('non-secret settings and encrypted host credentials stay out of renderer-sh
     const settingsStore = createModelProviderSettingsStore({ filePath: settingsFile });
     const credentialStore = createSafeStorageCredentialStore({ safeStorage, filePath: credentialFile });
     const external = normalizeModelProviderSettings({ mode: 'external', provider: 'openai-compatible', endpoint: 'https://provider.example/v1/chat/completions', model: 'remote-model', timeout_ms: 1000 });
+    const scope = modelProviderCredentialScope(external);
+    const otherScope = modelProviderCredentialScope({ ...external, endpoint: 'https://other.example/v1/chat/completions' });
     await settingsStore.save(external);
-    await credentialStore.set(credential);
+    await credentialStore.set(scope, credential);
     assert.doesNotMatch(await readFile(settingsFile, 'utf8'), /api[_-]?key|fixture-provider-value/i);
     assert.doesNotMatch((await readFile(credentialFile)).toString('utf8'), new RegExp(credential));
-    assert.equal(await credentialStore.get(), credential);
+    assert.equal(await credentialStore.get(scope), credential);
+    assert.equal(await credentialStore.get(otherScope), undefined, 'a credential cannot cross provider endpoint scope');
+    assert.equal(await credentialStore.has(otherScope), false);
     assert.deepEqual({ ...external, credential_configured: true }, { ...external, credential_configured: true });
     await credentialStore.remove();
     assert.equal(await credentialStore.has(), false);
@@ -102,6 +107,58 @@ test('desktop provider settings persist precedence and expose only redacted cred
     await reloaded.loadProviderConfiguration();
     assert.equal(reloaded.providerConfiguration.provider, 'openai-compatible');
     assert.equal((await reloaded.aiProviderSettings()).credential_configured, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('switching external endpoints never reuses the prior endpoint credential', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'argus-provider-scope-'));
+  try {
+    const settingsStore = createModelProviderSettingsStore({ filePath: path.join(directory, 'provider.json') });
+    const credentialStore = createMemoryCredentialStore();
+    const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(directory, 'sessions'), providerSettingsStore: settingsStore, credentialStore, environment: {} });
+    await application.loadProviderConfiguration();
+    const first = { mode: 'external', provider: 'openai-compatible', endpoint: 'https://first.example/v1/chat/completions', model: 'first-model', timeout_ms: 1000 };
+    const second = { ...first, endpoint: 'https://second.example/v1/chat/completions', model: 'second-model' };
+    await application.saveAiProviderSettings({ ...first, api_key: 'first-endpoint-key' });
+    assert.equal(await application.readCredential(first), 'first-endpoint-key');
+
+    const switched = await application.saveAiProviderSettings(second);
+    assert.equal(switched.credential_configured, false);
+    assert.equal(await application.readCredential(second), undefined);
+    assert.equal(await application.readCredential(first), 'first-endpoint-key');
+
+    await application.saveAiProviderSettings({ ...second, api_key: 'second-endpoint-key' });
+    assert.equal(await application.readCredential(second), 'second-endpoint-key');
+    assert.equal(await application.readCredential(first), undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('credential persistence failure restores the prior non-secret provider settings', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'argus-provider-rollback-'));
+  try {
+    const settingsStore = createModelProviderSettingsStore({ filePath: path.join(directory, 'provider.json') });
+    const credentialStore = createMemoryCredentialStore();
+    const first = normalizeModelProviderSettings({ mode: 'external', provider: 'openai-compatible', endpoint: 'https://first.example/v1/chat/completions', model: 'first-model', timeout_ms: 1000 });
+    const second = { ...first, endpoint: 'https://second.example/v1/chat/completions', model: 'second-model' };
+    const firstScope = modelProviderCredentialScope(first);
+    await settingsStore.save(first);
+    await credentialStore.set(firstScope, 'first-endpoint-key');
+    const failingCredentialStore = {
+      has: (...args) => credentialStore.has(...args),
+      get: (...args) => credentialStore.get(...args),
+      remove: (...args) => credentialStore.remove(...args),
+      async set() { throw new Error('credential persistence failed'); }
+    };
+    const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot: path.join(directory, 'sessions'), providerSettingsStore: settingsStore, credentialStore: failingCredentialStore, environment: {} });
+    await application.loadProviderConfiguration();
+
+    await assert.rejects(application.saveAiProviderSettings({ ...second, api_key: 'second-endpoint-key' }), /credential persistence failed/);
+    assert.deepEqual(await settingsStore.load(), first);
+    assert.equal(await credentialStore.get(firstScope), 'first-endpoint-key');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

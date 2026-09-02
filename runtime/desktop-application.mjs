@@ -12,6 +12,7 @@ import { canonicalJson } from './message-identity.mjs';
 import {
   DEFAULT_MODEL_PROVIDER_SETTINGS,
   createMemoryCredentialStore,
+  modelProviderCredentialScope,
   normalizeModelProviderSettings,
   redactRuntimeSettings,
   settingsFromLegacyEnvironment,
@@ -193,7 +194,7 @@ export class DesktopApplication {
 
   async synchronizeModelProvider() {
     if (!this.providerConfiguration) await this.loadProviderConfiguration();
-    const credential = this.providerConfiguration.mode === 'external' ? await this.readCredential() : undefined;
+    const credential = this.providerConfiguration.mode === 'external' ? await this.readCredential(this.providerConfiguration) : undefined;
     const runtime = settingsForRuntime(this.providerConfiguration, credential);
     const payload = {
       configuration: runtime.configuration,
@@ -204,18 +205,22 @@ export class DesktopApplication {
     return runtime;
   }
 
-  async readCredential() {
+  async readCredential(settings = this.providerConfiguration) {
+    const scope = settings ? modelProviderCredentialScope(settings) : undefined;
+    if (!scope) return undefined;
     try {
-      if (!await this.credentialStore.has()) return undefined;
-      return await this.credentialStore.get();
+      if (!await this.credentialStore.has(scope)) return undefined;
+      return await this.credentialStore.get(scope);
     } catch (error) {
       this.providerConfigurationError = error;
       return undefined;
     }
   }
 
-  async credentialConfigured() {
-    try { return await this.credentialStore.has(); }
+  async credentialConfigured(settings = this.providerConfiguration) {
+    const scope = settings ? modelProviderCredentialScope(settings) : undefined;
+    if (!scope) return false;
+    try { return await this.credentialStore.has(scope); }
     catch { return false; }
   }
 
@@ -233,9 +238,22 @@ export class DesktopApplication {
 
   async saveAiProviderSettings(payload = {}) {
     const settings = normalizeModelProviderSettings(payload);
-    if (payload.remove_api_key === true) await this.credentialStore.remove();
-    else if (Object.hasOwn(payload, 'api_key')) await this.credentialStore.set(payload.api_key);
+    const scope = modelProviderCredentialScope(settings);
+    if (Object.hasOwn(payload, 'api_key') && !scope) throw new Error('API keys may be saved only for an external provider');
+    const previousPersisted = await this.providerSettingsStore?.load();
     await this.providerSettingsStore?.save(settings);
+    try {
+      if (payload.remove_api_key === true) await this.credentialStore.remove();
+      else if (Object.hasOwn(payload, 'api_key')) await this.credentialStore.set(scope, payload.api_key);
+    } catch (error) {
+      try {
+        if (previousPersisted) await this.providerSettingsStore?.save(previousPersisted);
+        else await this.providerSettingsStore?.remove();
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], 'AI provider settings failed and the prior configuration could not be restored');
+      }
+      throw error;
+    }
     this.providerConfiguration = settings;
     this.providerConfigurationConfigured = true;
     this.providerConfigurationSource = 'saved';
@@ -254,7 +272,7 @@ export class DesktopApplication {
   async testAiProviderSettings(payload = {}) {
     const settings = normalizeModelProviderSettings(payload);
     const suppliedCredential = Object.hasOwn(payload, 'api_key') ? String(payload.api_key || '').trim() : undefined;
-    const credential = suppliedCredential || (this.providerConfiguration && JSON.stringify(settings) === JSON.stringify(this.providerConfiguration) ? await this.readCredential() : undefined);
+    const credential = suppliedCredential || await this.readCredential(settings);
     const result = await testProviderConnection(settings, credential, settings.provider === 'ollama' ? this.provisionedManifest?.local_model?.identity : undefined);
     if (this.providerConfigurationConfigured && JSON.stringify(settings) === JSON.stringify(this.providerConfiguration)) {
       this.providerConnectionStatus = result;
