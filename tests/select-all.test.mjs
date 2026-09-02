@@ -16,13 +16,15 @@ test('each list header exposes an accessible three-state master checkbox', async
   assert.match(html, /class="select-all-checkbox" data-kind="derived"[^>]*aria-controls="derivedList"/);
   assert.match(app, /selectionSummary\(ui, kind, ids\)/);
   assert.match(app, /selectAll\.indeterminate = selectionState === 'some'/);
-  assert.match(app, /setAllSelected\(ui, kind, ids, checkbox\.checked\)/);
   assert.match(app, /checkbox\.addEventListener\('click', \(event\) =>/);
   assert.match(app, /isShiftPressed\(event\)/);
   assert.match(app, /selectRange\(ui, kind, ids, anchorIndex, clickedIndex\)/);
   assert.match(app, /window\.addEventListener\('keydown', updateShiftKeyState\)/);
   assert.match(app, /window\.addEventListener\('keyup', updateShiftKeyState\)/);
+  assert.match(app, /const action = selectionState === 'none' \? 'Select' : 'Deselect'/);
+  assert.match(app, /setAllSelected\(ui, kind, ids, selectedCount === 0\)/);
   assert.match(css, /input\[aria-checked="mixed"\]/);
+  assert.match(css, /input\[aria-checked="mixed"\][\s\S]*?background: var\(--surface-active\)/);
   assert.doesNotMatch(css, /\.select-all-button\s*\{\s*display:\s*none/);
   assert.match(css, /\.pane-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*min-width:\s*max-content;/);
   assert.match(css, /\.select-all-control\s*\{[^}]*flex:\s*0 0 auto;[^}]*white-space:\s*nowrap;/);

@@ -208,8 +208,8 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .select-all-control input:focus-visible + .select-all-box { outline: 2px solid var(--accent-line); outline-offset: 2px; }
 .select-all-control input:checked + .select-all-box { border-color: var(--accent); background: var(--accent); }
 .select-all-control input:checked + .select-all-box svg { opacity: 1; }
-.select-all-control input[aria-checked="mixed"] + .select-all-box { border-color: var(--accent); background: var(--accent); }
-.select-all-control input[aria-checked="mixed"] + .select-all-box::after { width: 8px; height: 2px; background: #101410; content: ''; }
+.select-all-control input[aria-checked="mixed"] + .select-all-box { border-color: var(--accent-line); background: var(--surface-active); color: var(--accent); }
+.select-all-control input[aria-checked="mixed"] + .select-all-box::after { width: 8px; height: 2px; background: currentColor; content: ''; }
 .select-all-control input:disabled ~ .select-all-box, .select-all-control input:disabled ~ .select-all-label { opacity: .45; }
 .select-all-control input:disabled, .select-all-control input:disabled ~ * { cursor: default; }
 
