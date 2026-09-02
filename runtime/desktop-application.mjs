@@ -9,6 +9,15 @@ import { calculateRecordingDurationMs } from './session-lifecycle.mjs';
 import { createDiagnosticLogger } from './diagnostics.mjs';
 import { createAudioPreviewScheduler } from './audio-preview-scheduler.mjs';
 import { canonicalJson } from './message-identity.mjs';
+import {
+  DEFAULT_MODEL_PROVIDER_SETTINGS,
+  createMemoryCredentialStore,
+  normalizeModelProviderSettings,
+  redactRuntimeSettings,
+  settingsFromLegacyEnvironment,
+  settingsFromProvisionedManifest,
+  settingsForRuntime
+} from './model-provider-settings.mjs';
 
 const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL', 'ARGUS_WHISPER_TIMEOUT_MS', 'ARGUS_WHISPER_DELAYED_MS', 'ARGUS_WHISPER_PREVIEW_CADENCE_MS', 'ARGUS_DIAGNOSTICS'];
 const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'storage-session', 'clipboard', 'folder-opening'];
@@ -20,13 +29,23 @@ const MAX_AUDIO_WINDOW_DURATION_MS = 10000;
 const PIPELINE_STALL_THRESHOLD_MS = 30000;
 
 export class DesktopApplication {
-  constructor({ root, graphFile, sessionRoot, environment = process.env, diagnosticsEnabled = false, diagnosticsOutput, diagnosticClock, diagnosticStallThresholdMs = PIPELINE_STALL_THRESHOLD_MS } = {}) {
+  constructor({ root, graphFile, sessionRoot, environment = process.env, providerSettingsStore, credentialStore, diagnosticsEnabled = false, diagnosticsOutput, diagnosticClock, diagnosticStallThresholdMs = PIPELINE_STALL_THRESHOLD_MS } = {}) {
     this.root = path.resolve(root);
     this.graphFile = path.resolve(graphFile);
     this.sessionRoot = path.resolve(sessionRoot);
-    this.environment = environment;
+    this.environment = { ...environment };
+    this.providerSettingsStore = providerSettingsStore;
+    this.credentialStore = credentialStore || createMemoryCredentialStore();
+    this.explicitProviderSettings = undefined;
+    this.providerConfiguration = undefined;
+    this.providerConfigurationConfigured = false;
+    this.providerConfigurationSource = 'defaults';
+    this.providerConfigurationError = undefined;
+    this.providerConnectionStatus = undefined;
+    try { this.explicitProviderSettings = settingsFromLegacyEnvironment(this.environment); }
+    catch (error) { this.providerConfigurationError = error; }
     this.diagnostics = createDiagnosticLogger({ enabled: diagnosticsEnabled, output: diagnosticsOutput, clock: diagnosticClock, source: 'electron-main' });
-    for (const key of ALLOWED_ENVIRONMENT) if (environment[key] !== undefined) process.env[key] = String(environment[key]);
+    for (const key of ALLOWED_ENVIRONMENT) if (this.environment[key] !== undefined) process.env[key] = String(this.environment[key]);
     process.env.ARGUS_SESSION_ROOT = this.sessionRoot;
     this.storage = new SessionStorage({ root: this.sessionRoot });
     this.capabilities = createPlatformCapabilities({ environment: process.env });
@@ -74,7 +93,7 @@ export class DesktopApplication {
     this.started = false;
     this.startError = undefined;
     this.audioPreviewScheduler = createAudioPreviewScheduler({
-      cadenceMs: environment.ARGUS_WHISPER_PREVIEW_CADENCE_MS,
+      cadenceMs: this.environment.ARGUS_WHISPER_PREVIEW_CADENCE_MS,
       snapshot: ({ utterance_id, revision }) => this.audioPreviewSnapshot(utterance_id, revision),
       dispatch: (snapshot) => this.dispatchAudioPreview(snapshot),
       diagnostic: (event, details) => this.diagnostics.log(`audio.${event}`, { session_id: this.sessionId, ...details })
@@ -86,6 +105,7 @@ export class DesktopApplication {
   async start() {
     this.diagnostics.log('host.starting', { session_id: this.sessionId, graph_file: path.basename(this.graphFile) });
     await this.loadProvisionedConfiguration();
+    await this.loadProviderConfiguration();
     this.boundary = await createUiContractBoundary(this.root);
     await this.loadLatestSession();
     await this.setInitialCapabilities();
@@ -96,6 +116,12 @@ export class DesktopApplication {
     });
     try {
       await this.graph.start();
+      try { if (this.providerConfigurationConfigured) await this.synchronizeModelProvider(); }
+      catch (error) {
+        this.providerConfigurationError = error;
+        this.setCapability('model', 'unavailable', `AI provider configuration could not be activated: ${error.message}`, true);
+        this.setCapability('logged-item-pipeline', 'unavailable', `Logged-item extraction is unavailable: ${error.message}`, true);
+      }
       this.setCapability('orchestration', 'available', 'Production Argus graph is supervised and ready.', false);
     } catch (error) {
       this.startError = error;
@@ -115,6 +141,7 @@ export class DesktopApplication {
       const whisper = manifest.whisper || {};
       const model = manifest.local_model || {};
       this.provisionedManifest = manifest;
+      this.provisionedProviderSettings = settingsFromProvisionedManifest(manifest);
       const provisioned = {
         ARGUS_WHISPER_BINARY: resolveProvisionedPath(this.root, whisper.binary, whisper.binary_relative),
         ARGUS_WHISPER_MODEL: resolveProvisionedPath(this.root, whisper.model, whisper.model_relative),
@@ -129,6 +156,112 @@ export class DesktopApplication {
     } catch {
       // Missing provisioning is a visible unavailable capability, not a simulated fallback.
     }
+  }
+
+  async loadProviderConfiguration() {
+    let persisted;
+    try { persisted = await this.providerSettingsStore?.load(); }
+    catch (error) { this.providerConfigurationError = error; }
+    if (persisted) {
+      this.providerConfiguration = persisted;
+      this.providerConfigurationConfigured = true;
+      this.providerConfigurationSource = 'saved';
+    } else if (this.explicitProviderSettings) {
+      this.providerConfiguration = this.explicitProviderSettings;
+      this.providerConfigurationConfigured = true;
+      this.providerConfigurationSource = 'environment';
+    } else if (this.provisionedProviderSettings) {
+      this.providerConfiguration = this.provisionedProviderSettings;
+      this.providerConfigurationConfigured = true;
+      this.providerConfigurationSource = 'provisioned';
+    } else {
+      this.providerConfiguration = DEFAULT_MODEL_PROVIDER_SETTINGS;
+      this.providerConfigurationConfigured = false;
+      this.providerConfigurationSource = 'defaults';
+    }
+    if (this.providerConfigurationConfigured) this.setModelEnvironment(this.providerConfiguration);
+  }
+
+  setModelEnvironment(settings) {
+    for (const [key, value] of Object.entries({
+      ARGUS_MODEL_ENDPOINT: settings.endpoint,
+      ARGUS_MODEL_NAME: settings.model,
+      ARGUS_MODEL_PROTOCOL: settings.protocol,
+      ARGUS_MODEL_TIMEOUT_MS: String(settings.timeout_ms)
+    })) process.env[key] = String(value);
+  }
+
+  async synchronizeModelProvider() {
+    if (!this.providerConfiguration) await this.loadProviderConfiguration();
+    const credential = this.providerConfiguration.mode === 'external' ? await this.readCredential() : undefined;
+    const runtime = settingsForRuntime(this.providerConfiguration, credential);
+    const payload = {
+      configuration: runtime.configuration,
+      credential: { provided: Boolean(runtime.credential_configured), ...(runtime.credential ? { value: runtime.credential } : {}) }
+    };
+    await this.graph.dispatchFrom('@desktop-controller', 'control', 'ai.provider-configure', this.sessionId, payload, `ai-provider-configure:${randomUUID()}`);
+    this.providerCredentialConfigured = Boolean(runtime.credential_configured);
+    return runtime;
+  }
+
+  async readCredential() {
+    try {
+      if (!await this.credentialStore.has()) return undefined;
+      return await this.credentialStore.get();
+    } catch (error) {
+      this.providerConfigurationError = error;
+      return undefined;
+    }
+  }
+
+  async credentialConfigured() {
+    try { return await this.credentialStore.has(); }
+    catch { return false; }
+  }
+
+  async aiProviderSettings() {
+    const settings = this.providerConfiguration || DEFAULT_MODEL_PROVIDER_SETTINGS;
+    return {
+      ...redactRuntimeSettings(settings, await this.credentialConfigured()),
+      configured: this.providerConfigurationConfigured,
+      source: this.providerConfigurationSource,
+      status: this.providerConnectionStatus || (this.providerConfigurationError
+        ? { status: 'unavailable', message: this.providerConfigurationError.message }
+        : { status: this.providerConfigurationConfigured ? 'degraded' : 'unavailable', message: this.providerConfigurationConfigured ? 'Provider configured; test the selected connection.' : 'No provider configuration is active.' })
+    };
+  }
+
+  async saveAiProviderSettings(payload = {}) {
+    const settings = normalizeModelProviderSettings(payload);
+    if (payload.remove_api_key === true) await this.credentialStore.remove();
+    else if (Object.hasOwn(payload, 'api_key')) await this.credentialStore.set(payload.api_key);
+    await this.providerSettingsStore?.save(settings);
+    this.providerConfiguration = settings;
+    this.providerConfigurationConfigured = true;
+    this.providerConfigurationSource = 'saved';
+    this.providerConfigurationError = undefined;
+    this.providerConnectionStatus = { status: 'degraded', message: 'Provider configured; test the selected connection.' };
+    this.setModelEnvironment(settings);
+    if (this.graph && !this.graph.closed) await this.synchronizeModelProvider();
+    const credentialConfigured = await this.credentialConfigured();
+    this.providerCredentialConfigured = credentialConfigured;
+    const label = `${settings.mode === 'local' ? 'Local' : 'External'} ${settings.provider} · ${settings.model}`;
+    this.setCapability('model', credentialConfigured || settings.mode === 'local' ? 'degraded' : 'unavailable', `${label} configured; test the connection before processing.`, true);
+    this.setCapability('logged-item-pipeline', 'degraded', 'Logged-item extraction uses the selected provider through the serial AI lane.', true);
+    return this.aiProviderSettings();
+  }
+
+  async testAiProviderSettings(payload = {}) {
+    const settings = normalizeModelProviderSettings(payload);
+    const suppliedCredential = Object.hasOwn(payload, 'api_key') ? String(payload.api_key || '').trim() : undefined;
+    const credential = suppliedCredential || (this.providerConfiguration && JSON.stringify(settings) === JSON.stringify(this.providerConfiguration) ? await this.readCredential() : undefined);
+    const result = await testProviderConnection(settings, credential, settings.provider === 'ollama' ? this.provisionedManifest?.local_model?.identity : undefined);
+    if (this.providerConfigurationConfigured && JSON.stringify(settings) === JSON.stringify(this.providerConfiguration)) {
+      this.providerConnectionStatus = result;
+      this.setCapability('model', result.status, result.message, result.status !== 'available');
+      this.setCapability('logged-item-pipeline', result.status === 'available' ? 'available' : 'unavailable', result.status === 'available' ? 'Real model workloads use the selected provider through the serial AI lane.' : `Logged-item extraction is unavailable: ${result.message}`, true);
+    }
+    return result;
   }
 
   async shutdown() {
@@ -1023,9 +1156,10 @@ export class DesktopApplication {
       catch (error) { sttMessage = `Whisper dependency unavailable: ${error.message}`; }
     }
     this.setCapability('stt', stt, sttMessage, true);
-    const endpoint = String(process.env.ARGUS_MODEL_ENDPOINT || '').trim();
-    const model = String(process.env.ARGUS_MODEL_NAME || '').trim();
-    const modelAvailability = endpoint && model ? await probeLocalModel(endpoint, model, this.provisionedManifest?.local_model?.identity) : { status: 'unavailable', message: 'Local model endpoint/name are not configured; run npm run setup:real.' };
+    const modelAvailability = this.providerConfigurationConfigured
+      ? await testProviderConnection(this.providerConfiguration, this.providerConfiguration.mode === 'external' ? await this.readCredential() : undefined, this.providerConfiguration.provider === 'ollama' ? this.provisionedManifest?.local_model?.identity : undefined)
+      : { status: 'unavailable', message: 'No AI provider configuration is active; open AI Provider settings.' };
+    this.providerConnectionStatus = modelAvailability;
     this.setCapability('model', modelAvailability.status, modelAvailability.message, modelAvailability.status !== 'available');
     this.setCapability('transcript', stt, sttMessage, true);
     this.setCapability('logged-item-pipeline', modelAvailability.status === 'available' ? 'available' : 'unavailable', modelAvailability.status === 'available' ? 'Real local model extraction is available through the serial model lane.' : `Logged-item extraction is unavailable: ${modelAvailability.message}`, true);
@@ -1117,18 +1251,41 @@ function resolveProvisionedPath(root, absolutePath, relativePath) {
   return path.isAbsolute(absolutePath) ? absolutePath : path.resolve(root, absolutePath);
 }
 
-async function probeLocalModel(endpoint, modelName, expectedIdentity) {
+async function testProviderConnection(settings, credential, expectedIdentity) {
   try {
-    const url = new URL(endpoint);
-    const tags = await fetchJson(new URL('/api/tags', url.origin), { method: 'GET' }, 5000);
-    const model = (tags.models || []).find((entry) => entry.name === modelName || entry.model === modelName);
-    if (!model) return { status: 'unavailable', message: `Ollama is reachable but selected model ${modelName} is not installed.` };
-    const digest = model.digest || model.details?.digest;
-    if (expectedIdentity?.digest && digest && digest !== expectedIdentity.digest) return { status: 'unavailable', message: `Ollama model identity mismatch for ${modelName}; expected ${expectedIdentity.digest}, found ${digest}.` };
-    return { status: 'available', message: `Ollama loopback endpoint is available with selected model ${modelName}${digest ? ` (${digest})` : ''}.` };
+    if (settings.mode === 'external' && !credential) return { status: 'unavailable', message: 'External provider API key is not configured.' };
+    const url = new URL(settings.endpoint);
+    const headers = credential ? { authorization: `Bearer ${credential}` } : {};
+    if (settings.provider === 'ollama') {
+      const tags = await fetchJson(new URL('/api/tags', url.origin), { method: 'GET', headers }, settings.timeout_ms);
+      const model = (tags.models || []).find((entry) => entry.name === settings.model || entry.model === settings.model);
+      if (!model) return { status: 'unavailable', message: `Ollama is reachable but selected model ${settings.model} is not installed.` };
+      const digest = model.digest || model.details?.digest;
+      if (expectedIdentity?.digest && digest && digest !== expectedIdentity.digest) return { status: 'unavailable', message: `Ollama model identity mismatch for ${settings.model}; expected ${expectedIdentity.digest}, found ${digest}.` };
+      return { status: 'available', message: `Ollama loopback endpoint is available with selected model ${settings.model}${digest ? ` (${digest})` : ''}.` };
+    }
+    const modelsUrl = settings.protocol === 'provider-neutral-json' ? url : modelListingUrl(url);
+    const body = await fetchJson(modelsUrl, { method: 'GET', headers }, settings.timeout_ms);
+    const models = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : [];
+    const listed = models.some((entry) => entry.id === settings.model || entry.name === settings.model || entry.model === settings.model);
+    if (models.length && !listed) return { status: 'unavailable', message: `${providerLabel(settings)} is reachable but selected model ${settings.model} is not available.` };
+    return { status: 'available', message: `${providerLabel(settings)} connection is available for model ${settings.model}.` };
   } catch (error) {
-    return { status: 'unavailable', message: `Ollama local model unavailable: ${error.message}` };
+    return { status: 'unavailable', message: `${providerLabel(settings)} unavailable: ${error.message}` };
   }
+}
+
+function modelListingUrl(endpoint) {
+  const url = new URL(endpoint);
+  if (/\/chat\/completions\/?$/i.test(url.pathname)) url.pathname = url.pathname.replace(/\/chat\/completions\/?$/i, '/models');
+  else if (!/\/models\/?$/i.test(url.pathname)) url.pathname = `${url.pathname.replace(/\/$/, '')}/models`;
+  return url;
+}
+
+function providerLabel(settings) {
+  if (settings.provider === 'lm-studio') return 'LM Studio';
+  if (settings.provider === 'openai-compatible') return 'External service';
+  return 'Ollama';
 }
 
 async function fetchJson(url, options, timeoutMs) {

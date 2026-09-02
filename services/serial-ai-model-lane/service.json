@@ -19,9 +19,11 @@
   "permissions": {
     "network": {
       "outbound": [
-        "loopback-http"
+        "loopback-http",
+        "external-https"
       ]
-    }
+    },
+    "model_credentials": { "granted": true }
   },
   "ports": {
     "domain": {
@@ -30,6 +32,7 @@
     },
     "control": {
       "accepts": [
+        "ai.provider-configure",
         "ai.work-request",
         "lifecycle.health-check",
         "lifecycle.drain"

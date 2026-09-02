@@ -1,7 +1,7 @@
 import { SerialAiScheduler } from '../../runtime/serial-ai-scheduler.mjs';
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
 import { assertPurposeMatchesWorkload, fingerprintModelRequest, validateModelRequest, validateModelResponse } from '../../contracts/model-protocol.mjs';
-import { readModelConfig } from './model-config.mjs';
+import { normalizeModelProviderSettings, readRuntimeModelConfig } from './model-config.mjs';
 
 const SERVICE = 'serial-ai-model-lane';
 const journal = {
@@ -13,6 +13,11 @@ const journal = {
   }
 };
 
+// The host sends the active configuration over the governed control wire after startup. The
+// legacy environment remains a compatibility default for existing Ollama graphs and tests.
+let activeRuntimeConfig;
+try { activeRuntimeConfig = readRuntimeModelConfig(); } catch { activeRuntimeConfig = undefined; }
+
 const scheduler = await SerialAiScheduler.create({
   journal,
   capacity: 32,
@@ -20,9 +25,10 @@ const scheduler = await SerialAiScheduler.create({
     const request = work.input?.model_request;
     if (!request || request.identity?.work_id !== work.work_id) throw modelFailure('INVALID_MODEL_REQUEST', 'scheduler work must contain a matching provider-neutral model request', 'validation', false);
     try {
-      const config = readModelConfig();
-      if (request.model !== config.modelName) throw modelFailure('MODEL_CONFIGURATION_CONFLICT', 'model request does not match the configured model name', 'validation', false);
-      const response = await requestLocalModel(config, request);
+      const runtime = activeRuntimeConfig;
+      if (!runtime) throw modelFailure('MODEL_PROVIDER_UNAVAILABLE', 'no governed AI provider configuration is active', 'unavailable', false);
+      if (request.model !== runtime.configuration.model) throw modelFailure('MODEL_CONFIGURATION_CONFLICT', 'model request does not match the configured model name', 'validation', false);
+      const response = await requestConfiguredModel(runtime, request);
       return { status: 'succeeded', attempt, response: validateModelResponse(response, request.purpose, request.limits) };
     } catch (error) {
       throw error instanceof ModelRequestError ? error : modelFailure(error.cause?.code || 'MODEL_REQUEST_FAILED', error.message, 'dependency', true);
@@ -31,6 +37,22 @@ const scheduler = await SerialAiScheduler.create({
 });
 
 runLineService({ service: SERVICE, operations: {
+  'ai.provider-configure': { name: 'configure-model-provider', async handle(message) {
+    const payload = message.payload;
+    try {
+      const configuration = normalizeModelProviderSettings(payload?.configuration);
+      const credential = payload?.credential?.provided === true ? payload.credential.value : undefined;
+      if (payload?.credential?.provided === true && (typeof credential !== 'string' || !credential.trim())) {
+        throw modelFailure('MODEL_CREDENTIAL_MISSING', 'the configured external provider credential is empty', 'unavailable', false);
+      }
+      if (configuration.mode === 'local' && credential) throw modelFailure('INVALID_MODEL_PROVIDER_CONFIGURATION', 'local providers may not receive a credential', 'validation', false);
+      activeRuntimeConfig = { configuration, ...(credential ? { credential: credential.trim() } : {}), credential_configured: Boolean(credential) };
+      return [];
+    } catch (error) {
+      if (error instanceof ModelRequestError) throw new ServiceOperationError(error.message, { code: error.code, category: error.category, retryable: error.retryable });
+      throw new ServiceOperationError(error.message, { code: error.cause?.code || error.code || 'INVALID_MODEL_PROVIDER_CONFIGURATION', category: error.cause?.category || 'validation' });
+    }
+  }, traceDetail: () => ({ configuration: 'redacted' }) },
   'ai.work-request': { name: 'schedule-model-work', async handle(message) {
     const work = normalizeWork(message.payload);
     try {
@@ -54,21 +76,30 @@ runLineService({ service: SERVICE, operations: {
   }, traceDetail: (message) => ({ workload: message.payload.workload, scheduler_concurrency: 1, scheduler_work_id: message.payload.work_id }) }
 } });
 
-async function requestLocalModel(config, request) {
+async function requestConfiguredModel(runtime, request) {
+  const config = runtime.configuration;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), config.timeout_ms);
   try {
     let response;
     const requestBody = config.protocol === 'ollama' ? {
-      model: config.modelName,
+      model: config.model,
       stream: false,
       format: 'json',
-      prompt: `Return only a JSON object with exactly {"protocol_version":"1.0.0","purpose":"${request.purpose}","text":"..."}. Do not add markdown or commentary. The following is the governed Argus request; use its authoritative source segments and preserve no fields outside the requested response shape:\n${JSON.stringify(request)}`
+      prompt: ollamaPrompt(request)
+    } : config.protocol === 'openai-compatible' ? {
+      model: config.model,
+      stream: false,
+      temperature: 0,
+      messages: [{ role: 'system', content: modelInstruction(request) }, { role: 'user', content: JSON.stringify(request) }]
     } : request;
+    const headers = { 'content-type': 'application/json' };
+    if (runtime.credential) headers.authorization = `Bearer ${runtime.credential}`;
+    if (config.mode === 'external' && !runtime.credential) throw modelFailure('MODEL_CREDENTIAL_MISSING', 'the selected external provider has no saved API key', 'unavailable', false);
     try {
-      response = await fetch(config.endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requestBody), signal: controller.signal });
+      response = await fetch(config.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal: controller.signal });
     } catch (error) {
-      if (error.name === 'AbortError') throw modelFailure('MODEL_ENDPOINT_TIMEOUT', `model endpoint did not respond within ${config.timeoutMs} ms`, 'timeout', true);
+      if (error.name === 'AbortError') throw modelFailure('MODEL_ENDPOINT_TIMEOUT', `model endpoint did not respond within ${config.timeout_ms} ms`, 'timeout', true);
       throw modelFailure('MODEL_ENDPOINT_UNAVAILABLE', `model endpoint is unavailable: ${error.message}`, 'unavailable', true);
     }
     if (!response.ok) throw modelFailure('MODEL_ENDPOINT_UNAVAILABLE', `model endpoint returned HTTP ${response.status}`, 'unavailable', true);
@@ -76,12 +107,28 @@ async function requestLocalModel(config, request) {
     try {
       const parsed = JSON.parse(body);
       if (config.protocol === 'ollama') return JSON.parse(String(parsed.response || ''));
+      if (config.protocol === 'openai-compatible') {
+        const content = parsed.choices?.[0]?.message?.content;
+        if (typeof content === 'object' && content) return content;
+        return JSON.parse(String(content || ''));
+      }
       return parsed;
     }
     catch { throw modelFailure('MODEL_INVALID_JSON', 'model endpoint returned malformed JSON', 'validation', true); }
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function modelInstruction(request) {
+  const shape = request.purpose === 'classification-enrichment'
+    ? '{"protocol_version":"1.0.0","purpose":"classification-enrichment","suggested_classification":"task|note|observation|idea","confidence":0.0}'
+    : '{"protocol_version":"1.0.0","purpose":"logged-item-extraction","text":"..."}';
+  return `Return only one JSON object with exactly ${shape}. Do not add markdown or commentary. Use only the governed Argus request supplied by the user.`;
+}
+
+function ollamaPrompt(request) {
+  return `${modelInstruction(request)}\nThe following is the governed Argus request; preserve no fields outside the requested response shape:\n${JSON.stringify(request)}`;
 }
 
 function normalizeWork(work) {

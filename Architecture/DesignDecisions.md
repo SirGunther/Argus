@@ -516,7 +516,7 @@ Every service manifest declares an explicit `permissions` block covering filesys
 
 Filesystem authority is declared as a **named host-neutral scope** (`session-root` or the read-only `stt-runtime`), never as a host path, so a manifest cannot express a traversal, an absolute path, or a drive letter, and a future container or native host can map the same scope onto its own mount without changing the manifest. The Node provider maps `stt-runtime` only to the canonical provisioned Whisper executable and model files.
 
-The installed Node host enforces every restriction it can actually enforce — filesystem read, filesystem write, child processes, worker threads, add-ons, WASI, and the declared heap ceiling — by translating the declaration into real `--permission` flags. A capability the host **cannot** enforce is refused at declaration time rather than accepted and simulated, so a declaration never reads as a guarantee the runtime does not deliver. Microphone, clipboard for a component process, model credentials, component listeners, and container-only resource limits are therefore refused outright while `AUD-002`, `SEC-001`, and `CNT-001` remain unresolved.
+The installed Node host enforces every restriction it can actually enforce — filesystem read, filesystem write, child processes, worker threads, add-ons, WASI, and the declared heap ceiling — by translating the declaration into real `--permission` flags. A capability the host **cannot** enforce is refused at declaration time rather than accepted and simulated, so a declaration never reads as a guarantee the runtime does not deliver. Microphone, clipboard for a component process, component listeners, and container-only resource limits are refused outright. Model credentials are the deliberate exception: the Electron host owns an OS-backed secret store and grants them only to the serial model adapter under ADR-020. `AUD-002` and `CNT-001` remain separately governed decisions.
 
 Outbound network is **adapter-enforced, not OS-enforced**. The installed Node build ships no network permission flag; this was verified directly rather than assumed. Loopback-only restriction is enforced at the model configuration boundary and by refusing endpoint configuration unless the scope is declared, and the residual gap is recorded rather than papered over.
 
@@ -548,4 +548,35 @@ The real desktop graph uses Electron microphone capture, whisper.cpp `v1.9.1` wi
 - Packaging is a real Windows application artifact produced by Electron Forge, with an installer, zip, and unpacked executable.
 - Domain contracts and service ownership remain unchanged; the desktop host replaces only the UI/host boundary and supplies a production graph.
 - Physical microphone/model acceptance is still required for accuracy, latency, resource, licensing, and failure evidence.
+
+## ADR-020 — AI provider settings and credentials are host-governed
+
+**Status:** Accepted
+**Date:** 2026-09-01
+
+### Decision
+
+Argus exposes one active AI provider configuration through the Electron settings boundary. Local
+providers are Ollama or LM Studio over loopback HTTP; external providers use the OpenAI-compatible
+JSON adapter over HTTPS. The host validates the endpoint, provider, model, and timeout, persists only
+the non-secret configuration, and sends the active configuration to the existing serial AI lane over
+the explicit `ai.provider-configure` control wire.
+
+External API keys belong to the host. Electron `safeStorage` encrypts the key in a binary credential
+store under the per-user application data directory. The renderer receives only `credential_configured`
+and never receives a saved key; the key is cleared from the settings control after save and is not
+written to localStorage, session files, ordinary JSON configuration, diagnostics, or model-request
+provenance. At runtime, only `serial-ai-model-lane` receives the resolved credential in memory.
+
+Provider configuration precedence is: saved host settings, explicit legacy `ARGUS_MODEL_*` environment
+configuration, provisioned Ollama manifest, then the unconfigured Ollama defaults shown by the UI.
+There is no silent provider fallback. A missing credential, invalid endpoint, unsupported protocol,
+unreachable runtime, or failed connection test produces an unavailable/degraded state.
+
+### Consequences
+
+- Existing provisioned Ollama installations remain the compatible local default.
+- The provider-neutral `ai.work-request` and `ai.work-completed` contracts and the global serial AI scheduler remain unchanged for workloads.
+- The service manifest grants `external-https` and `model_credentials` only to the serial model adapter; the adapter enforces the selected endpoint class because the installed Node runtime has no network permission flag.
+- Provider switching is a host configuration operation and cannot create a renderer-to-model route or bypass the governed AI lane.
 - Credential storage remains unresolved because the selected initial local model path does not require credentials.

@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, session } = require('electron');
 
 const ROOT = path.resolve(__dirname, '..');
 let mainWindow;
@@ -51,11 +51,15 @@ async function createWindow() {
 
 async function start() {
   const { DesktopApplication } = await import('../runtime/desktop-application.mjs');
+  const { createModelProviderSettingsStore, createSafeStorageCredentialStore } = await import('../runtime/model-provider-settings.mjs');
   configurePermissions();
   const sessionRoot = process.env.ARGUS_SESSION_ROOT || path.join(app.getPath('userData'), 'sessions');
   process.env.ARGUS_SESSION_ROOT = sessionRoot;
   const diagnosticsEnabled = shouldEnableDiagnostics();
   process.env.ARGUS_DIAGNOSTICS = diagnosticsEnabled ? '1' : '0';
+  const userData = app.getPath('userData');
+  const providerSettingsStore = createModelProviderSettingsStore({ filePath: path.join(userData, 'argus-ai-provider-settings.json') });
+  const credentialStore = createSafeStorageCredentialStore({ safeStorage, filePath: path.join(userData, 'argus-ai-provider-credential.bin') });
   if (diagnosticsEnabled) {
     const { createDiagnosticFileOutput, installProcessDiagnosticHandlers } = await import('../runtime/diagnostics.mjs');
     const defaultFile = path.join(app.getPath('userData'), 'diagnostics', 'argus-finalization.jsonl');
@@ -66,6 +70,8 @@ async function start() {
     root: ROOT,
     graphFile: path.join(ROOT, 'wiring', 'production-electron.json'),
     sessionRoot,
+    providerSettingsStore,
+    credentialStore,
     environment: process.env,
     diagnosticsEnabled,
     diagnosticsOutput: diagnosticOutput
@@ -86,6 +92,9 @@ async function start() {
   ipcMain.handle('argus.capture-failure', (_event, message) => application.reportCaptureFailure(message));
   ipcMain.handle('argus.shutdown-ready', () => completeShutdown('renderer-ready'));
   ipcMain.handle('argus.capabilities', () => application.capabilitySnapshot());
+  ipcMain.handle('argus.ai-provider-settings', () => application.aiProviderSettings());
+  ipcMain.handle('argus.ai-provider-save', (_event, payload) => application.saveAiProviderSettings(payload));
+  ipcMain.handle('argus.ai-provider-test', (_event, payload) => application.testAiProviderSettings(payload));
 
   await createWindow();
 }

@@ -71,7 +71,7 @@
         "network": {
           "type": "object",
           "properties": {
-            "outbound": { "type": "array", "uniqueItems": true, "items": { "enum": ["loopback-http"] } },
+            "outbound": { "type": "array", "uniqueItems": true, "items": { "enum": ["loopback-http", "external-https"] } },
             "listen": { "type": "boolean" }
           },
           "additionalProperties": false

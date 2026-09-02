@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented as one cohesive batch on 2026-08-22. The browser UI and loopback Node bridge remain the POC host under ADR-017. Every component now declares default-deny authority, the installed Node host enforces the restrictions it can actually enforce, unavailable runtime providers fail closed before launch, and each graph produces a deterministic inspectable package with integrity hashes.
+Implemented as one cohesive batch on 2026-08-22 and extended on 2026-09-01 by ADR-020. The browser UI and loopback Node bridge remain the POC host under ADR-017. Every component now declares default-deny authority, the installed Node host enforces the restrictions it can actually enforce, the Electron host owns encrypted model credentials, unavailable runtime providers fail closed before launch, and each graph produces a deterministic inspectable package with integrity hashes.
 
 This phase does **not** claim native execution, OCI execution, or completed polyglot support. No compiler and no container engine are installed, so `NAT-001` and `CNT-001` proof rows remain unchecked and evidence-triggered.
 
@@ -23,8 +23,8 @@ This phase does **not** claim native execution, OCI execution, or completed poly
 | `filesystem` | `{ read: ["session-root", "stt-runtime"], write: ["session-root"] }` | no scopes |
 | `microphone` | `{ granted: boolean }` | denied |
 | `clipboard` | `{ granted: boolean }` | denied |
-| `network` | `{ outbound: ["loopback-http"], listen: boolean }` | no scopes, no listener |
-| `model_credentials` | `{ granted: boolean }` | denied |
+| `network` | `{ outbound: ["loopback-http", "external-https"], listen: boolean }` | no scopes, no listener |
+| `model_credentials` | `{ granted: boolean }` | denied except for the authorized serial model adapter |
 | `process` | `{ granted: boolean }` | denied |
 | `worker` | `{ granted: boolean }` | denied |
 | `addons` | `{ granted: boolean }` | denied |
@@ -41,7 +41,7 @@ Filesystem authority is declared as a **named scope**, never as a host path. A m
 | `active-transcript-owner`, `active-logged-item-owner`, `permanent-transcript-history`, `permanent-logged-item-history`, `session-lifecycle-controller` | `filesystem` read + write on `session-root` |
 | `session-folder-locator` | `filesystem` read on `session-root` |
 | `whisper-cpp-stt` | `filesystem` read on `session-root` and the exact two-file `stt-runtime` scope; write on `session-root`; child process launch for whisper.cpp |
-| `serial-ai-model-lane` | `network.outbound: loopback-http` |
+| `serial-ai-model-lane` | `network.outbound: loopback-http + external-https`; `model_credentials` |
 | Every other component (16 of 24) | none |
 
 `tests/phase8-permissions-packaging.test.mjs` pins this inventory. Adding a grant to any manifest fails that test until the grant is a deliberate, reviewed decision.
@@ -60,11 +60,11 @@ The installed host is Node 24.11.1. Its permission model exposes `--permission`,
 | `wasi` | **Node-runtime-enforced** | WASI denied without `--allow-wasi` |
 | `resources.max_heap_mb` | **Node-runtime-enforced** | `--max-old-space-size` applies the declared V8 heap ceiling |
 | `environment` | **Adapter-enforced** | the Node provider rebuilds the child environment from the declared allowlist, dropping every other `ARGUS_` variable and every credential-shaped inherited variable |
-| `network.outbound` | **Adapter-enforced** | no network flag exists in this Node build; loopback-only http is enforced at the model configuration boundary and by refusing `ARGUS_MODEL_ENDPOINT` unless the scope is declared |
+| `network.outbound` | **Adapter-enforced** | no network flag exists in this Node build; local loopback HTTP and selected-provider HTTPS are enforced at the model configuration boundary and by requiring the declared scope |
 | `network.listen` | **Deferred** | refused at declaration time; a component listener needs a provider that can bind and restrict sockets |
 | `microphone` | **Deferred** | refused at declaration time; device capture needs a host that owns the device boundary (`AUD-002`) |
 | `clipboard` | **Deferred** | refused at declaration time for components; the host capability adapter behind governed UI commands remains the only clipboard path (ADR-017) |
-| `model_credentials` | **Deferred** | refused at declaration time; no secret store or credential provider is selected (`SEC-001`) |
+| `model_credentials` | **Adapter-enforced** | Electron `safeStorage` encrypts the host-owned credential at rest; only `serial-ai-model-lane` receives it in the runtime configuration control message, and redacted state reaches the renderer |
 | `resources.memory_mb`, `resources.cpu_limit` | **Deferred** | refused outside a container runtime; no OCI engine is installed (`CNT-001`) |
 
 The matrix is exported as `ENFORCEMENT_MATRIX` and asserted by test, including the specific assertion that `network.outbound` is **not** claimed as Node-runtime-enforced. A capability the host cannot enforce is **refused at declaration time** rather than accepted and simulated, so a declaration never reads as a guarantee the runtime does not deliver.
@@ -98,9 +98,9 @@ The existing per-component environment allowlist is preserved and tightened. `bu
 
 - drops every `ARGUS_` variable the component did not declare (previously only `ARGUS_MODEL_*` and `ARGUS_SESSION_ROOT` were filtered);
 - drops every inherited variable whose name is credential-shaped (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, and their plurals), so a credential in the orchestrator's environment cannot reach a component that never declared it;
-- refuses to build an environment at all when a manifest requests a credential-bearing key without a `model_credentials` grant — and that grant is itself refused while `SEC-001` is unresolved.
+- refuses to build an environment at all when a manifest requests a credential-bearing key without a `model_credentials` grant; that grant is reserved for the authorized serial model adapter.
 
-A manifest that allowlists `ARGUS_MODEL_ENDPOINT` without declaring `network.outbound: loopback-http` is rejected: a component may not be configured to reach an endpoint it is not permitted to reach.
+A manifest that allowlists `ARGUS_MODEL_ENDPOINT` without declaring `network.outbound: loopback-http` is rejected: a component may not be configured to reach an endpoint it is not permitted to reach. The only shipped component with `external-https` is the serial model adapter, and its provider boundary rejects external HTTP and local non-loopback endpoints.
 
 The live probe confirms containment end to end. With `ARGUS_MODEL_NAME`, `ARGUS_MODEL_ENDPOINT`, and `DEMO_SERVICE_TOKEN` present in the parent environment, the child received exactly `ARGUS_RESTART_COUNT`, `ARGUS_SERVICE_INSTANCE_ID`, and `ARGUS_SESSION_ROOT`, and no credential-shaped key at all.
 
@@ -165,7 +165,7 @@ The `service_manifest` artifact contract gained a required `permissions` field. 
 
 The production host is implemented in `electron/main.cjs` and uses `ui/desktop-preload.cjs` as a narrow context-isolated bridge. The renderer has no Node integration and receives only validated bootstrap, command, audio-chunk, audio-flush, capture-failure, capability, and projection messages. Electron grants only media/microphone permission requests. `ui/audio-capture.mjs` uses `getUserMedia`, an AudioWorklet resampler, bounded PCM16 transport, SHA-256 chunk checksums, and explicit backpressure failure.
 
-`runtime/interactive-graph.mjs` starts the declared `wiring/production-electron.json` graph through the existing supervised provider boundary. `services/whisper-cpp-stt` invokes the provisioned whisper.cpp binary with session-scoped temporary WAV/JSON files, emits actual partials and token probabilities, and deletes temporary files after each inference. `services/serial-ai-model-lane` keeps the provider-neutral contract and adapts the request/response to Ollama's local generate endpoint when `ARGUS_MODEL_PROTOCOL=ollama`. There is no fake fallback in the desktop path.
+`runtime/interactive-graph.mjs` starts the declared `wiring/production-electron.json` graph through the existing supervised provider boundary. `services/whisper-cpp-stt` invokes the provisioned whisper.cpp binary with session-scoped temporary WAV/JSON files, emits actual partials and token probabilities, and deletes temporary files after each inference. `services/serial-ai-model-lane` keeps the provider-neutral workload contracts and adapts requests to Ollama, LM Studio, or the configured HTTPS OpenAI-compatible endpoint after receiving `ai.provider-configure` from the trusted host. There is no fake fallback in the desktop path.
 
 The Windows artifacts are produced by Electron Forge: Squirrel installer, win32/x64 zip, and unpacked executable. The rebuilt unpacked executable was launched successfully with no inherited `ELECTRON_RUN_AS_NODE` override; it stayed alive with the production graph's supervised service children and was then closed as part of the smoke run. The real dependency setup is intentionally separate because physical-device accuracy, latency, resource, licensing, and Ollama availability remain acceptance evidence rather than claims inferred from a package build.
 
@@ -173,11 +173,11 @@ The Node permission taxonomy is explicit: `node` means enforced by Node's permis
 
 ## Deliberate limits
 
-The Electron host is selected and implemented, but `SEC-001` remains deferred because the initial local model path requires no external credentials. Native and OCI execution remain unproven and evidence-triggered. Remote access, authentication, database-backed global AI journaling, and Phase 9 observability remain out of scope.
+The Electron host is selected and implemented, including the host-encrypted credential path for authenticated external providers. Native and OCI execution remain unproven and evidence-triggered. Database-backed global AI journaling and Phase 9 observability remain out of scope.
 
 The deferred Phase 7A editor-position bug is unchanged and remains open.
 
 Two enforcement claims deserve explicit residual-risk statements:
 
-1. **Network is not OS-enforced.** A component with no declared network scope is not prevented by the operating system from opening a socket. Loopback restriction is enforced by the model configuration boundary and by refusing endpoint configuration without the declared scope. A component that ignored the adapter and used `node:net` directly would not be stopped by this host. Closing that gap requires a provider that can restrict sockets — a container runtime under `CNT-001`, or a future Node build that ships a network permission flag.
+1. **Network is not OS-enforced.** A component with no declared network scope is not prevented by the operating system from opening a socket. Local loopback restriction and external HTTPS/provider scoping are enforced at the model configuration boundary and by refusing endpoint configuration without the declared scope. A component that ignored the adapter and used `node:net` directly would not be stopped by this host. Closing that gap requires a provider that can restrict sockets — a container runtime under `CNT-001`, or a future Node build that ships a network permission flag.
 2. **The test process harness is intentionally outside this boundary.** `tests/helpers/process-harness.mjs` spawns services directly with the full parent environment and no permission flags, because it exercises service logic rather than containment. Containment is proven separately through the real provider in the Phase 8 probes.

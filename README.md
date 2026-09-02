@@ -77,11 +77,11 @@ npm.cmd run demo:ui:smoke
 
 The focused real-Electron corrective checks are agent-verified: New Session projection/control ordering, timer tick/freeze/resume behavior, zero Whisper launches before flush, exactly one launch per flush, control-token filtering, startup recovery, and shutdown ordering all pass in `tests/real-electron-correction.test.mjs`. The source application was launched with `npm.cmd start`; no physical-microphone acceptance is claimed here.
 
-The original browser/Node POC gates remain available, while the standalone Electron integration adds a supervised production graph, real audio/STT/model adapters, and Windows packaging. Native and OCI execution remain unproven and evidence-triggered; physical-device/model acceptance and credential choices remain evidence-driven.
+The original browser/Node POC gates remain available, while the standalone Electron integration adds a supervised production graph, real audio/STT/model adapters, and Windows packaging. Native and OCI execution remain unproven and evidence-triggered; host-encrypted external credentials and physical-device/model acceptance remain evidence-driven.
 
 ## Standalone integration status
 
-The production Electron graph validates with 12 supervised components and 19 explicit wires. Contract governance, generated contract documentation, graph packaging, supervised lifecycle smoke, real dependency provisioning, and the governed New Session lifecycle pass. The remaining acceptance run is external only after packaged startup is repaired: use a physical microphone and Ollama session to measure transcription accuracy, latency, and resource cost.
+The production Electron graph validates with 12 supervised components and an explicit host-to-model provider-configuration wire. Contract governance, generated contract documentation, graph packaging, supervised lifecycle smoke, real dependency provisioning, provider selection, credential redaction, and the governed New Session lifecycle pass. The remaining acceptance run is external only after packaged startup is repaired: use a physical microphone and configured local/external model session to measure transcription accuracy, latency, and resource cost.
 
 ## Included interactions
 
@@ -94,12 +94,13 @@ The production Electron graph validates with 12 supervised components and 19 exp
 - Transcript source ranges on every logged item; selecting a range reveals the contributing transcript rows
 - Top-center notifications that stay clear of incoming live content
 - Session details drawer, identity-only storage capability preview, and finalization confirmation
+- Host-governed AI Provider settings with Local Model and External Service tabs, masked replace/remove credentials, and visible connection results
 - Visible per-capability status for transcript, logged-item pipeline, storage/session, clipboard, folder opening, and optional classification
 - Responsive stacked-pane fallback for narrower windows
 
 The architecture decision record in `Architecture/DesignDecisions.md` explains why extraction and optional classification are separate operations, how idle-time enrichment should work, and which transcript context belongs in each payload.
 
-Copy and open-folder controls are host commands. Copy uses a replaceable operating-system adapter when available; folder opening accepts only a session identity and is visibly unavailable when no authorized desktop/session-root capability is configured. The preload exposes only bootstrap, governed command, audio-chunk, capture-failure, shutdown-handshake, capability, and projection channels; it does not expose Node, filesystem, or process access to the renderer.
+Copy and open-folder controls are host commands. Copy uses a replaceable operating-system adapter when available; folder opening accepts only a session identity and is visibly unavailable when no authorized desktop/session-root capability is configured. The preload exposes only bootstrap, governed command, audio-chunk, capture-failure, shutdown-handshake, capability, projection, and redacted host-provider settings channels; it does not expose Node, filesystem, credentials, or process access to the renderer.
 
 ## Executable architecture experiment
 
@@ -128,10 +129,10 @@ It demonstrates:
 - Phase 4E replay-safe transcription/history and same-process Stop/Resume-compatible ownership evidence, with the unproven active-history bound stated explicitly;
 - Phase 4F deterministic inline-base64 transport measurements, bounded-queue evidence, and explicit oversized-contract rejection without production thresholds.
 - Phase 5A deterministic logged-item ownership with stable context identity, exact source provenance, separate active/history owners, user-authoritative proposals, and an explicit evidence observer.
-- Phase 5B/5B.1 provider-neutral loopback-only HTTP extraction through a graph-local concurrency-one model lane, governed model request/result protocol, exact context/budget enforcement, explicit retryable failure, bounded pending state, scoped model configuration, and optional revision-bound classification.
+- Phase 5B/5B.1 provider-neutral extraction through a graph-local concurrency-one model lane, governed model request/result protocol, exact context/budget enforcement, explicit retryable failure, bounded pending state, host-governed Ollama/LM Studio/local loopback and external HTTPS configuration, and optional revision-bound classification.
 - Phase 7 browser-facing projection contracts for session status, transcript rows, logged-item rows/provenance, command results, and per-capability status;
 - a loopback-only deterministic HTTP/SSE UI bridge with allowlisted static files, inbound command validation, projection validation, owner-routed revision checks, capability adapters, and no arbitrary file route.
-- Phase 8 default-deny component permissions covering filesystem, microphone, clipboard, network, model credentials, child processes, worker threads, native add-ons, and WASI, where an unstated authority is a denied authority;
+- Phase 8 default-deny component permissions covering filesystem, microphone, clipboard, network, model credentials, child processes, worker threads, native add-ons, and WASI, where an unstated authority is a denied authority and model credentials are reserved for the serial model adapter;
 - Node-enforced filesystem, child-process, worker, add-on, WASI, and heap restrictions generated from those declarations, with adapter-enforced environment/credential containment and an honest record of what the host cannot enforce;
 - fail-closed refusal of unavailable `native` and `container` providers and of any capability no installed provider can honor, before a process launches;
 - deterministic inspectable graph packages recording manifests, contracts, component files, versions, and integrity hashes, with path-escape, undeclared-file, secret, and integrity-drift refusals.
@@ -144,7 +145,7 @@ Phase 3 identity, ordering, optimistic revision, stale-result, and AI-lane guara
 
 Phase 4A's accepted semantics are recorded in `Architecture/DesignDecisions.md`; Phase 4B boundaries are in `Architecture/TranscriptContractsAndOwnership.md`; Phase 4C's executable working-document proof is in `Architecture/TranscriptPipelinePhase4CEvidence.md`; Phase 4D context selection and replacement evidence are in `Architecture/TranscriptContextPhase4DEvidence.md`; Phase 4E's seven completed claims and one precise limitation are in `Architecture/TranscriptBehaviorPhase4EEvidence.md`; Phase 4F transport evidence is in `Architecture/TranscriptTransportPhase4FEvidence.md`. All unresolved package, SDK, provider, transport, storage, threshold, and desktop-host choices are tracked centrally in `PENDING-DECISIONS.md`.
 
-Phase 8 permission, enforcement-matrix, fail-closed provider, and packaging evidence is in `Architecture/PermissionsPackagingPhase8Evidence.md`; ADR-018 records that authority is declared, denied by default, and never simulated. Node-runtime restrictions are labeled as Node-runtime-enforced; outbound network is adapter-enforced because the installed Node build ships no network permission flag.
+Phase 8 permission, enforcement-matrix, fail-closed provider, and packaging evidence is in `Architecture/PermissionsPackagingPhase8Evidence.md`; ADR-018 records that authority is declared, denied by default, and never simulated, while ADR-020 records the host-governed provider and credential boundary. Node-runtime restrictions are labeled as Node-runtime-enforced; outbound network is adapter-enforced because the installed Node build ships no network permission flag.
 
 Phase 5A logged-item ownership evidence is in `Architecture/LoggedItemPipelinePhase5AEvidence.md`. Phase 5B/5B.1 local model and classification evidence is in `Architecture/LoggedItemModelPhase5BEvidence.md`; the standalone path selects Ollama `llama3.2:3b` while the durable globally shared AI journal remains deferred. Phase 7 UI boundary evidence is in `Architecture/UiBoundaryPhase7Evidence.md`; ADR-019 records Electron as the standalone host. `UI-001` and `UI-002` remain evidence-driven product decisions.
 

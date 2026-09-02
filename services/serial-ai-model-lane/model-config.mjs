@@ -1,3 +1,5 @@
+import { normalizeModelProviderSettings, settingsFromLegacyEnvironment, settingsForRuntime } from '../../runtime/model-provider-settings.mjs';
+
 export function readModelConfig(env = process.env) {
   const endpoint = String(env.ARGUS_MODEL_ENDPOINT || '').trim();
   const modelName = String(env.ARGUS_MODEL_NAME || '').trim();
@@ -15,5 +17,14 @@ export function readModelConfig(env = process.env) {
   if (!['provider-neutral-json', 'ollama'].includes(protocol)) throw configurationError('ARGUS_MODEL_PROTOCOL must be provider-neutral-json or ollama');
   return Object.freeze({ endpoint: url.href, modelName, timeoutMs: Number(timeoutText), protocol });
 }
+
+/** Legacy environment compatibility for deterministic graphs and existing Ollama installs. */
+export function readRuntimeModelConfig(env = process.env) {
+  const settings = settingsFromLegacyEnvironment(env);
+  if (!settings) return undefined;
+  return settingsForRuntime(settings, env.ARGUS_MODEL_API_KEY);
+}
+
+export { normalizeModelProviderSettings };
 
 function configurationError(message) { return new Error(message, { cause: { code: 'INVALID_MODEL_CONFIGURATION', category: 'validation' } }); }
