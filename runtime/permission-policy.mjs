@@ -33,7 +33,8 @@ export const PERMISSION_CLASSES = Object.freeze([
 /** Only host-neutral named scopes are declarable; raw host paths are never accepted from a manifest. */
 export const FILESYSTEM_SCOPES = Object.freeze(['session-root', 'stt-runtime']);
 export const FILESYSTEM_WRITE_SCOPES = Object.freeze(['session-root']);
-export const NETWORK_OUTBOUND_SCOPES = Object.freeze(['loopback-http']);
+export const NETWORK_OUTBOUND_SCOPES = Object.freeze(['loopback-http', 'external-https']);
+export const MODEL_ADAPTER_SERVICE = 'serial-ai-model-lane';
 
 /**
  * Every environment key a Node component may request, and what that key implies.
@@ -172,13 +173,16 @@ export function assertPermissionPolicy({ manifest, manifestPath = '<manifest>' }
   if (permissions.clipboard.granted) {
     violations.push('clipboard access cannot be granted to a component process: the clipboard stays behind the host capability adapter reached through governed UI commands (ADR-017)');
   }
-  if (permissions.model_credentials.granted) {
-    violations.push('model credentials cannot be granted: no secret store or credential provider is selected (SEC-001 remains deferred)');
+  if (permissions.model_credentials.granted && manifest.service_name !== MODEL_ADAPTER_SERVICE) {
+    violations.push(`model credentials cannot be granted to ${manifest.service_name}: only the authorized serial model adapter may hold the host credential`);
   }
 
   for (const scope of permissions.network.outbound) {
     if (!NETWORK_OUTBOUND_SCOPES.includes(scope)) {
       violations.push(`network.outbound scope ${scope} is not declarable; supported scopes are ${NETWORK_OUTBOUND_SCOPES.join(', ')}`);
+    }
+    if (scope === 'external-https' && manifest.service_name !== MODEL_ADAPTER_SERVICE) {
+      violations.push(`network.outbound external-https is reserved for the authorized serial model adapter; ${manifest.service_name} cannot request external model access`);
     }
   }
   if (permissions.network.listen) {
@@ -263,7 +267,7 @@ export function resolveNodePermissionPlan({
   if (resources.max_heap_mb !== null) execArgv.push(`--max-old-space-size=${resources.max_heap_mb}`);
 
   if (permissions.network.outbound.length) {
-    unenforced.push('network.outbound is adapter-enforced: the installed Node build exposes no network permission flag, so loopback-only restriction is proven at the model configuration boundary instead of by the operating system');
+    unenforced.push('network.outbound is adapter-enforced: the installed Node build exposes no network permission flag, so loopback-http and bounded external-https access are proven at the model configuration boundary instead of by the operating system');
   }
 
   return Object.freeze({
@@ -291,11 +295,11 @@ export const ENFORCEMENT_MATRIX = Object.freeze([
   Object.freeze({ capability: 'wasi', enforcement: 'node', mechanism: 'Node --permission denies WASI unless --allow-wasi is granted' }),
   Object.freeze({ capability: 'resources.max_heap_mb', enforcement: 'node', mechanism: 'Node --max-old-space-size applies the declared V8 heap ceiling' }),
   Object.freeze({ capability: 'environment', enforcement: 'adapter', mechanism: 'the Node provider rebuilds the child environment from the declared allowlist and drops every other ARGUS_ variable and every credential-shaped inherited variable' }),
-  Object.freeze({ capability: 'network.outbound', enforcement: 'adapter', mechanism: 'the installed Node build has no network permission flag; loopback-only http is enforced by the model configuration boundary and by refusing ARGUS_MODEL_ENDPOINT without the declared scope' }),
+  Object.freeze({ capability: 'network.outbound', enforcement: 'adapter', mechanism: 'the installed Node build has no network permission flag; the model adapter allows loopback-http for local providers and HTTPS only for the selected external provider, with manifest scopes required' }),
   Object.freeze({ capability: 'network.listen', enforcement: 'deferred', mechanism: 'refused at declaration time; a component listener would need a provider that can bind and restrict sockets' }),
   Object.freeze({ capability: 'microphone', enforcement: 'deferred', mechanism: 'refused at declaration time; device capture needs a host that owns the device boundary (AUD-002)' }),
   Object.freeze({ capability: 'clipboard', enforcement: 'deferred', mechanism: 'refused at declaration time for components; the host capability adapter behind governed UI commands remains the only clipboard path (ADR-017)' }),
-  Object.freeze({ capability: 'model_credentials', enforcement: 'deferred', mechanism: 'refused at declaration time; no secret store or credential provider is selected (SEC-001)' }),
+  Object.freeze({ capability: 'model_credentials', enforcement: 'adapter', mechanism: 'Electron safeStorage encrypts the host-owned credential at rest and injects it only into the serial model adapter at runtime; renderer, config, diagnostics, and provenance receive redacted state' }),
   Object.freeze({ capability: 'resources.memory_mb', enforcement: 'deferred', mechanism: 'refused outside a container runtime; no OCI engine is installed (CNT-001)' }),
   Object.freeze({ capability: 'resources.cpu_limit', enforcement: 'deferred', mechanism: 'refused outside a container runtime; no OCI engine is installed (CNT-001)' })
 ]);

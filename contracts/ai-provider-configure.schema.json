@@ -1,0 +1,31 @@
+{
+  "$id": "argus.ai-provider-configure.v1",
+  "type": "object",
+  "required": ["configuration", "credential"],
+  "properties": {
+    "configuration": {
+      "type": "object",
+      "required": ["version", "mode", "provider", "endpoint", "model", "protocol", "timeout_ms"],
+      "properties": {
+        "version": { "const": 1 },
+        "mode": { "enum": ["local", "external"] },
+        "provider": { "enum": ["ollama", "lm-studio", "openai-compatible"] },
+        "endpoint": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "protocol": { "enum": ["ollama", "openai-compatible", "provider-neutral-json"] },
+        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 120000 }
+      },
+      "additionalProperties": false
+    },
+    "credential": {
+      "type": "object",
+      "required": ["provided"],
+      "properties": {
+        "provided": { "type": "boolean" },
+        "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

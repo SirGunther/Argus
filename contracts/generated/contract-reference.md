@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.11.0`
+- Catalog version: `1.12.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -32,6 +32,7 @@
 | `operation.rejected` | control | `1.2.0` | `runtime/operation-outcomes` | 16 KiB |
 | `ai.work-request` | control | `1.4.0` | `runtime/ai-scheduling` | 256 KiB |
 | `ai.work-completed` | control | `1.4.0` | `runtime/ai-scheduling` | 256 KiB |
+| `ai.provider-configure` | control | `1.0.0` | `runtime/ai-provider-settings` | 8 KiB |
 | `logged-item.update` | domain | `1.3.0` | `logged-items/active-owner` | 64 KiB |
 | `classification.suggestion` | domain | `1.2.0` | `logged-items/classification` | 64 KiB |
 | `classification.suggestion-accepted` | domain | `1.2.0` | `logged-items/storage` | 64 KiB |
@@ -431,6 +432,20 @@
 | `attempt` | yes | integer | minimum 1 |
 | `completed_at` | yes | string | min length 1 |
 | `result` | yes | any | — |
+
+## `ai.provider-configure`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `runtime/ai-provider-settings`
+- Schema: [`ai-provider-configure.schema.json`](../ai-provider-configure.schema.json)
+- History: [`history/ai.provider-configure.md`](../history/ai.provider-configure.md)
+- Maximum payload: 8 KiB (8192 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `configuration` | yes | object | requires `version`, `mode`, `provider`, `endpoint`, `model`, `protocol`, `timeout_ms` |
+| `credential` | yes | object | requires `provided` |
 
 ## `logged-item.update`
 

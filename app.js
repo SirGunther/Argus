@@ -13,7 +13,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   const AUDIO_INPUT_STORAGE_KEY = 'argus.selected-audio-input-device';
   const ui = createUiState();
   const desktop = window.argus || null;
-  const state = { session: null, transcript: [], derived: [], liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null };
+  const state = { session: null, transcript: [], derived: [], liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null, aiProvider: null, aiProviderTab: 'local', aiProviderSaving: false };
   const timer = createSessionTimer();
   const STARTING_TIMEOUT_MS = 15000;
   const audioInput = { devices: [], selectedDeviceId: readRememberedAudioInput(), refreshing: false, initialized: false, ready: false, message: 'Checking microphone access...', tone: '' };
@@ -29,7 +29,8 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     saveStatus: document.querySelector('#saveStatus'), saveStatusText: document.querySelector('#saveStatusText'), transcriptJump: document.querySelector('#transcriptJump'), derivedJump: document.querySelector('#derivedJump'), transcriptNewCount: document.querySelector('#transcriptNewCount'), derivedNewCount: document.querySelector('#derivedNewCount'),
     sessionDrawer: document.querySelector('#sessionDrawer'), closeModal: document.querySelector('#closeModal'), drawerState: document.querySelector('#drawerState'), drawerDuration: document.querySelector('#drawerDuration'), drawerEntries: document.querySelector('#drawerEntries'), finalTranscriptCount: document.querySelector('#finalTranscriptCount'), finalDerivedCount: document.querySelector('#finalDerivedCount'), toastRegion: document.querySelector('#toastRegion'), serviceStatusList: document.querySelector('#serviceStatusList'), systemStatusSummary: document.querySelector('#systemStatusSummary'), systemStatusIndicator: document.querySelector('#systemStatusIndicator'),
     audioInputDetails: document.querySelector('#audioInputDetails'), audioInputControl: document.querySelector('#audioInputControl'), audioInputSelect: document.querySelector('#audioInputSelect'), audioInputRefresh: document.querySelector('#audioInputRefresh'), audioInputStatus: document.querySelector('#audioInputStatus'), audioInputSummary: document.querySelector('#audioInputSummary'),
-    includeTimestamps: document.querySelector('#includeTimestamps'), sessionDetailsButton: document.querySelector('#sessionDetailsButton'), openFolderButton: document.querySelector('#openFolderButton'), drawerFolderButton: document.querySelector('#drawerFolderButton'), copyPathButton: document.querySelector('#copyPathButton'), confirmCloseButton: document.querySelector('#confirmCloseButton')
+    includeTimestamps: document.querySelector('#includeTimestamps'), sessionDetailsButton: document.querySelector('#sessionDetailsButton'), openFolderButton: document.querySelector('#openFolderButton'), drawerFolderButton: document.querySelector('#drawerFolderButton'), copyPathButton: document.querySelector('#copyPathButton'), confirmCloseButton: document.querySelector('#confirmCloseButton'),
+    aiProviderButton: document.querySelector('#aiProviderButton'), aiProviderDrawer: document.querySelector('#aiProviderDrawer'), aiProviderActive: document.querySelector('#aiProviderActive'), localModelTab: document.querySelector('#localModelTab'), externalServiceTab: document.querySelector('#externalServiceTab'), localModelPanel: document.querySelector('#localModelPanel'), externalServicePanel: document.querySelector('#externalServicePanel'), localProviderSelect: document.querySelector('#localProviderSelect'), localEndpointInput: document.querySelector('#localEndpointInput'), localModelInput: document.querySelector('#localModelInput'), testLocalConnectionButton: document.querySelector('#testLocalConnectionButton'), localConnectionStatus: document.querySelector('#localConnectionStatus'), externalProviderSelect: document.querySelector('#externalProviderSelect'), externalEndpointInput: document.querySelector('#externalEndpointInput'), externalModelInput: document.querySelector('#externalModelInput'), externalApiKeyInput: document.querySelector('#externalApiKeyInput'), externalCredentialStatus: document.querySelector('#externalCredentialStatus'), removeApiKeyButton: document.querySelector('#removeApiKeyButton'), testExternalConnectionButton: document.querySelector('#testExternalConnectionButton'), externalConnectionStatus: document.querySelector('#externalConnectionStatus'), aiProviderSaveStatus: document.querySelector('#aiProviderSaveStatus'), saveAiProviderButton: document.querySelector('#saveAiProviderButton')
   };
 
   assertRequiredBindings(els);
@@ -593,6 +594,134 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     renderSystemStatusSummary();
   }
 
+  function renderAiProviderSettings() {
+    const settings = state.aiProvider;
+    if (!settings) return;
+    const local = settings.mode === 'local' ? settings : { provider: 'ollama', endpoint: 'http://127.0.0.1:11434/api/generate', model: 'llama3.2:3b' };
+    const external = settings.mode === 'external' ? settings : { provider: 'openai-compatible', endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini' };
+    els.localProviderSelect.value = local.provider;
+    els.localEndpointInput.value = local.endpoint;
+    els.localModelInput.value = local.model;
+    els.externalProviderSelect.value = external.provider;
+    els.externalEndpointInput.value = external.endpoint;
+    els.externalModelInput.value = external.model;
+    // Never hydrate the password control. A saved credential is represented only by a boolean.
+    els.externalApiKeyInput.value = '';
+    els.externalApiKeyInput.placeholder = settings.credential_configured ? 'Saved on host · enter to replace' : 'Enter API key';
+    els.externalCredentialStatus.textContent = settings.credential_configured ? 'API key saved in host credential storage' : 'No API key saved';
+    els.aiProviderActive.textContent = settings.configured
+      ? `Active: ${settings.mode === 'local' ? 'Local' : 'External'} · ${providerLabel(settings.provider)} · ${settings.model}`
+      : `Preview: ${providerLabel(settings.provider)} · ${settings.model} (not active until saved)`;
+    els.aiProviderSaveStatus.textContent = settings.status?.message || '';
+    updateProviderTabVisibility();
+  }
+
+  function providerLabel(provider) {
+    return provider === 'ollama' ? 'Ollama' : provider === 'lm-studio' ? 'LM Studio' : 'OpenAI-compatible';
+  }
+
+  function updateProviderTabVisibility() {
+    const local = state.aiProviderTab === 'local';
+    els.localModelTab.classList.toggle('active', local);
+    els.externalServiceTab.classList.toggle('active', !local);
+    els.localModelTab.setAttribute('aria-selected', String(local));
+    els.externalServiceTab.setAttribute('aria-selected', String(!local));
+    els.localModelPanel.hidden = !local;
+    els.externalServicePanel.hidden = local;
+  }
+
+  function providerDraft(mode) {
+    const external = mode === 'external';
+    const draft = {
+      mode,
+      provider: external ? els.externalProviderSelect.value : els.localProviderSelect.value,
+      endpoint: external ? els.externalEndpointInput.value.trim() : els.localEndpointInput.value.trim(),
+      model: external ? els.externalModelInput.value.trim() : els.localModelInput.value.trim(),
+      protocol: external || els.localProviderSelect.value === 'lm-studio' ? 'openai-compatible' : 'ollama',
+      timeout_ms: 120000
+    };
+    const apiKey = els.externalApiKeyInput.value.trim();
+    if (external && apiKey) draft.api_key = apiKey;
+    return draft;
+  }
+
+  async function loadAiProviderSettings() {
+    if (!desktop?.aiProviderSettings) return;
+    try {
+      state.aiProvider = await desktop.aiProviderSettings();
+      renderAiProviderSettings();
+    } catch (error) {
+      els.aiProviderSaveStatus.textContent = `Settings unavailable · ${error.message}`;
+      els.aiProviderSaveStatus.className = 'provider-save-status error';
+    }
+  }
+
+  async function testAiProvider(mode, button, statusElement) {
+    if (!desktop?.testAiProviderSettings) {
+      statusElement.className = 'provider-test-status error';
+      statusElement.textContent = 'Connection testing is available in the desktop host.';
+      return;
+    }
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Testing…';
+    statusElement.className = 'provider-test-status';
+    statusElement.textContent = 'Checking selected endpoint and model…';
+    try {
+      const result = await desktop.testAiProviderSettings(providerDraft(mode));
+      statusElement.className = `provider-test-status ${result.status === 'available' ? 'success' : 'error'}`;
+      statusElement.textContent = result.message;
+    } catch (error) {
+      statusElement.className = 'provider-test-status error';
+      statusElement.textContent = error.message;
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  async function saveAiProvider(removeCredential = false) {
+    if (!desktop?.saveAiProviderSettings || state.aiProviderSaving) return;
+    const mode = state.aiProviderTab;
+    const payload = providerDraft(mode);
+    if (removeCredential) delete payload.api_key;
+    if (removeCredential) payload.remove_api_key = true;
+    state.aiProviderSaving = true;
+    els.saveAiProviderButton.disabled = true;
+    els.removeApiKeyButton.disabled = true;
+    els.aiProviderSaveStatus.className = 'provider-save-status';
+    els.aiProviderSaveStatus.textContent = 'Saving host-owned settings…';
+    try {
+      state.aiProvider = await desktop.saveAiProviderSettings(payload);
+      els.externalApiKeyInput.value = '';
+      els.localConnectionStatus.textContent = '';
+      els.externalConnectionStatus.textContent = '';
+      renderAiProviderSettings();
+      showToast('AI Provider settings saved', 'success');
+    } catch (error) {
+      els.aiProviderSaveStatus.className = 'provider-save-status error';
+      els.aiProviderSaveStatus.textContent = `Settings were not saved · ${error.message}`;
+      showToast(`AI Provider settings failed · ${error.message}`, 'error');
+    } finally {
+      state.aiProviderSaving = false;
+      els.saveAiProviderButton.disabled = false;
+      els.removeApiKeyButton.disabled = false;
+    }
+  }
+
+  function openAiProviderDrawer() {
+    els.aiProviderDrawer.classList.add('open');
+    els.aiProviderDrawer.setAttribute('aria-hidden', 'false');
+    els.aiProviderButton.setAttribute('aria-expanded', 'true');
+    els.localModelTab.focus();
+  }
+
+  function closeAiProviderDrawer() {
+    els.aiProviderDrawer.classList.remove('open');
+    els.aiProviderDrawer.setAttribute('aria-hidden', 'true');
+    els.aiProviderButton.setAttribute('aria-expanded', 'false');
+  }
+
   function setBridgeStatus(status, message) {
     const previous = state.services.get('bridge');
     state.services.set('bridge', { capability: 'bridge', status, message, retryable: status !== 'available', updated_at: new Date().toISOString() });
@@ -777,7 +906,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     updateJumpButton(kind);
   }
 
-  function renderAll() { renderRows('transcript'); renderLiveTranscript(); renderRows('derived'); updateCounts(); renderSession(); renderServices(); }
+  function renderAll() { renderRows('transcript'); renderLiveTranscript(); renderRows('derived'); updateCounts(); renderSession(); renderServices(); renderAiProviderSettings(); }
 
   function showToast(message, tone = 'success') {
     const toast = document.createElement('div');
@@ -803,6 +932,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
         const bootstrap = await desktop.bootstrap();
         state.newSession = Boolean(bootstrap.new_session);
         bootstrap.projections.forEach((message) => receive(message, { bootstrap: true }));
+        await loadAiProviderSettings();
         unsubscribeProjection = desktop.onProjection((message) => receive(message));
         state.ready = true;
         setBridgeStatus('available', 'Electron host connected; governed projections and commands are live.');
@@ -854,6 +984,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   document.querySelectorAll('.batch-copy-button').forEach((button) => button.addEventListener('click', () => sendCopy(button.dataset.kind, selectedIds(button.dataset.kind), button)));
   document.querySelectorAll('.jump-live').forEach((button) => button.addEventListener('click', () => scrollToLive(button.dataset.kind)));
   document.querySelectorAll('[data-close-drawer]').forEach((button) => button.addEventListener('click', closeDrawer));
+  document.querySelectorAll('[data-close-ai-provider]').forEach((button) => button.addEventListener('click', closeAiProviderDrawer));
   document.querySelectorAll('[data-close-modal]').forEach((button) => button.addEventListener('click', closeCloseModal));
   els.recordButton.addEventListener('click', () => sendSessionCommand('session.record'));
   els.stopButton.addEventListener('click', () => sendSessionCommand('session.stop'));
@@ -868,7 +999,23 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   els.drawerFolderButton.addEventListener('click', () => postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: 'open-folder' }));
   els.copyPathButton.addEventListener('click', () => postCommand({ command_id: createCommandId(), session_id: state.session.session_id, command: 'copy-session-path' }));
   els.confirmCloseButton.addEventListener('click', () => { closeCloseModal(); sendSessionCommand('session.close'); });
-  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeDrawer(); closeCloseModal(); } });
+  els.aiProviderButton.addEventListener('click', openAiProviderDrawer);
+  els.localModelTab.addEventListener('click', () => { state.aiProviderTab = 'local'; updateProviderTabVisibility(); });
+  els.externalServiceTab.addEventListener('click', () => { state.aiProviderTab = 'external'; updateProviderTabVisibility(); });
+  els.localProviderSelect.addEventListener('change', () => {
+    if (els.localProviderSelect.value === 'ollama') {
+      els.localEndpointInput.value = 'http://127.0.0.1:11434/api/generate';
+      if (!els.localModelInput.value || els.localModelInput.value === 'local-model') els.localModelInput.value = 'llama3.2:3b';
+    } else {
+      els.localEndpointInput.value = 'http://127.0.0.1:1234/v1/chat/completions';
+      if (!els.localModelInput.value || els.localModelInput.value === 'llama3.2:3b') els.localModelInput.value = 'local-model';
+    }
+  });
+  els.testLocalConnectionButton.addEventListener('click', () => { void testAiProvider('local', els.testLocalConnectionButton, els.localConnectionStatus); });
+  els.testExternalConnectionButton.addEventListener('click', () => { void testAiProvider('external', els.testExternalConnectionButton, els.externalConnectionStatus); });
+  els.removeApiKeyButton.addEventListener('click', () => { void saveAiProvider(true); });
+  els.saveAiProviderButton.addEventListener('click', () => { void saveAiProvider(); });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeDrawer(); closeAiProviderDrawer(); closeCloseModal(); } });
   timerInterval = setInterval(() => { if (state.session?.state === 'recording' && !['session.stop', 'session.close'].includes(state.sessionAction)) renderSession(); }, 1000);
   if (desktop) desktop.onShutdown(async () => {
     try {

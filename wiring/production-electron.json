@@ -9,7 +9,7 @@
     "queue": { "capacity": 32, "overflow": "fail" }
   },
   "runtime_components": [
-    { "id": "@desktop-controller", "kind": "input-source", "ports": { "domain": { "accepts": [], "emits": ["audio.chunk", "audio.flush", "audio.preview", "transcript.segment-update", "logged-item.update"] }, "control": { "accepts": [], "emits": ["session.record", "session.stop", "session.resume", "session.close"] } } },
+    { "id": "@desktop-controller", "kind": "input-source", "ports": { "domain": { "accepts": [], "emits": ["audio.chunk", "audio.flush", "audio.preview", "transcript.segment-update", "logged-item.update"] }, "control": { "accepts": [], "emits": ["session.record", "session.stop", "session.resume", "session.close", "ai.provider-configure"] } } },
     { "id": "@session-controller", "kind": "session-controller", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": [], "emits": ["lifecycle.start"] } } },
     { "id": "@supervisor", "kind": "supervisor", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": ["service.failure", "service.health", "service.drained", "operation.completed", "operation.rejected", "service.exited"], "emits": ["lifecycle.health-check", "lifecycle.drain", "dead-letter.message"] } } },
     { "id": "@runtime-provider", "kind": "runtime-provider", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": [], "emits": ["service.exited", "service.failure"] } } },
@@ -63,6 +63,7 @@
     { "from": "@desktop-controller", "contract": "session.stop", "to": "session-lifecycle" },
     { "from": "@desktop-controller", "contract": "session.resume", "to": "session-lifecycle" },
     { "from": "@desktop-controller", "contract": "session.close", "to": "session-lifecycle" },
+    { "from": "@desktop-controller", "contract": "ai.provider-configure", "to": "model-lane" },
     { "from": "log-extractor", "contract": "ai.work-request", "to": "model-lane" },
     { "from": "model-lane", "contract": "ai.work-completed", "to": "log-extractor" },
     { "from": "@session-controller", "contract": "lifecycle.start", "to": "context-policy" },

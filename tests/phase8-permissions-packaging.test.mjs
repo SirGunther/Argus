@@ -44,7 +44,7 @@ const EXPECTED_SHIPPED_GRANTS = {
   'session-lifecycle-controller': { filesystem: { read: ['session-root'], write: ['session-root'] } },
   'session-folder-locator': { filesystem: { read: ['session-root'], write: [] } },
   'whisper-cpp-stt': { filesystem: { read: ['session-root', 'stt-runtime'], write: ['session-root'] }, process: { granted: true } },
-  'serial-ai-model-lane': { network: { outbound: ['loopback-http'], listen: false } }
+  'serial-ai-model-lane': { network: { outbound: ['external-https', 'loopback-http'], listen: false }, model_credentials: { granted: true } }
 };
 
 test('an unstated permission is a denied permission', () => {

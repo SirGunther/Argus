@@ -43,6 +43,9 @@
           <button class="icon-button close-session-button" id="closeSessionButton" type="button" title="Close session" aria-label="Close session">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" /></svg>
           </button>
+          <button class="icon-button ai-provider-button" id="aiProviderButton" type="button" title="AI Provider settings" aria-label="Open AI Provider settings">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 2h4l.6 2.1a6.4 6.4 0 0 1 1.6.9l2.1-.6 2 3.4-1.5 1.5a6.6 6.6 0 0 1 0 1.8l1.5 1.5-2 3.4-2.1-.6a6.4 6.4 0 0 1-1.6.9L12 18H8l-.6-2.1a6.4 6.4 0 0 1-1.6-.9l-2.1.6-2-3.4 1.5-1.5a6.6 6.6 0 0 1 0-1.8L1.7 7.8l2-3.4 2.1.6a6.4 6.4 0 0 1 1.6-.9L8 2Z"/><circle cx="10" cy="10" r="2.2"/></svg>
+          </button>
         </div>
       </header>
 
@@ -236,6 +239,64 @@
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6.5h5l1.5 2H17v6.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6.5Z"/><path d="M3 9h14"/></svg>
           Open session folder
         </button>
+      </div>
+    </aside>
+
+    <aside class="settings-drawer" id="aiProviderDrawer" aria-hidden="true" aria-labelledby="aiProviderDrawerTitle">
+      <div class="drawer-scrim" data-close-ai-provider></div>
+      <div class="drawer-panel settings-panel">
+        <div class="drawer-header">
+          <div>
+            <span class="eyebrow">GOVERNED CONFIGURATION</span>
+            <h2 id="aiProviderDrawerTitle">AI Provider</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-ai-provider aria-label="Close AI Provider settings">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" /></svg>
+          </button>
+        </div>
+        <p class="settings-intro">Choose the single provider used by Argus&rsquo;s serial AI lane. Credentials stay with the host and are never shown after saving.</p>
+        <div class="provider-active-card" id="aiProviderActive" role="status">No provider configuration is active.</div>
+        <div class="provider-tabs" role="tablist" aria-label="AI Provider type">
+          <button class="provider-tab active" id="localModelTab" type="button" role="tab" aria-selected="true" aria-controls="localModelPanel" data-provider-tab="local">Local Model</button>
+          <button class="provider-tab" id="externalServiceTab" type="button" role="tab" aria-selected="false" aria-controls="externalServicePanel" data-provider-tab="external">External Service</button>
+        </div>
+        <section class="provider-panel" id="localModelPanel" role="tabpanel" aria-labelledby="localModelTab">
+          <label class="settings-field" for="localProviderSelect">Local provider
+            <select id="localProviderSelect">
+              <option value="ollama">Ollama</option>
+              <option value="lm-studio">LM Studio</option>
+            </select>
+          </label>
+          <label class="settings-field" for="localEndpointInput">Endpoint
+            <input id="localEndpointInput" type="url" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="settings-field" for="localModelInput">Model
+            <input id="localModelInput" type="text" spellcheck="false" autocomplete="off" />
+          </label>
+          <button class="button button-secondary provider-test-button" id="testLocalConnectionButton" type="button">Test Connection</button>
+          <div class="provider-test-status" id="localConnectionStatus" role="status" aria-live="polite"></div>
+        </section>
+        <section class="provider-panel" id="externalServicePanel" role="tabpanel" aria-labelledby="externalServiceTab" hidden>
+          <label class="settings-field" for="externalProviderSelect">External provider
+            <select id="externalProviderSelect"><option value="openai-compatible">OpenAI-compatible / custom HTTPS</option></select>
+          </label>
+          <label class="settings-field" for="externalEndpointInput">Endpoint
+            <input id="externalEndpointInput" type="url" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="settings-field" for="externalModelInput">Model
+            <input id="externalModelInput" type="text" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="settings-field" for="externalApiKeyInput">API key
+            <input id="externalApiKeyInput" type="password" spellcheck="false" autocomplete="new-password" placeholder="Enter to replace saved key" />
+          </label>
+          <div class="credential-row"><span id="externalCredentialStatus">No API key saved</span><button class="text-button" id="removeApiKeyButton" type="button">Remove key</button></div>
+          <button class="button button-secondary provider-test-button" id="testExternalConnectionButton" type="button">Test Connection</button>
+          <div class="provider-test-status" id="externalConnectionStatus" role="status" aria-live="polite"></div>
+        </section>
+        <div class="settings-footer">
+          <span class="provider-save-status" id="aiProviderSaveStatus" role="status" aria-live="polite"></span>
+          <button class="button" id="saveAiProviderButton" type="button">Save Provider</button>
+        </div>
       </div>
     </aside>
 

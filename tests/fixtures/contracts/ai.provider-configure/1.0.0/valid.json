@@ -1,0 +1,22 @@
+{
+  "message_id": "ai-provider-configure-fixture",
+  "idempotency_key": "fixture:ai.provider-configure:0",
+  "plane": "control",
+  "message_type": "ai.provider-configure",
+  "timestamp": "2026-09-01T00:00:00.000Z",
+  "producer": "fixture-host",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "configuration": {
+      "version": 1,
+      "mode": "local",
+      "provider": "ollama",
+      "endpoint": "http://127.0.0.1:11434/api/generate",
+      "model": "llama3.2:3b",
+      "protocol": "ollama",
+      "timeout_ms": 120000
+    },
+    "credential": { "provided": false }
+  }
+}
