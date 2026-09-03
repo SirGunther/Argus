@@ -56,6 +56,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   function updateShiftKeyState(event) {
     if (event.key !== 'Shift') return;
     shiftKeyDown = event.type === 'keydown';
+    els.transcriptList.classList.toggle('range-selection-active', shiftKeyDown);
   }
 
   function isShiftPressed(event) {
@@ -407,6 +408,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       if (anchorIndex < 0 || clickedIndex < 0) return;
 
       event.preventDefault();
+      window.getSelection()?.removeAllRanges();
       const range = selectRange(ui, kind, ids, anchorIndex, clickedIndex);
       rememberSelectionAnchor(kind, id, clickedIndex);
       syncSelectionRows(kind, range);
@@ -984,7 +986,13 @@ import { createSessionTimer } from './ui/session-timer.mjs';
 
   window.addEventListener('keydown', updateShiftKeyState);
   window.addEventListener('keyup', updateShiftKeyState);
-  window.addEventListener('blur', () => { shiftKeyDown = false; });
+  window.addEventListener('blur', () => {
+    shiftKeyDown = false;
+    els.transcriptList.classList.remove('range-selection-active');
+  });
+  els.transcriptList.addEventListener('selectstart', (event) => {
+    if (isShiftPressed(event)) event.preventDefault();
+  });
   document.querySelectorAll('.select-all-checkbox').forEach((checkbox) => checkbox.addEventListener('change', () => {
     const kind = checkbox.dataset.kind;
     const ids = itemIds(kind);
