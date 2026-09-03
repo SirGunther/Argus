@@ -131,6 +131,9 @@ test('loopback bridge starts deterministically, validates projections, and expos
     const bootstrap = await bootstrapResponse.json();
     assert.ok(bootstrap.projections.some((message) => message.message_type === 'ui.transcript-row'));
     assert.ok(bootstrap.projections.some((message) => message.message_type === 'ui.service-status'));
+    for (const asset of ['/ui/audio-capture.mjs', '/ui/audio-worklet.mjs', '/ui/session-timer.mjs']) {
+      assert.equal((await fetch(`${base}${asset}`)).status, 200, `${asset} must be available to the browser renderer`);
+    }
     assert.equal((await fetch(`${base}/C:/Users/secret.txt`)).status, 404);
     const commandResponse = await fetch(`${base}/api/commands`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command_id: 'bridge-edit-1', session_id: 'AA-260811-042', command: 'transcript.edit', segment_id: 'segment-0', expected_revision: 0, text: 'Bridge accepted edit.' }) });
     assert.equal(commandResponse.status, 200);
