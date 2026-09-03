@@ -17,6 +17,7 @@ test('each list header exposes an accessible three-state master checkbox', async
   assert.match(app, /selectionSummary\(ui, kind, ids\)/);
   assert.match(app, /selectAll\.indeterminate = selectionState === 'some'/);
   assert.match(app, /setAllSelected\(ui, kind, ids, checkbox\.checked\)/);
+  assert.match(app, /checkboxLabel\.addEventListener\('click', \(event\) =>/);
   assert.match(app, /checkbox\.addEventListener\('change', \(event\) =>/);
   assert.match(app, /isShiftPressed\(event\)/);
   assert.match(app, /selectRange\(ui, kind, ids, anchorIndex, clickedIndex\)/);
@@ -26,6 +27,10 @@ test('each list header exposes an accessible three-state master checkbox', async
   const rowSelectionHandlerEnd = app.indexOf("editable.addEventListener('focus'", rowSelectionHandlerStart);
   assert.ok(rowSelectionHandlerStart >= 0 && rowSelectionHandlerEnd > rowSelectionHandlerStart);
   assert.doesNotMatch(app.slice(rowSelectionHandlerStart, rowSelectionHandlerEnd), /preventDefault\(\)/);
+  const shiftSelectionHandlerStart = app.indexOf("checkboxLabel.addEventListener('click'");
+  const shiftSelectionHandlerEnd = app.indexOf("checkbox.addEventListener('change'", shiftSelectionHandlerStart);
+  assert.ok(shiftSelectionHandlerStart >= 0 && shiftSelectionHandlerEnd > shiftSelectionHandlerStart);
+  assert.match(app.slice(shiftSelectionHandlerStart, shiftSelectionHandlerEnd), /event\.preventDefault\(\)/);
   assert.match(css, /input\[aria-checked="mixed"\]/);
   assert.doesNotMatch(css, /\.select-all-button\s*\{\s*display:\s*none/);
 });

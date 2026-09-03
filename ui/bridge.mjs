@@ -15,7 +15,10 @@ const STATIC_FILES = new Map([
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/ui/ui-state.mjs', ['ui/ui-state.mjs', 'text/javascript; charset=utf-8']],
-  ['/ui/live-transcript.mjs', ['ui/live-transcript.mjs', 'text/javascript; charset=utf-8']]
+  ['/ui/live-transcript.mjs', ['ui/live-transcript.mjs', 'text/javascript; charset=utf-8']],
+  ['/ui/audio-capture.mjs', ['ui/audio-capture.mjs', 'text/javascript; charset=utf-8']],
+  ['/ui/audio-worklet.mjs', ['ui/audio-worklet.mjs', 'text/javascript; charset=utf-8']],
+  ['/ui/session-timer.mjs', ['ui/session-timer.mjs', 'text/javascript; charset=utf-8']]
 ]);
 
 export async function createUiBridge({ root = ROOT, host = '127.0.0.1', port = 4173, authority, capabilities, startTimers = true } = {}) {
