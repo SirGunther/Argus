@@ -397,12 +397,11 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       row.classList.add('review-needed');
       editable.title = item.review_flags.map((flag) => `${flag.reason}: ${flag.candidates.join(', ')}`).join(' · ');
     }
-    checkbox.addEventListener('click', (event) => {
+    checkbox.addEventListener('change', (event) => {
       const ids = itemIds(kind);
       const clickedIndex = ids.indexOf(id);
       const anchorIndex = findSelectionAnchor(kind, ids);
 
-      event.preventDefault();
       if (isShiftPressed(event) && anchorIndex >= 0 && clickedIndex >= 0) {
         const range = selectRange(ui, kind, ids, anchorIndex, clickedIndex);
         rememberSelectionAnchor(kind, id, clickedIndex);
