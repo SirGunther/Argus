@@ -32,6 +32,11 @@ test('each list header exposes an accessible three-state master checkbox', async
   const shiftSelectionHandlerEnd = app.indexOf("checkbox.addEventListener('change'", shiftSelectionHandlerStart);
   assert.ok(shiftSelectionHandlerStart >= 0 && shiftSelectionHandlerEnd > shiftSelectionHandlerStart);
   assert.match(app.slice(shiftSelectionHandlerStart, shiftSelectionHandlerEnd), /event\.preventDefault\(\)/);
+  assert.match(app, /window\.getSelection\(\)\?\.removeAllRanges\(\)/);
+  assert.match(app, /els\.transcriptList\.classList\.toggle\('range-selection-active', shiftKeyDown\)/);
+  assert.match(app, /els\.transcriptList\.classList\.remove\('range-selection-active'\)/);
+  assert.match(app, /transcriptList\.addEventListener\('selectstart', \(event\) =>\s*\{\s*if \(isShiftPressed\(event\)\) event\.preventDefault\(\);\s*\}\)/);
+  assert.match(css, /#transcriptList\.range-selection-active \.data-row\s*\{\s*user-select:\s*none;\s*\}/);
   assert.match(css, /input\[aria-checked="mixed"\]/);
   assert.match(css, /input\[aria-checked="mixed"\][\s\S]*?background: var\(--surface-active\)/);
   assert.doesNotMatch(css, /\.select-all-button\s*\{\s*display:\s*none/);

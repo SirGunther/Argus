@@ -264,6 +264,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 }
 .data-row:hover { background: var(--surface-hover); }
 .data-row.selected { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+#transcriptList.range-selection-active .data-row { user-select: none; }
 .data-row.editing { background: var(--surface-active); box-shadow: inset 2px 0 0 #59645f; }
 .data-row.source-highlight {
   background: rgba(255, 224, 128, .11);
