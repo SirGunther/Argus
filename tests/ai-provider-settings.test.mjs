@@ -14,6 +14,8 @@ import {
   normalizeModelProviderSettings
 } from '../runtime/model-provider-settings.mjs';
 import { DesktopApplication } from '../runtime/desktop-application.mjs';
+import { InteractiveGraph } from '../runtime/interactive-graph.mjs';
+import { loadContractRegistry } from '../runtime/contract-registry.mjs';
 import { createEnvelope } from '../runtime/orchestrator.mjs';
 import { buildExtractionRequest } from '../services/log-extractor-local-http/model-boundary.mjs';
 import { runService } from './helpers/process-harness.mjs';
@@ -31,6 +33,37 @@ test('provider settings validate local loopback and external HTTPS boundaries', 
   });
   assert.throws(() => normalizeModelProviderSettings({ mode: 'local', provider: 'ollama', endpoint: 'https://127.0.0.1/api/generate', model: 'x', timeout_ms: 1000 }), /loopback HTTP/);
   assert.throws(() => normalizeModelProviderSettings({ mode: 'external', provider: 'openai-compatible', endpoint: 'http://provider.example/v1/chat/completions', model: 'x', timeout_ms: 1000 }), /HTTPS/);
+});
+
+test('interactive host dispatch uses the registered provider contract version', async () => {
+  const registry = await loadContractRegistry(path.join(root, 'contracts', 'catalog.json'));
+  const source = {
+    id: '@desktop-controller',
+    endpointType: 'runtime',
+    serviceName: '@desktop-controller',
+    ports: { control: { accepts: [], emits: ['ai.provider-configure'] } }
+  };
+  const sink = { id: '@provider-sink', endpointType: 'runtime', serviceName: '@provider-sink', ports: { control: { accepts: ['ai.provider-configure'], emits: [] } } };
+  const graph = new InteractiveGraph({ registry, endpoints: new Map([[source.id, source], [sink.id, sink]]) });
+  graph.wiresFor = () => [{ from: source.id, contract: 'ai.provider-configure', to: sink.id }];
+  let routed;
+  graph.route = (_from, message) => { routed = message; };
+
+  const message = await graph.dispatchFrom(source.id, 'control', 'ai.provider-configure', 'provider-session', {
+    configuration: {
+      version: 1,
+      mode: 'local',
+      provider: 'lm-studio',
+      endpoint: 'http://127.0.0.1:1234/v1/chat/completions',
+      model: 'google/gemma-4-12b-qat',
+      protocol: 'openai-compatible',
+      timeout_ms: 30000
+    },
+    credential: { provided: false }
+  }, 'provider-version-regression');
+
+  assert.equal(message.schema_version, '1.0.0');
+  assert.equal(routed, message);
 });
 
 test('non-secret settings and encrypted host credentials stay out of renderer-shaped state', async () => {

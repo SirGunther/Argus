@@ -53,7 +53,8 @@ export class InteractiveGraph {
   async dispatchFrom(from, plane, messageType, correlationId, payload, idempotencyKey) {
     if (this.closed) throw new Error('Interactive Argus graph is closed');
     const endpoint = this.prepared.endpoints.get(from);
-    const message = createEnvelope({ plane, messageType, producer: from, correlationId, payload, idempotencyKey });
+    const schemaVersion = this.prepared.registry.definitionFor(messageType)?.version;
+    const message = createEnvelope({ plane, messageType, producer: from, correlationId, payload, idempotencyKey, schemaVersion });
     this.assertEmission(endpoint, message);
     const wires = this.wiresFor(from, plane, messageType);
     if (!wires.length) throw new Error(`No declared ${plane} wire accepts ${messageType} from ${from}`);
