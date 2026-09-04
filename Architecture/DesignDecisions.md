@@ -582,3 +582,27 @@ unreachable runtime, or failed connection test produces an unavailable/degraded 
 - The service manifest grants `external-https` and `model_credentials` only to the serial model adapter; the adapter enforces the selected endpoint class because the installed Node runtime has no network permission flag.
 - Provider switching is a host configuration operation and cannot create a renderer-to-model route or bypass the governed AI lane.
 - Credential persistence is transactional at the host boundary: if a credential mutation fails, the previous non-secret provider configuration is restored.
+
+## ADR-021 — Logged-item extraction uses three-row batches and Argus-owned context
+
+**Status:** Accepted as the next logged-item extraction target
+**Date:** 2026-09-04
+
+### Decision
+
+Automatic logged-item extraction admits work after **three new authoritative finalized transcript rows**. A batch contains only rows that have not already been admitted. Continued speech does not trigger a separate elapsed-time flush while batches of three are being produced.
+
+If a partial batch of one or two rows remains and no new finalized row arrives for a bounded idle period, Argus submits that partial batch. The exact idle duration remains an explicit pending decision rather than an implementation guess.
+
+The model is treated as a discretionary assistant. For each batch it determines whether anything new is worth recording, suppresses items already emitted, and may return zero, one, or multiple logged-item proposals such as summaries, actions, to-do items, or notes. These outputs remain proposals governed by the logged-item owner; model-generated labels do not become authoritative merely because the model selected them.
+
+The working model-context budget is approximately **8,000 tokens**. That context is owned, bounded, and reconstructed by Argus. Independent LM Studio/OpenAI-compatible HTTP calls are stateless and must not be assumed to retain prior requests. Argus must therefore supply the rolling context needed for continuity and duplicate suppression, including relevant prior model outputs. Once that rolling context is implemented and proven, a separate fixed two-row transcript lookback is unnecessary. Until then, the existing explicit lookback remains in place so context is not silently lost.
+
+The exact idle timeout, token-budget calculation and response reserve, context persistence/restart behavior, prompt-management surface, and governed zero-to-many response schema remain pending decisions.
+
+### Consequences
+
+- The current single-item response prompt and contract do not satisfy this target and require a later governed implementation change.
+- Batch admission is predictable during continuous transcription while idle submission prevents one- or two-row tails from remaining stranded indefinitely.
+- Provider replacement remains possible because Argus, not LM Studio or another model server, owns batching, memory, duplicate suppression context, and output governance.
+- Session restart cannot silently discard or duplicate an admitted batch; its exact recovery policy must be resolved before implementation is considered complete.
