@@ -1,0 +1,45 @@
+{
+  "idempotency_key": "fixture:ai.work-completed:invalid-forged-item-id",
+  "plane": "control",
+  "message_type": "ai.work-completed",
+  "timestamp": "2026-09-07T17:00:01.000Z",
+  "producer": "fixture-model-lane",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.5.0",
+  "payload": {
+    "work_id": "logged-item-extraction:fixture-scribe-session:batch-1",
+    "workload": "logged-item-extraction",
+    "session_id": "fixture-scribe-session",
+    "sequence": 1,
+    "attempt": 1,
+    "completed_at": "2026-09-07T17:00:01.000Z",
+    "result": {
+      "status": "succeeded",
+      "work_id": "logged-item-extraction:fixture-scribe-session:batch-1",
+      "request_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "response": {
+        "protocol_version": "2.0.0",
+        "purpose": "logged-item-extraction",
+        "batch_identity": {
+          "request_id": "batch-1",
+          "session_id": "fixture-scribe-session",
+          "segments": [
+            { "segment_id": "segment-10", "revision": 0, "sequence": 10 },
+            { "segment_id": "segment-11", "revision": 0, "sequence": 11 },
+            { "segment_id": "segment-12", "revision": 0, "sequence": 12 }
+          ],
+          "first_sequence": 10,
+          "last_sequence": 12,
+          "admission_reason": "batch-complete",
+          "policy_id": "fixture-default",
+          "policy_version": "1.0.0",
+          "instruction_version": "1.0.0"
+        },
+        "items": [
+          { "text": "Ship the draft Friday.", "kind": "decision", "source_segment_ids": ["segment-10"], "item_id": "forged" }
+        ]
+      }
+    }
+  },
+  "message_id": "f06c8fc4-511d-440f-8f3d-4e9b90d5b201"
+}

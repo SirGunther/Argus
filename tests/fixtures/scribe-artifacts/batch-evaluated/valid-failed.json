@@ -1,0 +1,21 @@
+{
+  "batch_identity": {
+    "request_id": "batch-3-single",
+    "session_id": "fixture-scribe-session",
+    "segments": [
+      { "segment_id": "segment-30", "revision": 0, "sequence": 30 }
+    ],
+    "first_sequence": 30,
+    "last_sequence": 30,
+    "admission_reason": "batch-complete",
+    "policy_id": "fixture-default",
+    "policy_version": "1.0.0",
+    "instruction_version": "1.0.0"
+  },
+  "evaluated_at": "2026-09-07T17:10:01.000Z",
+  "attempt": 2,
+  "outcome": "failed",
+  "items": [],
+  "error": { "code": "MODEL_ENDPOINT_TIMEOUT", "category": "timeout", "message": "The local model endpoint did not respond in time.", "retryable": true },
+  "acknowledgement": { "ack_id": "ack-batch-3-single", "accepted": false, "acknowledged_at": null, "logged_item_ids": [] }
+}

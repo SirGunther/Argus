@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "session_id": "fixture-scribe-session",
+  "saved_at": "2026-09-07T17:05:02.000Z",
+  "admitted_through": { "last_segment_id": "segment-19", "last_sequence": 19, "last_revision": 0 },
+  "pending_partial": {
+    "segments": [
+      { "segment_id": "segment-20", "revision": 0, "sequence": 20 },
+      { "segment_id": "segment-21", "revision": 0, "sequence": 21 },
+      { "segment_id": "segment-22", "revision": 0, "sequence": 22 }
+    ],
+    "accumulated_since": "2026-09-07T17:04:40.000Z"
+  },
+  "background_context": { "prior_logged_items": [] },
+  "policy_id": "fixture-default",
+  "policy_version": "1.0.0"
+}

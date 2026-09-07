@@ -1,0 +1,12 @@
+{
+  "$id": "argus.scribe-batch-journal-entry.v1",
+  "type": "object",
+  "required": ["journal_sequence", "session_id", "batch", "written_at"],
+  "properties": {
+    "journal_sequence": { "type": "integer", "minimum": 0 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "batch": { "$ref": "argus.scribe-batch-evaluated.v1" },
+    "written_at": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

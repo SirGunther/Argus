@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "session_id": "fixture-scribe-session",
+  "saved_at": "2026-09-07T17:10:00.000Z",
+  "admitted_through": { "last_segment_id": "segment-30", "last_sequence": 30, "last_revision": 0 },
+  "pending_partial": { "segments": [], "accumulated_since": null },
+  "background_context": { "prior_logged_items": [] },
+  "policy_id": "fixture-default",
+  "policy_version": "1.0.0",
+  "in_flight_batch": {
+    "batch_identity": {
+      "request_id": "batch-3-single",
+      "session_id": "fixture-scribe-session",
+      "segments": [
+        { "segment_id": "segment-30", "revision": 0, "sequence": 30 }
+      ],
+      "first_sequence": 30,
+      "last_sequence": 30,
+      "admission_reason": "batch-complete",
+      "policy_id": "fixture-default",
+      "policy_version": "1.0.0",
+      "instruction_version": "1.0.0"
+    },
+    "attempt": 2
+  }
+}

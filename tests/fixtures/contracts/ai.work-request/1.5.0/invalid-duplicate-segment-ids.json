@@ -1,0 +1,48 @@
+{
+  "idempotency_key": "fixture:ai.work-request:invalid-duplicate-segment-ids",
+  "plane": "control",
+  "message_type": "ai.work-request",
+  "timestamp": "2026-09-07T17:00:00.000Z",
+  "producer": "fixture-scribe-batcher",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.5.0",
+  "payload": {
+    "work_id": "logged-item-extraction:fixture-scribe-session:batch-dup",
+    "workload": "logged-item-extraction",
+    "session_id": "fixture-scribe-session",
+    "sequence": 1,
+    "queued_at": "2026-09-07T17:00:00.000Z",
+    "input": {
+      "model_request": {
+        "protocol_version": "2.0.0",
+        "purpose": "logged-item-extraction",
+        "model": "fixture-model",
+        "batch_identity": {
+          "request_id": "batch-dup",
+          "session_id": "fixture-scribe-session",
+          "segments": [
+            { "segment_id": "segment-10", "revision": 0, "sequence": 10 },
+            { "segment_id": "segment-10", "revision": 0, "sequence": 11 }
+          ],
+          "first_sequence": 10,
+          "last_sequence": 11,
+          "admission_reason": "batch-complete",
+          "policy_id": "fixture-default",
+          "policy_version": "1.0.0",
+          "instruction_version": "1.0.0"
+        },
+        "new_evidence_segments": [
+          { "segment_id": "segment-10", "sequence": 10, "start_time": "00:00:10.000", "end_time": "00:00:11.000", "text": "First occurrence." },
+          { "segment_id": "segment-10", "sequence": 11, "start_time": "00:00:11.000", "end_time": "00:00:12.000", "text": "Repeated segment id." }
+        ],
+        "background_context": { "transcript_segments": [], "prior_logged_items": [] },
+        "policy_profile": "neutral-contextual-log",
+        "instruction_version": "1.0.0",
+        "limits": { "max_context_chars": 4000, "max_context_tokens": 2000, "max_output_chars": 2048, "max_output_tokens": 512 },
+        "identity": { "work_id": "logged-item-extraction:fixture-scribe-session:batch-dup", "session_id": "fixture-scribe-session", "batch_request_id": "batch-dup" }
+      }
+    },
+    "recovery": { "max_attempts": 2 }
+  },
+  "message_id": "ca6a03cc-3ea2-40d1-a5bb-175932bd1701"
+}

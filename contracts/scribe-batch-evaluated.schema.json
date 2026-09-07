@@ -1,0 +1,57 @@
+{
+  "$id": "argus.scribe-batch-evaluated.v1",
+  "type": "object",
+  "required": ["batch_identity", "evaluated_at", "attempt", "outcome", "items", "acknowledgement"],
+  "properties": {
+    "batch_identity": { "$ref": "argus.scribe-batch-identity.v1" },
+    "evaluated_at": { "type": "string", "minLength": 1 },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "outcome": { "type": "string", "enum": ["items-recorded", "empty-evaluated", "failed"] },
+    "items": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": ["text", "source_segment_ids"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "kind": { "type": "string", "enum": ["action", "decision", "open-question", "reminder", "other"] },
+          "source_segment_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+        },
+        "additionalProperties": false
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "category", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "acknowledgement": {
+      "type": "object",
+      "required": ["ack_id", "accepted", "acknowledged_at", "logged_item_ids"],
+      "properties": {
+        "ack_id": { "type": "string", "minLength": 1 },
+        "accepted": { "type": "boolean" },
+        "acknowledged_at": { "type": ["string", "null"] },
+        "logged_item_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    { "if": { "properties": { "outcome": { "const": "failed" } } }, "then": { "required": ["error"], "properties": { "error": { "type": "object" } } } },
+    { "if": { "properties": { "outcome": { "const": "empty-evaluated" } } }, "then": { "properties": { "items": { "type": "array", "maxItems": 0 } } } },
+    { "if": { "properties": { "outcome": { "const": "items-recorded" } } }, "then": { "properties": { "items": { "type": "array", "minItems": 1 } } } },
+    { "if": { "properties": { "acknowledgement": { "type": "object", "properties": { "accepted": { "const": true } } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "acknowledged_at": { "type": "string", "minLength": 1 } } } } } },
+    { "if": { "not": { "properties": { "outcome": { "const": "items-recorded" } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "logged_item_ids": { "type": "array", "maxItems": 0 } } } } } },
+    { "if": { "properties": { "acknowledgement": { "type": "object", "properties": { "accepted": { "const": false } } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "logged_item_ids": { "type": "array", "maxItems": 0 } } } } } },
+    { "if": { "properties": { "outcome": { "const": "items-recorded" }, "acknowledgement": { "type": "object", "properties": { "accepted": { "const": true } } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "logged_item_ids": { "type": "array", "minItems": 1 } } } } } }
+  ]
+}

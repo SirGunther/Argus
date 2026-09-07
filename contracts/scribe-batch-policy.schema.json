@@ -1,0 +1,37 @@
+{
+  "$id": "argus.scribe-batch-policy.v1",
+  "type": "object",
+  "required": ["policy_id", "policy_version", "session_id", "admission", "context", "generation"],
+  "properties": {
+    "policy_id": { "type": "string", "minLength": 1 },
+    "policy_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "session_id": { "type": "string", "minLength": 1 },
+    "admission": {
+      "type": "object",
+      "required": ["rows_per_batch", "idle_timeout_ms"],
+      "properties": {
+        "rows_per_batch": { "type": "integer", "minimum": 1, "maximum": 16, "default": 3 },
+        "idle_timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 300000, "default": 15000 }
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "required": ["max_total_context_tokens"],
+      "properties": {
+        "max_total_context_tokens": { "type": "integer", "minimum": 256, "maximum": 32000, "default": 8000 }
+      },
+      "additionalProperties": false
+    },
+    "generation": {
+      "type": "object",
+      "required": ["policy_profile", "instruction_version"],
+      "properties": {
+        "policy_profile": { "type": "string", "minLength": 1 },
+        "instruction_version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

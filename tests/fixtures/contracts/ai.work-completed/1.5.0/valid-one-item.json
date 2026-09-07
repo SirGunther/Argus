@@ -1,0 +1,53 @@
+{
+  "idempotency_key": "fixture:ai.work-completed:scribe-batch-one",
+  "plane": "control",
+  "message_type": "ai.work-completed",
+  "timestamp": "2026-09-07T17:10:01.000Z",
+  "producer": "fixture-model-lane",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.5.0",
+  "payload": {
+    "work_id": "logged-item-extraction:fixture-scribe-session:batch-3-single",
+    "workload": "logged-item-extraction",
+    "session_id": "fixture-scribe-session",
+    "sequence": 3,
+    "attempt": 1,
+    "completed_at": "2026-09-07T17:10:01.000Z",
+    "result": {
+      "status": "succeeded",
+      "work_id": "logged-item-extraction:fixture-scribe-session:batch-3-single",
+      "request_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "response": {
+        "protocol_version": "2.0.0",
+        "purpose": "logged-item-extraction",
+        "batch_identity": {
+          "request_id": "batch-3-single",
+          "session_id": "fixture-scribe-session",
+          "segments": [
+            {
+              "segment_id": "segment-30",
+              "revision": 0,
+              "sequence": 30
+            }
+          ],
+          "first_sequence": 30,
+          "last_sequence": 30,
+          "admission_reason": "batch-complete",
+          "policy_id": "fixture-default",
+          "policy_version": "1.0.0",
+          "instruction_version": "1.0.0"
+        },
+        "items": [
+          {
+            "text": "Remind the team about the Friday deadline.",
+            "source_segment_ids": [
+              "segment-30"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "message_id": "24d5450d-2902-411e-bef2-8e2741c31927",
+  "content_fingerprint": "sha256:e86605209b4ed544913db153f8a3629fe85d76c78fd682acb202c270c9908f7b"
+}

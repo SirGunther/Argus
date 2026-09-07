@@ -1,0 +1,15 @@
+{
+  "request_id": "batch-1",
+  "session_id": "fixture-scribe-session",
+  "segments": [
+    { "segment_id": "segment-10", "revision": 0, "sequence": 10 },
+    { "segment_id": "segment-11", "revision": 0, "sequence": 11 },
+    { "segment_id": "segment-12", "revision": 0, "sequence": 12 }
+  ],
+  "first_sequence": 10,
+  "last_sequence": 12,
+  "admission_reason": "batch-complete",
+  "policy_id": "fixture-default",
+  "policy_version": "1.0.0",
+  "instruction_version": "1.0.0"
+}
