@@ -1,7 +1,8 @@
 import { createMessageIdentity, fingerprintMessage } from '../../runtime/message-identity.mjs';
-import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
-import { EXTRACTION_BATCH_OUTPUT_LIMITS, SCRIBE_BATCH_PROTOCOL_VERSION, fingerprintModelRequest, validateScribeBatchModelRequest } from '../../contracts/model-protocol.mjs';
+import { runLineService } from '../../runtime/service-protocol.mjs';
+import { fingerprintModelRequest } from '../../contracts/model-protocol.mjs';
 import { createScribeCoordinator } from './coordinator.mjs';
+import { buildModelRequestEnvelope, readModelName, stableFingerprintInput } from './model-request-envelope.mjs';
 
 const SERVICE = 'scribe-coordinator';
 const INSTANCE = process.env.ARGUS_SERVICE_INSTANCE_ID || SERVICE;
@@ -40,20 +41,23 @@ runLineService({
     } }
   },
   onDrain() {
-    // Close releases one final one-or-two-row remainder if any is pending. The coordinator's
-    // own `settled` promise (returned from close()) is for direct callers who can await a
-    // future stdin line; `lifecycle.drain` cannot do that here because runLineService
-    // processes stdin lines strictly serially (the ai.work-completed/logged-item.stored line
-    // that would resolve it is queued behind this very drain line), so blocking here would
-    // deadlock. The forced remainder is still dispatched immediately below, and this process
-    // keeps running afterward and will correctly settle it via the normal operation handlers
-    // above once that later line arrives.
+    // Close releases one final one-or-two-row remainder if any is pending. `runLineService`
+    // processes stdin lines strictly serially, and the ai.work-completed/logged-item.stored
+    // line(s) that settle that remainder are queued behind this very drain line, so `onDrain`
+    // itself must never block waiting for them (that would deadlock the process against its own
+    // input). It returns `{outputs, whenDrained}` instead of a plain array: the forced remainder's
+    // own outputs are emitted immediately below (same as before), and `service.drained` is emitted
+    // only once `whenDrained` resolves, via the same background-emission path `lifecycle.drain`
+    // already supports for a spontaneous idle-timer dispatch. Every subsequent stdin line keeps
+    // processing normally in the meantime.
     const outputs = [];
+    const settleds = [];
     for (const sessionId of activeSessionIds()) {
-      const { outputs: sessionOutputs } = coordinator.close(sessionId);
+      const { outputs: sessionOutputs, settled } = coordinator.close(sessionId);
       outputs.push(...toWireOutputs(sessionOutputs));
+      settleds.push(settled);
     }
-    return outputs;
+    return { outputs, whenDrained: Promise.all(settleds) };
   }
 });
 
@@ -75,8 +79,8 @@ function toWireOutputs(pumpResults) {
 }
 
 function dispatchToOutput(dispatch) {
-  const request = buildModelRequest(dispatch);
-  const fingerprint = fingerprintModelRequest(request);
+  const request = buildModelRequestEnvelope(dispatch, { modelName: readModelName() });
+  const fingerprint = fingerprintModelRequest(stableFingerprintInput(request));
   coordinator.recordDispatchFingerprint(dispatch.sessionId, dispatch.workId, fingerprint);
   return {
     plane: 'control',
@@ -98,41 +102,6 @@ function dispatchToOutput(dispatch) {
   };
 }
 
-function buildModelRequest(dispatch) {
-  const modelName = readModelName();
-  const policy = dispatch.policy;
-  const maxContextTokens = policy.context.max_total_context_tokens;
-  const request = {
-    protocol_version: SCRIBE_BATCH_PROTOCOL_VERSION,
-    purpose: 'logged-item-extraction',
-    model: modelName,
-    batch_identity: dispatch.batchIdentity,
-    new_evidence_segments: dispatch.newEvidenceSegments,
-    // Bounded prior Scribe context (transcript lookback + non-authoritative prior items) is
-    // durable, cross-session state this standalone coordinator does not own or persist
-    // (out of scope: filesystem persistence, Logged Item mutation). SCRIBE-05 wires the real
-    // bounded background context once storage/model-extraction integration lands; an empty
-    // background is structurally valid here (contracts/ai-work-request.schema.json places no
-    // minItems on either background array).
-    background_context: { transcript_segments: [], prior_logged_items: [] },
-    policy_profile: policy.generation.policy_profile,
-    instruction_version: policy.generation.instruction_version,
-    limits: {
-      max_context_chars: maxContextTokens * 4,
-      max_context_tokens: maxContextTokens,
-      max_output_chars: EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_chars,
-      max_output_tokens: EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens
-    },
-    identity: { work_id: dispatch.workId, session_id: dispatch.sessionId, batch_request_id: dispatch.batchIdentity.request_id }
-  };
-  try {
-    validateScribeBatchModelRequest(request);
-  } catch (error) {
-    throw new ServiceOperationError(error.message, { code: error.cause?.code || 'INVALID_MODEL_REQUEST', category: 'validation' });
-  }
-  return request;
-}
-
 function failureOutput(result) {
   return {
     plane: 'control',
@@ -152,12 +121,6 @@ function failureOutput(result) {
       }
     }
   };
-}
-
-function readModelName(env = process.env) {
-  const modelName = String(env.ARGUS_MODEL_NAME || '').trim();
-  if (!modelName) throw new ServiceOperationError('ARGUS_MODEL_NAME is required', { code: 'INVALID_MODEL_CONFIGURATION', category: 'validation' });
-  return modelName;
 }
 
 function emitEnvelope(output) {

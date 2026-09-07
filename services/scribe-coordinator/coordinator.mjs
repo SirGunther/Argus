@@ -122,6 +122,9 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
       throw new ServiceOperationError(`Scribe batch result attempt ${completion.attempt} does not match in-flight attempt ${inFlight.attempt}`, { code: 'SCRIBE_ATTEMPT_CONFLICT', category: 'conflict' });
     }
     const result = completion.result || {};
+    if (result.work_id !== completion.work_id) {
+      throw new ServiceOperationError(`Scribe batch result work_id ${result.work_id} does not match completion work_id ${completion.work_id}`, { code: 'SCRIBE_WORK_ID_CONFLICT', category: 'conflict' });
+    }
     if (result.status === 'failed') return handleBatchFailure(sessionId, state, inFlight, result.error || { code: 'MODEL_REQUEST_FAILED', category: 'dependency', message: 'model request failed', retryable: true });
     if (result.status !== 'succeeded') {
       throw new ServiceOperationError(`Unsupported Scribe batch result status: ${result.status}`, { code: 'SCRIBE_RESULT_STATUS_INVALID', category: 'validation' });
@@ -146,7 +149,16 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
         logged_item_ids: []
       });
     }
-    inFlight.awaitingAck = { expectedCount: response.items.length, storedItemIds: [] };
+    // One expected slot per validated response item, in item order, each carrying the exact
+    // source-segment boundary independently derived from that item's own `source_segment_ids`
+    // (already proven by `validateScribeBatchModelResponse` to cite only this batch's own
+    // segments). `acceptStoredItem` below fills a slot only when a stored item's real `source`
+    // boundary matches that slot's derived boundary, so a count-only, arbitrary, or reordered
+    // item_id can never fill an unrelated slot.
+    inFlight.awaitingAck = {
+      expectedItems: response.items.map((item) => sourceBoundaryForItem(item, inFlight.batchIdentity.segments)),
+      assigned: new Array(response.items.length).fill(null)
+    };
     return [];
   }
 
@@ -158,24 +170,31 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
     const expectedRequestId = inFlight?.batchIdentity?.request_id;
     // The item-position mapping between `items[]` and `logged_item_ids` is a runtime
     // invariant the schema cannot enforce (contracts/scribe-contract-handoff.md); the
-    // coordinator correlates by reusing `generator.input_window_id` (contracts/logged-item-
-    // stored.schema.json) as the batch request_id, matching the existing single-item boundary
-    // the handoff doc says the draft-id derivation must match.
+    // coordinator correlates the batch by reusing `generator.input_window_id` (contracts/
+    // logged-item-stored.schema.json) as the batch request_id, matching the existing single-item
+    // boundary the handoff doc says the draft-id derivation must match. Each individual item is
+    // then correlated to its exact `items[]` position by matching the stored item's own
+    // `source.first_segment_id`/`last_segment_id` boundary against the boundary independently
+    // derived for that slot in `acceptWorkCompleted` above — a count-only check would let an
+    // arbitrary, out-of-order, or unrelated item_id silently fill any open slot.
     const storedRequestId = storedItem?.generator?.input_window_id;
     if (!inFlight || !awaitingAck || storedRequestId !== expectedRequestId) {
       throw new ServiceOperationError(`No Scribe batch is awaiting an item acknowledgement matching ${storedItem?.item_id}`, { code: 'SCRIBE_ACKNOWLEDGEMENT_CONFLICT', category: 'conflict' });
     }
-    if (awaitingAck.storedItemIds.includes(storedItem.item_id)) return [];
-    if (awaitingAck.storedItemIds.length >= awaitingAck.expectedCount) {
-      throw new ServiceOperationError(`Scribe batch ${expectedRequestId} already received its expected item acknowledgements`, { code: 'SCRIBE_ACKNOWLEDGEMENT_CONFLICT', category: 'conflict' });
+    if (awaitingAck.assigned.includes(storedItem.item_id)) return [];
+    const slot = awaitingAck.expectedItems.findIndex((expected, index) => awaitingAck.assigned[index] === null
+      && expected.first_segment_id === storedItem.source?.first_segment_id
+      && expected.last_segment_id === storedItem.source?.last_segment_id);
+    if (slot === -1) {
+      throw new ServiceOperationError(`Stored item ${storedItem.item_id} does not match any pending Scribe extraction item for batch ${expectedRequestId}`, { code: 'SCRIBE_ACKNOWLEDGEMENT_CONFLICT', category: 'conflict' });
     }
-    awaitingAck.storedItemIds.push(storedItem.item_id);
-    if (awaitingAck.storedItemIds.length < awaitingAck.expectedCount) return [];
+    awaitingAck.assigned[slot] = storedItem.item_id;
+    if (awaitingAck.assigned.includes(null)) return [];
     return completeBatch(sessionId, state, {
       ack_id: `ack-${expectedRequestId}`,
       accepted: true,
       acknowledged_at: new Date(now()).toISOString(),
-      logged_item_ids: [...awaitingAck.storedItemIds]
+      logged_item_ids: [...awaitingAck.assigned]
     });
   }
 
@@ -205,7 +224,7 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
         workId: state.inFlight.workId,
         attempt: state.inFlight.attempt,
         requestId: state.inFlight.batchIdentity.request_id,
-        awaitingAck: state.inFlight.awaitingAck ? { expectedCount: state.inFlight.awaitingAck.expectedCount, storedItemIds: [...state.inFlight.awaitingAck.storedItemIds] } : undefined
+        awaitingAck: state.inFlight.awaitingAck ? { expectedCount: state.inFlight.awaitingAck.expectedItems.length, storedItemIds: state.inFlight.awaitingAck.assigned.filter((id) => id !== null) } : undefined
       } : undefined
     };
   }
@@ -222,6 +241,17 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
       state.pendingSegments.push(structuredClone(segment));
     }
     state.accumulatedSinceMs = state.pendingSegments.length ? (snapshot.accumulatedSinceMs ?? now()) : null;
+    // Seed the shared ordering guard with the correct next-expected sequence so a legitimately
+    // continuing stream is not mistaken for one starting fresh at 0 (runtime/ordered-stream.mjs's
+    // guard has no memory of a restarted process). Derived from the highest sequence already
+    // accounted for across the recovered cursor, pending remainder, and any in-flight batch's
+    // admitted segments.
+    const knownSequences = [
+      snapshot.cursor.last_sequence,
+      ...snapshot.pendingSegments.map((segment) => segment.sequence),
+      ...(snapshot.inFlightBatch?.admittedSegments || []).map((segment) => segment.sequence)
+    ];
+    ordering.seed(sessionId, Math.max(-1, ...knownSequences) + 1);
     if (snapshot.inFlightBatch) {
       const { batchIdentity, admittedSegments, attempt } = snapshot.inFlightBatch;
       state.inFlight = {
@@ -303,12 +333,20 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
     state.attemptsByRequestId.delete(inFlight.batchIdentity.request_id);
     state.inFlight = undefined;
     state.stalledRequestId = undefined;
-    state.accumulatedSinceMs = state.pendingSegments.length ? now() : null;
+    // Do not reset the debounce clock here: each still-pending segment's own arrival time (set in
+    // acceptFinalizedSegment, including arrivals that happened while this batch was busy) already
+    // reflects the correct idle-elapsed baseline. Overwriting it to "now" would erase idle time
+    // already accrued during the busy window and force a spurious extra 15s wait on a remainder
+    // that may already be past the idle threshold.
+    if (!state.pendingSegments.length) state.accumulatedSinceMs = null;
     const evaluatedOutput = { type: 'evaluated', sessionId, batchIdentity: inFlight.batchIdentity, attempt: inFlight.attempt, acknowledgement };
-    resolveSettleWaiters(state);
     // Immediately pump again so an already-accumulated three-row group does not wait for the
-    // partial-batch idle threshold.
+    // partial-batch idle threshold. Only resolve Close's settled waiters once this re-pump
+    // confirms nothing further was dispatched: a Close-forced remainder can itself trigger another
+    // forced or accumulated batch, and resolving `settled` before that subsequent batch's own
+    // terminal outcome would break Close's "waits for its governed terminal outcome" guarantee.
     const dispatchOutputs = pump(sessionId);
+    if (!state.inFlight) resolveSettleWaiters(state);
     scheduleIdleTimer(sessionId);
     return [evaluatedOutput, ...dispatchOutputs];
   }
@@ -369,6 +407,28 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
 
 function projectSegmentContent({ segment_id, sequence, start_time, end_time, text }) {
   return { segment_id, sequence, start_time, end_time, text };
+}
+
+// Derives the `{first_segment_id, last_segment_id}` boundary a validated response item's own
+// `source_segment_ids` implies, ordered by each segment's position within the batch (not textual
+// order in `source_segment_ids`). `validateScribeBatchModelResponse` has already proven every id
+// in `source_segment_ids` belongs to this batch's own `batch_identity.segments`, so `segments`
+// here is authoritative. Used to correlate an incoming `logged-item.stored` acknowledgement's
+// `source` boundary against the exact response-item slot it confirms, independent of item_id or
+// arrival order.
+function sourceBoundaryForItem(item, segments) {
+  const sequenceBySegmentId = new Map(segments.map((segment) => [segment.segment_id, segment.sequence]));
+  let first;
+  let last;
+  let firstSequence = Infinity;
+  let lastSequence = -Infinity;
+  for (const segmentId of item.source_segment_ids) {
+    const sequence = sequenceBySegmentId.get(segmentId);
+    if (sequence === undefined) continue;
+    if (sequence < firstSequence) { firstSequence = sequence; first = segmentId; }
+    if (sequence > lastSequence) { lastSequence = sequence; last = segmentId; }
+  }
+  return { first_segment_id: first, last_segment_id: last };
 }
 
 function validatePolicy(policy) {

@@ -42,15 +42,28 @@ export function runLineService({ service, operations, onDrain, onReady }) {
         return;
       }
       if (message.plane === 'control' && message.message_type === 'lifecycle.drain') {
-        const outputs = (await onDrain?.(message) || []).map((output, index) => ({
+        const drainResult = (await onDrain?.(message)) || [];
+        // `onDrain` may return a plain array (existing behavior: `service.drained` is emitted
+        // immediately once its outputs are emitted) or `{outputs, whenDrained}` when draining
+        // triggers work that only settles later, asynchronously (e.g. a forced batch awaiting a
+        // future stdin line). `whenDrained` is never awaited here — awaiting it would block this
+        // strictly-serial stdin loop from processing the very line that could resolve it. Instead
+        // `service.drained` is emitted from a detached continuation once it resolves, the same way
+        // a spontaneous, timer-driven dispatch is already emitted outside the request/response
+        // cycle. Fully backward compatible: every existing service returns a plain array and is
+        // unaffected.
+        const { outputs: drainOutputs, whenDrained } = Array.isArray(drainResult) ? { outputs: drainResult, whenDrained: undefined } : drainResult;
+        const outputs = drainOutputs.map((output, index) => ({
           ...output,
           identityKey: output.identityKey || `${producer}:${output.messageType}:drain:${message.idempotency_key || message.message_id}:${index}`
         }));
         for (const output of outputs) emit(producer, output.plane || 'domain', output.messageType, message.correlation_id, output.payload, message.message_id, output.identityKey, output.schemaVersion);
-        emit(producer, 'control', 'service.drained', message.correlation_id, {
+        const emitDrained = () => emit(producer, 'control', 'service.drained', message.correlation_id, {
           service,
           pending_operations: 0
         }, message.message_id);
+        if (whenDrained) whenDrained.then(emitDrained, emitDrained);
+        else emitDrained();
         return;
       }
 

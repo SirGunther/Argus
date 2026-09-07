@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createEnvelope } from '../runtime/orchestrator.mjs';
 import { loadContractRegistry } from '../runtime/contract-registry.mjs';
+import { fingerprintModelRequest } from '../contracts/model-protocol.mjs';
 import { createScribeCoordinator } from '../services/scribe-coordinator/coordinator.mjs';
+import { stableFingerprintInput } from '../services/scribe-coordinator/model-request-envelope.mjs';
 import { runService, runServiceBatches } from './helpers/process-harness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -105,14 +107,14 @@ function failed({ workId, sessionId, batchIdentity, attempt, error }) {
   };
 }
 
-function storedItem(sessionId, itemId, batchRequestId) {
+function storedItem(sessionId, itemId, batchRequestId, sourceBoundary = { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }) {
   return {
     item_id: itemId,
     session_id: sessionId,
     stored_at: new Date().toISOString(),
     text: 'Stored item text.',
     revision: 0,
-    source: { first_segment_id: 'seg-0', last_segment_id: 'seg-0', start_time: '00:00:00.000', end_time: '00:00:01.000' },
+    source: { ...sourceBoundary, start_time: '00:00:00.000', end_time: '00:00:01.000' },
     generator: { implementation: 'log-extractor-local-http', input_window_id: batchRequestId }
   };
 }
@@ -216,6 +218,22 @@ test('the single idle timer is cancelled when a third row arrives before it elap
   assert.equal(dispatched.length, 0, 'a cancelled timer must never fire a stale spontaneous dispatch');
 });
 
+test('a partial remainder that was already idle for 15s during a busy batch dispatches immediately on completion, not after another wait', () => {
+  const { clock, advance } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  const firstDispatch = admitThreeRows(coordinator, 's1');
+  coordinator.acceptFinalizedSegment(segment('s1', 3));
+  // No idle timer runs at all while a batch is busy (scheduleIdleTimer bails on inFlight), so this
+  // elapsed time must still count once the busy batch completes and re-pumps.
+  advance(20000);
+  const ackOutputs = coordinator.acceptWorkCompleted(succeeded({ workId: firstDispatch.workId, sessionId: 's1', batchIdentity: firstDispatch.batchIdentity, attempt: firstDispatch.attempt, items: [] }));
+  const nextDispatch = ackOutputs.find((output) => output.type === 'dispatch');
+  assert.ok(nextDispatch, 'the remainder must dispatch immediately: its true idle age (accrued while busy) already exceeds the 15s threshold');
+  assert.equal(nextDispatch.batchIdentity.admission_reason, 'idle-timeout');
+  assert.equal(nextDispatch.newEvidenceSegments.length, 1);
+});
+
 // --- Busy completion (zero-item outcome is its own acknowledgement) ---------
 
 test('a zero-item outcome is its own acknowledgement and advances the cursor without waiting', () => {
@@ -244,13 +262,46 @@ test('the cursor stays unchanged until every evaluated item is acknowledged, the
   }));
   assert.deepEqual(completedOutputs, [], 'nothing advances until the item acknowledgements arrive');
   assert.equal(coordinator.status('s1').cursor.last_sequence, -1);
-  const afterFirst = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id));
+  const afterFirst = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }));
   assert.deepEqual(afterFirst, []);
   assert.equal(coordinator.status('s1').cursor.last_sequence, -1, 'a partial acknowledgement must not advance the cursor');
-  const afterSecond = coordinator.acceptStoredItem(storedItem('s1', 'item-2', dispatch.batchIdentity.request_id));
+  const afterSecond = coordinator.acceptStoredItem(storedItem('s1', 'item-2', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' }));
   const evaluated = afterSecond.find((output) => output.type === 'evaluated');
   assert.deepEqual(evaluated.acknowledgement.logged_item_ids, ['item-1', 'item-2']);
   assert.equal(coordinator.status('s1').cursor.last_sequence, 2);
+});
+
+test('stored-item acknowledgements arriving out of arrival order still produce item-ordered logged_item_ids', () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  const dispatch = admitThreeRows(coordinator, 's1');
+  coordinator.acceptWorkCompleted(succeeded({
+    workId: dispatch.workId, sessionId: 's1', batchIdentity: dispatch.batchIdentity, attempt: dispatch.attempt,
+    items: [{ text: 'First item.', source_segment_ids: ['seg-0'] }, { text: 'Second item.', source_segment_ids: ['seg-1'] }]
+  }));
+  // The owner confirms the *second* item's storage first (concurrent processing, no ordering
+  // guarantee on logged-item.stored arrival) — the final acknowledgement must still list
+  // logged_item_ids in the original items[] order, not arrival order.
+  const afterSecondArrivedFirst = coordinator.acceptStoredItem(storedItem('s1', 'item-2', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' }));
+  assert.deepEqual(afterSecondArrivedFirst, []);
+  const afterFirstArrivedSecond = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }));
+  const evaluated = afterFirstArrivedSecond.find((output) => output.type === 'evaluated');
+  assert.deepEqual(evaluated.acknowledgement.logged_item_ids, ['item-1', 'item-2'], 'logged_item_ids must reflect items[] position order, not confirmation arrival order');
+});
+
+test('a stored item whose source boundary matches no pending extraction item is rejected without mutating the cursor', () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  const dispatch = admitThreeRows(coordinator, 's1');
+  coordinator.acceptWorkCompleted(succeeded({ workId: dispatch.workId, sessionId: 's1', batchIdentity: dispatch.batchIdentity, attempt: dispatch.attempt, items: [{ text: 'Only item.', source_segment_ids: ['seg-0'] }] }));
+  // Correct batch/request correlation, but an arbitrary item_id whose claimed source boundary
+  // does not match the one pending item's real source_segment_ids-derived boundary must still be
+  // rejected — count-and-request-id correlation alone is not sufficient one-for-one proof.
+  assert.throws(() => coordinator.acceptStoredItem(storedItem('s1', 'item-x', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' })), /does not match any pending Scribe extraction item/);
+  assert.equal(coordinator.status('s1').cursor.last_sequence, -1);
+  assert.equal(coordinator.status('s1').busy, true, 'the real in-flight batch must remain intact after rejecting the mismatched acknowledgement');
 });
 
 test('a stale or unrelated stored-item acknowledgement is rejected without mutating the cursor', () => {
@@ -262,6 +313,18 @@ test('a stale or unrelated stored-item acknowledgement is rejected without mutat
   assert.throws(() => coordinator.acceptStoredItem(storedItem('s1', 'item-x', 'some-other-request-id')), /No Scribe batch is awaiting/);
   assert.equal(coordinator.status('s1').cursor.last_sequence, -1);
   assert.equal(coordinator.status('s1').busy, true, 'the real in-flight batch must remain intact after rejecting the unrelated acknowledgement');
+});
+
+test('a completion whose nested result.work_id conflicts with the in-flight work is rejected', () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  const dispatch = admitThreeRows(coordinator, 's1');
+  const forged = succeeded({ workId: dispatch.workId, sessionId: 's1', batchIdentity: dispatch.batchIdentity, attempt: dispatch.attempt, items: [] });
+  forged.result.work_id = 'some-other-work-id';
+  assert.throws(() => coordinator.acceptWorkCompleted(forged), /result work_id .* does not match completion work_id/);
+  assert.equal(coordinator.status('s1').cursor.last_sequence, -1, 'a forged nested result.work_id must never advance the cursor');
+  assert.equal(coordinator.status('s1').busy, true, 'the real in-flight batch must remain intact after rejecting the forged result');
 });
 
 // --- Duplicate delivery ------------------------------------------------------
@@ -348,6 +411,38 @@ test('recovered cursor and pending remainder resume idle-based eligibility after
   assert.equal(dispatched[0].batchIdentity.admission_reason, 'idle-timeout');
 });
 
+test('after restoring through sequence 2, a legitimate next sequence 3 is accepted, not rejected as a gap from an unseeded guard', () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  coordinator.restoreState('s1', {
+    cursor: { last_segment_id: 'seg-2', last_sequence: 2, last_revision: 0 },
+    pendingSegments: []
+  });
+  // The shared ordering guard (runtime/ordered-stream.mjs) has no memory of a restarted process;
+  // without seeding it from the recovered cursor, this legitimate continuation would be rejected
+  // as "expected sequence 0" (a fresh stream), not accepted as sequence 3 after 0,1,2.
+  const outputs = coordinator.acceptFinalizedSegment(segment('s1', 3));
+  assert.deepEqual(outputs, []);
+  assert.equal(coordinator.status('s1').pendingCount, 1);
+});
+
+test('a restored pending remainder also seeds the ordering guard past its own segments, not just the cursor', () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  coordinator.restoreState('s1', {
+    cursor: { last_segment_id: null, last_sequence: -1, last_revision: 0 },
+    pendingSegments: [segment('s1', 0), segment('s1', 1)]
+  });
+  // Sequence 2 continues the *pending* segments (0, 1), not the cursor (-1) — the guard must be
+  // seeded past whichever is highest, or this legitimate continuation would be rejected.
+  const outputs = coordinator.acceptFinalizedSegment(segment('s1', 2));
+  const dispatch = outputs.find((output) => output.type === 'dispatch');
+  assert.ok(dispatch, 'sequence 2 must be accepted and complete the batch-complete three-row group with the two recovered pending segments');
+  assert.equal(dispatch.newEvidenceSegments.length, 3);
+});
+
 test('recovery is rejected as conflicting once the coordinator already has live state for that session', () => {
   const { clock } = createFakeClock();
   const coordinator = createScribeCoordinator({ clock });
@@ -390,6 +485,35 @@ test('Close forces a pending remainder and settles only after its terminal ackno
   assert.equal(coordinator.status('s1').cursor.last_sequence, 0);
 });
 
+test('Close settles only once a batch chained after the forced remainder also reaches its terminal outcome', async () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  const firstDispatch = admitThreeRows(coordinator, 's1');
+  coordinator.acceptFinalizedSegment(segment('s1', 3));
+  coordinator.acceptFinalizedSegment(segment('s1', 4));
+  assert.equal(coordinator.status('s1').pendingCount, 2);
+  const { outputs: closeOutputs, settled } = coordinator.close('s1');
+  assert.deepEqual(closeOutputs, [], 'Close cannot force anything yet: the first batch is still busy');
+  let settledFlag = false;
+  settled.then(() => { settledFlag = true; });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(settledFlag, false);
+  // Completing the busy batch re-pumps while still closing, which immediately force-dispatches
+  // the two-row remainder as a *second* batch. `settled` must not resolve here even though the
+  // batch that was in flight when close() was called has now finished.
+  const afterFirstCompletion = coordinator.acceptWorkCompleted(succeeded({ workId: firstDispatch.workId, sessionId: 's1', batchIdentity: firstDispatch.batchIdentity, attempt: firstDispatch.attempt, items: [] }));
+  const secondDispatch = afterFirstCompletion.find((output) => output.type === 'dispatch');
+  assert.ok(secondDispatch, 'the remainder must be force-dispatched as its own chained batch');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(settledFlag, false, 'settled must not resolve while a chained batch it triggered is still in flight');
+  coordinator.acceptWorkCompleted(succeeded({ workId: secondDispatch.workId, sessionId: 's1', batchIdentity: secondDispatch.batchIdentity, attempt: secondDispatch.attempt, items: [] }));
+  await settled;
+  assert.equal(coordinator.status('s1').cursor.last_sequence, 4);
+});
+
 test('Close with an empty backlog settles immediately', async () => {
   const { clock } = createFakeClock();
   const coordinator = createScribeCoordinator({ clock });
@@ -428,19 +552,70 @@ test('a malformed finalized segment converts into a contract-valid service.failu
   assert.deepEqual(registry.validateEnvelope(result.outputs[0]), []);
 });
 
-test('Close over the wire (lifecycle.drain) releases the pending remainder and drains', async () => {
+test('Close over the wire (lifecycle.drain) releases the pending remainder, and drains only after it settles', async () => {
   const sessionId = 'drain-session';
   const segmentInput = createEnvelope({ plane: 'domain', messageType: 'transcript.segment', producer: 'contract-test', correlationId: sessionId, payload: segment(sessionId, 0) });
   const drainInput = createEnvelope({ plane: 'control', messageType: 'lifecycle.drain', producer: 'contract-test', correlationId: sessionId, payload: {} });
   const result = await runServiceBatches(MANIFEST, [
     { inputs: [segmentInput], expectedOutputCount: 1 },
-    { inputs: [drainInput], expectedOutputCount: 2 }
+    // `service.drained` no longer arrives synchronously with the forced dispatch: it is deferred
+    // until the forced batch itself settles (fix for the wire-level drain reporting complete
+    // while the forced batch remained unresolved).
+    { inputs: [drainInput], expectedOutputCount: 1 },
+    {
+      inputs: (priorOutputs) => {
+        const request = priorOutputs.find((message) => message.message_type === 'ai.work-request');
+        const modelRequest = request.payload.input.model_request;
+        return [createEnvelope({
+          plane: 'control', messageType: 'ai.work-completed', producer: 'contract-test', correlationId: sessionId,
+          payload: {
+            work_id: request.payload.work_id, workload: 'logged-item-extraction', session_id: sessionId,
+            sequence: request.payload.sequence, attempt: 1, completed_at: new Date().toISOString(),
+            result: { status: 'succeeded', work_id: request.payload.work_id, request_fingerprint: fingerprintModelRequest(stableFingerprintInput(modelRequest)), response: { protocol_version: '2.0.0', purpose: 'logged-item-extraction', batch_identity: modelRequest.batch_identity, items: [] } }
+          }
+        })];
+      },
+      // The `ai.work-completed` operation's own `operation.completed`, plus the now-deferred
+      // `service.drained` emitted once that settles the forced batch.
+      expectedOutputCount: 2
+    }
   ], 2000, { env: { ARGUS_MODEL_NAME: 'test-model' } });
   const request = result.outputs.find((message) => message.message_type === 'ai.work-request');
   const drained = result.outputs.find((message) => message.message_type === 'service.drained');
   assert.ok(request, 'Close must force the one-row remainder rather than discard it');
   assert.equal(request.payload.input.model_request.batch_identity.admission_reason, 'idle-timeout');
-  assert.ok(drained);
+  assert.ok(drained, 'service.drained must eventually arrive once the forced batch settles');
   assert.deepEqual(registry.validateEnvelope(request), []);
   assert.deepEqual(registry.validateEnvelope(drained), []);
+});
+
+test('retry attempts of the identical batch produce a stable content fingerprint despite each attempt having its own work_id', async () => {
+  const sessionId = 'retry-fingerprint-session';
+  const inputs = [0, 1, 2].map((sequence) => createEnvelope({ plane: 'domain', messageType: 'transcript.segment', producer: 'contract-test', correlationId: sessionId, payload: segment(sessionId, sequence) }));
+  const result = await runServiceBatches(MANIFEST, [
+    { inputs, expectedOutputCount: 4 },
+    {
+      inputs: (priorOutputs) => {
+        const request = priorOutputs.find((message) => message.message_type === 'ai.work-request');
+        return [createEnvelope({
+          plane: 'control', messageType: 'ai.work-completed', producer: 'contract-test', correlationId: sessionId,
+          payload: {
+            work_id: request.payload.work_id, workload: 'logged-item-extraction', session_id: sessionId,
+            sequence: request.payload.sequence, attempt: 1, completed_at: new Date().toISOString(),
+            result: { status: 'failed', work_id: request.payload.work_id, request_fingerprint: `sha256:${'a'.repeat(64)}`, error: { code: 'MODEL_ENDPOINT_TIMEOUT', category: 'timeout', message: 'timed out', retryable: true } }
+          }
+        })];
+      },
+      // operation.completed for the ai.work-completed handling, plus the retry's own service.failure and ai.work-request.
+      expectedOutputCount: 3
+    }
+  ], 2000, { env: { ARGUS_MODEL_NAME: 'test-model' } });
+  const requests = result.outputs.filter((message) => message.message_type === 'ai.work-request').map((message) => message.payload.input.model_request);
+  assert.equal(requests.length, 2, 'the failed attempt must be retried with a second ai.work-request');
+  assert.notEqual(requests[0].identity.work_id, requests[1].identity.work_id, 'each attempt is tracked as its own work_id');
+  assert.equal(requests[0].batch_identity.request_id, requests[1].batch_identity.request_id, 'both attempts describe the identical batch');
+  const rawFingerprints = requests.map((request) => fingerprintModelRequest(request));
+  assert.notEqual(rawFingerprints[0], rawFingerprints[1], 'fingerprinting the transmitted request as-is differs per attempt purely due to its own work_id');
+  const stableFingerprints = requests.map((request) => fingerprintModelRequest(stableFingerprintInput(request)));
+  assert.equal(stableFingerprints[0], stableFingerprints[1], 'normalizing the attempt-specific work_id before fingerprinting must yield an identical content fingerprint across retries');
 });
