@@ -57,11 +57,15 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
   is written, but the slot exists.
 - **Assigning authoritative item identity**: proposed items in
   `ai.work-completed`'s `items[]` and in `scribe_batch_evaluated.items[]` cannot carry
-  `item_id`/`revision` (rejected by `additionalProperties: false`). Only
-  `logged-items/active-owner` may assign those, exactly as for the existing single-item
-  path (ADR-001, ADR-002). Once assigned, `scribe_batch_evaluated.acknowledgement.
-  logged_item_ids` is the governed place to record the resulting authoritative IDs —
-  SCRIBE-03 still owns writing it after the owner accepts the batch.
+  `item_id`/`revision` (rejected by `additionalProperties: false`). The model never
+  assigns identity. The Argus extraction path derives deterministic revision-zero draft
+  IDs from the validated batch and item position/content, matching the existing
+  single-item boundary; `logged-items/active-owner` then accepts or rejects each draft
+  and its `logged-item.stored` result confirms authority (ADR-001, ADR-002). Only those
+  owner-confirmed IDs may enter `scribe_batch_evaluated.acknowledgement.logged_item_ids`.
+  SCRIBE-02 must require their unique order and count to correspond one-for-one with
+  `items[]` before advancing its cursor, and SCRIBE-03 must persist that exact mapping
+  without reconstructing or implicitly repairing it.
 
 ## Key shape decisions
 

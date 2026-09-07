@@ -96,6 +96,7 @@ For every ticket:
 6. The coordinating agent reviews the exact commit, validates its ticket exit gate, merges it to `main`, pushes, and confirms the next wave's prerequisites.
 7. Every later wave starts from the updated `origin/main`; agents do not stack unmerged branches themselves.
 8. Every implementation agent must run `C:\dustin-thomason\scripts\notify-agent-complete.ps1` after pushing and before reporting completion, using a 5–9 word message containing `Codex`. If blocked and user input is required, the agent must send the notification before asking the question.
+9. SCRIBE-02 through SCRIBE-05 must read `contracts/scribe-contract-handoff.md` from their starting `origin/main` and implement its runtime invariants without weakening or privately reinterpreting the governed shapes.
 
 If a ticket discovers that another ticket must own a file, it must stop and report the collision. It must not broaden its scope or edit the shared file preemptively.
 
@@ -162,7 +163,9 @@ Create the independently runnable Scribe coordinator that owns the cursor-driven
 - [ ] Make the eligibility rule return no work while a batch is active; select three rows immediately; select one or two only after 15,000 ms idle or Close.
 - [ ] Cancel/reset the one idle timer when a third row arrives and avoid polling loops, repeated scans, or multiple concurrent timers.
 - [ ] Preserve ordered, duplicate-safe finalized segment admission and stable batch identity.
+- [ ] Correlate every result against the exact in-flight `work_id`, request fingerprint, attempt, and complete batch identity; reject stale, superseded, reordered, or conflicting results without mutating the cursor.
 - [ ] Keep the cursor unchanged until the complete governed acknowledgement arrives, including a valid zero-item acknowledgement.
+- [ ] Accept an `items-recorded` acknowledgement only when its unique, ordered `logged_item_ids` correspond one-for-one with the complete evaluated `items[]`; require an empty ID list for zero-item, failed, or rejected outcomes.
 - [ ] Retain identical pending/retry state after failure and reject conflicting recovery or acknowledgement content.
 - [ ] Immediately pump again after acknowledgement so accumulated three-row groups do not wait for the partial-batch threshold.
 - [ ] Drain deterministically: Stop preserves pending state; Close releases one final remainder and waits for its governed terminal outcome.
@@ -197,6 +200,7 @@ Extend the existing session-storage authority with a compact active Scribe check
 
 - [ ] Add root-contained session paths for an atomic active Scribe checkpoint and append-only permanent Scribe batch journal.
 - [ ] Persist only governed Scribe state: acknowledged cursor, exact pending/in-flight batch references, idle/retry metadata, policy/instruction identity, outcome, and resulting Logged Item IDs.
+- [ ] Preserve the evaluated-item-to-`logged_item_ids` positional mapping exactly and reject count, order, identity, fingerprint, or replay conflicts rather than repairing them implicitly.
 - [ ] Keep transcript text in authoritative transcript storage; do not duplicate an unbounded transcript or model conversation in the journal.
 - [ ] Make checkpoint writes atomic and journal appends idempotent by stable batch/outcome identity.
 - [ ] Detect conflicting fingerprints, malformed state, another session's data, path escape, symlink substitution, partial writes, and invalid acknowledgement/cursor advancement.
@@ -240,7 +244,8 @@ Implement the provider-neutral Scribe request and response behavior against LM S
 - [ ] Enforce the approximately 8,000-token total budget by counting/reserving instruction, schema, new evidence, background context, and bounded output; never truncate new evidence silently.
 - [ ] Remove oldest complete background turns/items first when bounded context must roll; fail explicitly if required instruction, schema, new evidence, and output reserve cannot fit.
 - [ ] Validate strict JSON-only zero-to-many output and reject commentary, malformed JSON, excessive items/text, forged identity/provenance, and unsupported kind metadata.
-- [ ] Derive stable Argus-owned item IDs deterministically from the acknowledged batch and validated item position/content; never trust model-generated authority fields.
+- [ ] Require the response's complete batch identity to match the exact request before producing any draft; reject stale or provider-altered batch identity and provenance.
+- [ ] Derive stable Argus-owned draft item IDs deterministically from the validated batch and item position/content; the model never supplies authority fields, and the active owner remains responsible for accepting or rejecting each draft.
 - [ ] Emit one governed draft per validated item plus the complete evaluated-batch outcome required for zero/multiple acknowledgement.
 - [ ] Retain exact request fingerprints and context across retry and preserve the existing provider configuration, credential redaction, timeout, and explicit failure behavior.
 - [ ] Keep model work FIFO/concurrency-one through the existing scheduler and make no Ollama installation or launch a prerequisite.
@@ -285,6 +290,7 @@ Replace the production window-selector-only extraction path with the complete Sc
 - [ ] Make Stop leave Scribe resumable; make Close release the remainder, wait for terminal acknowledgement, and fail visibly rather than lose work.
 - [ ] Ensure a valid zero-item batch produces no blank Logged Item while still advancing the durable cursor.
 - [ ] Ensure multiple items arrive exactly once through the active owner and append-only history with source navigation intact.
+- [ ] Assemble the accepted batch acknowledgement only from actual `logged-item.stored` confirmations, preserving the evaluated item order and exact one-to-one `logged_item_ids` mapping before allowing cursor advancement or persistence.
 - [ ] Remove or bypass the obsolete production-only selection path without deleting reusable Phase 4 replacement proofs or unrelated demos.
 
 ### Exit gate
