@@ -108,6 +108,7 @@ If a ticket discovers that another ticket must own a file, it must stop and repo
 **Suggested branch slug:** `scribe-contract-foundation`
 **Exclusive production ownership:** Scribe-related files under `contracts/`, their history, fixtures, generated reference, and focused contract tests
 **Must not change:** Runtime, services, production wiring, Electron/UI, session files, or installer artifacts
+**Checklist in chat:** Mandatory. Display a ticket-derived checklist in the agent chat before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
 
 ### Goal
 
@@ -147,6 +148,7 @@ Coordinator behavior, timers, durable file I/O, model prompting, LM Studio calls
 **Suggested branch slug:** `scribe-coordinator`
 **Exclusive production ownership:** New `services/scribe-coordinator/` files and new focused coordinator tests
 **Must not change:** Existing contract definitions, runtime/session storage, model/extractor services, production wiring, Electron/UI, or installer artifacts
+**Checklist in chat:** Mandatory. Display a ticket-derived checklist in the agent chat before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
 
 ### Goal
 
@@ -185,6 +187,7 @@ Filesystem persistence, contract redesign, model prompts, provider calls, Logged
 **Suggested branch slug:** `scribe-session-persistence`
 **Exclusive production ownership:** `runtime/session-storage.mjs`, directly required session-lifecycle/recovery helpers, and focused Phase 6 storage/recovery tests
 **Must not change:** Contracts established by SCRIBE-01, Scribe coordinator files, model/extractor services, production graph, Electron/UI, or installer artifacts
+**Checklist in chat:** Mandatory. Display a ticket-derived checklist in the agent chat before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
 
 ### Goal
 
@@ -222,6 +225,7 @@ Eligibility logic, model context construction, LM Studio communication, graph wi
 **Suggested branch slug:** `scribe-model-extraction`
 **Exclusive production ownership:** `services/log-extractor-local-http/`, Scribe-related prompt/instruction files, the extraction path in `services/serial-ai-model-lane/`, and focused model-adapter/provider tests
 **Must not change:** Contracts established by SCRIBE-01, coordinator, runtime/session storage, production wiring, provider settings UI, Whisper, or installer artifacts
+**Checklist in chat:** Mandatory. Display a ticket-derived checklist in the agent chat before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
 
 ### Goal
 
@@ -261,6 +265,7 @@ Eligibility/timing, persistence, graph integration, provider-settings redesign, 
 **Suggested branch slug:** `scribe-production-integration`
 **Exclusive production ownership:** `wiring/production-electron.json`, directly affected production/demo graph files, `runtime/desktop-application.mjs`, the production Scribe policy source/configuration, and focused cross-component integration tests
 **Must not change:** Contract semantics from SCRIBE-01, core coordinator/model/storage implementations except for a reported prerequisite defect, provider settings UI, Whisper/audio, unrelated UI layout, or installer artifacts
+**Checklist in chat:** Mandatory. Display a ticket-derived checklist in the agent chat before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
 
 ### Goal
 
@@ -303,6 +308,7 @@ Prompt/schema redesign, broad UI redesign, new settings tabs, Whisper changes, A
 **Suggested branch slug:** `scribe-acceptance`
 **Exclusive production ownership:** No production files unless acceptance exposes a defect and the coordinator approves an ownership revision; canonical Scribe evidence, README/TODO/pending-decision status, and new acceptance-only tests
 **Must not change:** Accepted behavior merely to make a test pass, unrelated application features, Whisper/audio, Assistant/Actor scope, or installer artifacts
+**Checklist in chat:** Mandatory. Display a ticket-derived checklist in the agent chat before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
 
 ### Goal
 

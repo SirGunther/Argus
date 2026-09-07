@@ -38,7 +38,11 @@ If the proposed branch or worktree already exists, do not delete, overwrite, res
 
 If the ticket depends on work that has not been merged into `origin/main`, stop and identify the exact prerequisite branch or commit. Do not merge, cherry-pick, or rebase another agent's work unless the ticket explicitly authorizes it. The coordinating agent will perform merges.
 
-Before implementation, create and display a concise checklist derived from the ticket and codebase. The checklist must cover:
+## Mandatory checklist in chat
+
+Please include a checklist in this chat. This will help ensure that you are aware of all the tasks and allow you to verify that each one has been addressed or completed before you notify the user that the work is finished.
+
+Before implementation, create and display that concise checklist in the agent chat, derived from the ticket and codebase. Do not keep it only in a document, tool output, or private reasoning. The checklist must cover:
 
 - The user-visible defect or requested outcome
 - The production execution path responsible for it
@@ -47,7 +51,7 @@ Before implementation, create and display a concise checklist derived from the t
 - Focused validation of the corrected behavior
 - Commit, push, and completion reporting
 
-Check off each item as it is completed. Do not claim completion while required items remain unchecked.
+Update the visible checklist as work progresses and check off each item as it is completed. Do not send the completion notification or claim completion while required items remain unchecked.
 
 Work autonomously from the ticket. Determine the necessary files and behavior through focused inspection. Avoid broad repository reviews, unrelated historical documents, speculative enhancements, dependency upgrades, formatting churn, or opportunistic refactoring.
 
