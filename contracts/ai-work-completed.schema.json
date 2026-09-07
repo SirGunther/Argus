@@ -19,6 +19,16 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "scribeProposedItem": {
+      "type": "object",
+      "required": ["text", "source_segment_ids"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "kind": { "type": "string", "enum": ["action", "decision", "open-question", "reminder", "other"] },
+        "source_segment_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
     "modelResponse": {
       "oneOf": [
         {
@@ -28,6 +38,17 @@
             "protocol_version": { "const": "1.0.0" },
             "purpose": { "const": "logged-item-extraction" },
             "text": { "type": "string", "minLength": 1, "maxLength": 512 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["protocol_version", "purpose", "batch_identity", "items"],
+          "properties": {
+            "protocol_version": { "const": "2.0.0" },
+            "purpose": { "const": "logged-item-extraction" },
+            "batch_identity": { "$ref": "argus.scribe-batch-identity.v1" },
+            "items": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/scribeProposedItem" } }
           },
           "additionalProperties": false
         },

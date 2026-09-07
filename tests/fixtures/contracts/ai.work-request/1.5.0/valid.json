@@ -1,0 +1,112 @@
+{
+  "idempotency_key": "fixture:ai.work-request:scribe-batch-full",
+  "plane": "control",
+  "message_type": "ai.work-request",
+  "timestamp": "2026-09-07T17:00:00.000Z",
+  "producer": "fixture-scribe-batcher",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.5.0",
+  "payload": {
+    "work_id": "logged-item-extraction:fixture-scribe-session:batch-1",
+    "workload": "logged-item-extraction",
+    "session_id": "fixture-scribe-session",
+    "sequence": 1,
+    "queued_at": "2026-09-07T17:00:00.000Z",
+    "input": {
+      "model_request": {
+        "protocol_version": "2.0.0",
+        "purpose": "logged-item-extraction",
+        "model": "fixture-model",
+        "batch_identity": {
+          "request_id": "batch-1",
+          "session_id": "fixture-scribe-session",
+          "segments": [
+            {
+              "segment_id": "segment-10",
+              "revision": 0,
+              "sequence": 10
+            },
+            {
+              "segment_id": "segment-11",
+              "revision": 0,
+              "sequence": 11
+            },
+            {
+              "segment_id": "segment-12",
+              "revision": 0,
+              "sequence": 12
+            }
+          ],
+          "first_sequence": 10,
+          "last_sequence": 12,
+          "admission_reason": "batch-complete",
+          "policy_id": "fixture-default",
+          "policy_version": "1.0.0",
+          "instruction_version": "1.0.0"
+        },
+        "new_evidence_segments": [
+          {
+            "segment_id": "segment-10",
+            "sequence": 10,
+            "start_time": "00:00:10.000",
+            "end_time": "00:00:11.000",
+            "text": "We agreed to ship the draft Friday."
+          },
+          {
+            "segment_id": "segment-11",
+            "sequence": 11,
+            "start_time": "00:00:11.000",
+            "end_time": "00:00:12.000",
+            "text": "Someone still needs to confirm the reviewer."
+          },
+          {
+            "segment_id": "segment-12",
+            "sequence": 12,
+            "start_time": "00:00:12.000",
+            "end_time": "00:00:13.000",
+            "text": "Remind the team about the Friday deadline."
+          }
+        ],
+        "background_context": {
+          "transcript_segments": [
+            {
+              "segment_id": "segment-9",
+              "sequence": 9,
+              "start_time": "00:00:09.000",
+              "end_time": "00:00:10.000",
+              "text": "Earlier context before the batch.",
+              "relation": "lookback"
+            }
+          ],
+          "prior_logged_items": [
+            {
+              "text": "Draft is due for review.",
+              "kind": "action",
+              "source_segment_ids": [
+                "segment-3"
+              ]
+            }
+          ]
+        },
+        "policy_profile": "neutral-contextual-log",
+        "instruction_version": "1.0.0",
+        "limits": {
+          "max_context_chars": 4000,
+          "max_context_tokens": 2000,
+          "max_output_chars": 2048,
+          "max_output_tokens": 512
+        },
+        "identity": {
+          "work_id": "logged-item-extraction:fixture-scribe-session:batch-1",
+          "session_id": "fixture-scribe-session",
+          "batch_request_id": "batch-1"
+        }
+      }
+    },
+    "recovery": {
+      "max_attempts": 2
+    }
+  },
+  "message_id": "068e5c33-e469-41a9-9e7d-e597985ed8b5",
+  "content_fingerprint": "sha256:070e00e39b64aa9d0a0dcdae156f1352721dc95e1a13b188f037cdffc10bf884"
+}

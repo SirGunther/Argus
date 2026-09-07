@@ -1,0 +1,84 @@
+# SCRIBE-01 contract handoff
+
+Governed shapes Wave 2 (SCRIBE-02 through SCRIBE-05) must consume. No runtime, service,
+graph, UI, or storage implementation was changed by this ticket; everything below is
+schema, catalog, changelog, fixture, and doc governance only.
+
+## Exact versions to consume
+
+| Contract | Kind | Version | Schema |
+| --- | --- | --- | --- |
+| `scribe.batch-policy` | catalog message (control plane) | `1.0.0` | `contracts/scribe-batch-policy.schema.json` |
+| `ai.work-request` | catalog message (control plane) | `1.5.0` (new `protocol_version: "2.0.0"` `modelRequest` variant; existing `1.0.0` variants unchanged) | `contracts/ai-work-request.schema.json` |
+| `ai.work-completed` | catalog message (control plane) | `1.5.0` (new `protocol_version: "2.0.0"` `modelResponse` variant; existing `1.0.0` variants unchanged) | `contracts/ai-work-completed.schema.json` |
+| `scribe_batch_identity` | catalog artifact | schema `1.0.0` (no `schema_version` field; shape is the version) | `contracts/scribe-batch-identity.schema.json` |
+| `scribe_batch_evaluated` | catalog artifact | schema `1.0.0` | `contracts/scribe-batch-evaluated.schema.json` |
+| `scribe_checkpoint` | catalog artifact | `schema_version: "1.0.0"` | `contracts/scribe-checkpoint.schema.json` |
+| `scribe_batch_journal_entry` | catalog artifact | schema `1.0.0` | `contracts/scribe-batch-journal-entry.schema.json` |
+
+Catalog `schema_version` is `1.13.0`. Pure-function validators for the batch protocol
+live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0"`),
+`EXTRACTION_BATCH_OUTPUT_LIMITS`, `validateScribeBatchModelRequest`,
+`validateScribeBatchModelResponse`. These are additive exports; the existing 1.0.0-only
+`validateModelRequest`/`validateModelResponse` used by
+`services/log-extractor-local-http` and `services/serial-ai-model-lane` are untouched.
+
+## What Wave 2 still owns
+
+- **Wiring**: no producer/consumer graph wires exist yet for `scribe.batch-policy`,
+  the `2.0.0` model-request/response variants, or the checkpoint/journal artifacts.
+  SCRIBE-02/03 must add them.
+- **Cross-message correlation**: the contract guarantees `items[].source_segment_ids`
+  in an `ai.work-completed` response are well-formed, unique, non-empty strings, but it
+  cannot verify they are actually a subset of the *originating* request's
+  `new_evidence_segments` (the response payload does not carry that list — only
+  `request_fingerprint`, an opaque hash). SCRIBE-02 must correlate `work_id` back to
+  the pending request in memory and enforce that subset relationship at runtime.
+- **Idle timer and 8,000-token accounting**: `scribe.batch-policy` carries the
+  governed defaults (`rows_per_batch: 3`, `idle_timeout_ms: 15000`,
+  `max_total_context_tokens: 8000`) but does not implement a timer, a tokenizer, or
+  restart reconstruction. That remains `MOD-002`/`MOD-003` in
+  `PENDING-DECISIONS.md`, unresolved by this ticket.
+- **Durable file I/O**: `scribe_checkpoint` (versioned snapshot, atomic
+  replace-by-rename per ADR-015's existing pattern) and `scribe_batch_journal_entry`
+  (one NDJSON line per evaluated batch, append-only) are shapes only. SCRIBE-03 owns
+  reading/writing them and reconstructing `background_context` on restart.
+- **Assigning authoritative item identity**: proposed items in
+  `ai.work-completed`'s `items[]` and in `scribe_batch_evaluated.items[]` cannot carry
+  `item_id`/`revision` (rejected by `additionalProperties: false`). Only
+  `logged-items/active-owner` may assign those, exactly as for the existing single-item
+  path (ADR-001, ADR-002).
+
+## Key shape decisions
+
+- **Compatibility**: both `ai.work-request` and `ai.work-completed` took a
+  backward-compatible **minor** catalog bump (`1.4.0` -> `1.5.0`). The existing
+  `protocol_version: "1.0.0"` single-window/single-`text` shapes are byte-for-byte
+  unchanged and remain the only shapes current production services emit/consume. The
+  new batch shape is reachable only through a distinct, explicit
+  `protocol_version: "2.0.0"` discriminator (an internal protocol version, not the
+  catalog message version) — this is the "explicit version change" for the part of the
+  old shape (a single `text` field) that cannot represent zero-to-many items.
+- **New evidence vs. background context**: `new_evidence_segments` carries only the
+  batch's new authoritative finalized rows. `background_context` is a separate object:
+  `transcript_segments` (bounded lookback/forward, same shape as the existing
+  `bounded_context_segments`) plus `prior_logged_items` (previously emitted,
+  non-authoritative Logged Items retained for duplicate suppression per ADR-021). A
+  segment id cannot appear in both places (enforced by
+  `validateScribeBatchModelRequest`).
+- **Batch identity**: `scribe_batch_identity` is `session_id` + an ordered, contiguous,
+  duplicate-free `segments` list (`segment_id`/`revision`/`sequence`) +
+  `first_sequence`/`last_sequence` + `admission_reason`
+  (`"batch-complete" | "idle-timeout"`) + `policy_id`/`policy_version`/
+  `instruction_version` + the immutable `request_id`. It is reused via `$ref` from the
+  new `ai.work-request`/`ai.work-completed` variants and from
+  `scribe_batch_evaluated`/`scribe_checkpoint`, so the shape is defined once.
+- **Evaluated-batch outcome**: `scribe_batch_evaluated` is one artifact shape covering
+  all three outcomes — `empty-evaluated` (zero items), `items-recorded` (the complete
+  item set), and `failed` (with `error.code/category/message/retryable`) — plus a
+  terminal `acknowledgement` (`ack_id`, `accepted`, `acknowledged_at`). `if`/`then`
+  rules in the schema enforce that `items` is empty for `empty-evaluated`, non-empty
+  for `items-recorded`, and that `error` is present for `failed`.
+- **Bounded queue**: `scribe_checkpoint.pending_partial.segments` is capped at
+  `maxItems: 2`, matching ADR-021's "one- or two-row remainder" — a checkpoint can
+  never describe a stranded partial batch larger than the policy allows.

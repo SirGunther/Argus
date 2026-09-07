@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.12.0`
+- Catalog version: `1.13.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -30,8 +30,9 @@
 | `transcript.history-appended` | domain | `1.3.0` | `transcript/permanent-history` | 16 KiB |
 | `transcript.context-policy` | control | `1.2.0` | `transcript/context-selection` | 32 KiB |
 | `operation.rejected` | control | `1.2.0` | `runtime/operation-outcomes` | 16 KiB |
-| `ai.work-request` | control | `1.4.0` | `runtime/ai-scheduling` | 256 KiB |
-| `ai.work-completed` | control | `1.4.0` | `runtime/ai-scheduling` | 256 KiB |
+| `ai.work-request` | control | `1.5.0` | `runtime/ai-scheduling` | 256 KiB |
+| `ai.work-completed` | control | `1.5.0` | `runtime/ai-scheduling` | 256 KiB |
+| `scribe.batch-policy` | control | `1.0.0` | `logged-items/scribe-coordinator` | 32 KiB |
 | `ai.provider-configure` | control | `1.0.0` | `runtime/ai-provider-settings` | 8 KiB |
 | `logged-item.update` | domain | `1.3.0` | `logged-items/active-owner` | 64 KiB |
 | `classification.suggestion` | domain | `1.2.0` | `logged-items/classification` | 64 KiB |
@@ -398,7 +399,7 @@
 ## `ai.work-request`
 
 - Plane: `control`
-- Version: `1.4.0`
+- Version: `1.5.0`
 - Owner: `runtime/ai-scheduling`
 - Schema: [`ai-work-request.schema.json`](../ai-work-request.schema.json)
 - History: [`history/ai.work-request.md`](../history/ai.work-request.md)
@@ -417,7 +418,7 @@
 ## `ai.work-completed`
 
 - Plane: `control`
-- Version: `1.4.0`
+- Version: `1.5.0`
 - Owner: `runtime/ai-scheduling`
 - Schema: [`ai-work-completed.schema.json`](../ai-work-completed.schema.json)
 - History: [`history/ai.work-completed.md`](../history/ai.work-completed.md)
@@ -432,6 +433,24 @@
 | `attempt` | yes | integer | minimum 1 |
 | `completed_at` | yes | string | min length 1 |
 | `result` | yes | any | — |
+
+## `scribe.batch-policy`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `logged-items/scribe-coordinator`
+- Schema: [`scribe-batch-policy.schema.json`](../scribe-batch-policy.schema.json)
+- History: [`history/scribe.batch-policy.md`](../history/scribe.batch-policy.md)
+- Maximum payload: 32 KiB (32768 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `policy_id` | yes | string | min length 1 |
+| `policy_version` | yes | string | — |
+| `session_id` | yes | string | min length 1 |
+| `admission` | yes | object | requires `rows_per_batch`, `idle_timeout_ms` |
+| `context` | yes | object | requires `max_total_context_tokens` |
+| `generation` | yes | object | requires `policy_profile`, `instruction_version` |
 
 ## `ai.provider-configure`
 

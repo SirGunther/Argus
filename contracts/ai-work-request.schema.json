@@ -106,6 +106,35 @@
       },
       "additionalProperties": false
     },
+    "scribeBatchWorkIdentity": {
+      "type": "object",
+      "required": ["work_id", "session_id", "batch_request_id"],
+      "properties": {
+        "work_id": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "batch_request_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "scribeProposedItem": {
+      "type": "object",
+      "required": ["text", "source_segment_ids"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "kind": { "type": "string", "enum": ["action", "decision", "open-question", "reminder", "other"] },
+        "source_segment_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
+    "scribeBackgroundContext": {
+      "type": "object",
+      "required": ["transcript_segments", "prior_logged_items"],
+      "properties": {
+        "transcript_segments": { "type": "array", "items": { "$ref": "#/$defs/contextSegment" } },
+        "prior_logged_items": { "type": "array", "items": { "$ref": "#/$defs/scribeProposedItem" } }
+      },
+      "additionalProperties": false
+    },
     "authoritativeItem": {
       "type": "object",
       "required": ["item_id", "revision", "text", "source"],
@@ -132,6 +161,23 @@
             "instruction_version": { "type": "string", "minLength": 1 },
             "limits": { "$ref": "#/$defs/limits" },
             "identity": { "$ref": "#/$defs/extractionIdentity" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["protocol_version", "purpose", "model", "batch_identity", "new_evidence_segments", "background_context", "policy_profile", "instruction_version", "limits", "identity"],
+          "properties": {
+            "protocol_version": { "const": "2.0.0" },
+            "purpose": { "const": "logged-item-extraction" },
+            "model": { "type": "string", "minLength": 1 },
+            "batch_identity": { "$ref": "argus.scribe-batch-identity.v1" },
+            "new_evidence_segments": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/segment" } },
+            "background_context": { "$ref": "#/$defs/scribeBackgroundContext" },
+            "policy_profile": { "type": "string", "minLength": 1 },
+            "instruction_version": { "type": "string", "minLength": 1 },
+            "limits": { "$ref": "#/$defs/limits" },
+            "identity": { "$ref": "#/$defs/scribeBatchWorkIdentity" }
           },
           "additionalProperties": false
         },

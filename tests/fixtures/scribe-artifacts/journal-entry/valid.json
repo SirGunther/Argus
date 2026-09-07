@@ -1,0 +1,30 @@
+{
+  "journal_sequence": 0,
+  "session_id": "fixture-scribe-session",
+  "batch": {
+    "batch_identity": {
+      "request_id": "batch-1",
+      "session_id": "fixture-scribe-session",
+      "segments": [
+        { "segment_id": "segment-10", "revision": 0, "sequence": 10 },
+        { "segment_id": "segment-11", "revision": 0, "sequence": 11 },
+        { "segment_id": "segment-12", "revision": 0, "sequence": 12 }
+      ],
+      "first_sequence": 10,
+      "last_sequence": 12,
+      "admission_reason": "batch-complete",
+      "policy_id": "fixture-default",
+      "policy_version": "1.0.0",
+      "instruction_version": "1.0.0"
+    },
+    "evaluated_at": "2026-09-07T17:00:01.000Z",
+    "attempt": 1,
+    "outcome": "items-recorded",
+    "items": [
+      { "text": "Ship the draft Friday.", "kind": "decision", "source_segment_ids": ["segment-10"] },
+      { "text": "Confirm the reviewer.", "kind": "open-question", "source_segment_ids": ["segment-11"] }
+    ],
+    "acknowledgement": { "ack_id": "ack-batch-1", "accepted": true, "acknowledged_at": "2026-09-07T17:00:02.000Z" }
+  },
+  "written_at": "2026-09-07T17:00:02.500Z"
+}

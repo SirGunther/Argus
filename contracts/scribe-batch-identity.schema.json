@@ -1,0 +1,31 @@
+{
+  "$id": "argus.scribe-batch-identity.v1",
+  "type": "object",
+  "required": ["request_id", "session_id", "segments", "first_sequence", "last_sequence", "admission_reason", "policy_id", "policy_version", "instruction_version"],
+  "properties": {
+    "request_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["segment_id", "revision", "sequence"],
+        "properties": {
+          "segment_id": { "type": "string", "minLength": 1 },
+          "revision": { "type": "integer", "minimum": 0 },
+          "sequence": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "first_sequence": { "type": "integer", "minimum": 0 },
+    "last_sequence": { "type": "integer", "minimum": 0 },
+    "admission_reason": { "type": "string", "enum": ["batch-complete", "idle-timeout"] },
+    "policy_id": { "type": "string", "minLength": 1 },
+    "policy_version": { "type": "string", "minLength": 1 },
+    "instruction_version": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

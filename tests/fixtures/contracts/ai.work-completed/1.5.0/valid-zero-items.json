@@ -1,0 +1,51 @@
+{
+  "idempotency_key": "fixture:ai.work-completed:scribe-batch-zero",
+  "plane": "control",
+  "message_type": "ai.work-completed",
+  "timestamp": "2026-09-07T17:05:01.000Z",
+  "producer": "fixture-model-lane",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.5.0",
+  "payload": {
+    "work_id": "logged-item-extraction:fixture-scribe-session:batch-2-partial",
+    "workload": "logged-item-extraction",
+    "session_id": "fixture-scribe-session",
+    "sequence": 2,
+    "attempt": 1,
+    "completed_at": "2026-09-07T17:05:01.000Z",
+    "result": {
+      "status": "succeeded",
+      "work_id": "logged-item-extraction:fixture-scribe-session:batch-2-partial",
+      "request_fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "response": {
+        "protocol_version": "2.0.0",
+        "purpose": "logged-item-extraction",
+        "batch_identity": {
+          "request_id": "batch-2-partial",
+          "session_id": "fixture-scribe-session",
+          "segments": [
+            {
+              "segment_id": "segment-20",
+              "revision": 0,
+              "sequence": 20
+            },
+            {
+              "segment_id": "segment-21",
+              "revision": 0,
+              "sequence": 21
+            }
+          ],
+          "first_sequence": 20,
+          "last_sequence": 21,
+          "admission_reason": "idle-timeout",
+          "policy_id": "fixture-default",
+          "policy_version": "1.0.0",
+          "instruction_version": "1.0.0"
+        },
+        "items": []
+      }
+    }
+  },
+  "message_id": "f399b1ed-021b-4095-ad4c-bced7f17b5db",
+  "content_fingerprint": "sha256:8258ac66da82278f43adff29ba6510b1f83d7248fa9bb3b157a15c74fa810fb7"
+}

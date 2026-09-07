@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.12.0",
+  "schema_version": "1.13.0",
   "governance": {
     "compatibility_policy": "backward-compatible-minor",
     "plane_change": "breaking",
@@ -14,7 +14,11 @@
     "active_transcript_snapshot": "active-transcript-snapshot.schema.json",
     "transcript_outbox": "transcript-outbox.schema.json",
     "active_logged_item_snapshot": "active-logged-item-snapshot.schema.json",
-    "close_evidence": "close-evidence.schema.json"
+    "close_evidence": "close-evidence.schema.json",
+    "scribe_batch_identity": "scribe-batch-identity.schema.json",
+    "scribe_batch_evaluated": "scribe-batch-evaluated.schema.json",
+    "scribe_checkpoint": "scribe-checkpoint.schema.json",
+    "scribe_batch_journal_entry": "scribe-batch-journal-entry.schema.json"
   },
   "messages": {
     "audio.chunk": {
@@ -147,7 +151,7 @@
     },
     "ai.work-request": {
       "plane": "control",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "owner": "runtime/ai-scheduling",
       "schema": "ai-work-request.schema.json",
       "max_payload_bytes": 262144,
@@ -155,11 +159,19 @@
     },
     "ai.work-completed": {
       "plane": "control",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "owner": "runtime/ai-scheduling",
       "schema": "ai-work-completed.schema.json",
       "max_payload_bytes": 262144,
       "changelog": "history/ai.work-completed.md"
+    },
+    "scribe.batch-policy": {
+      "plane": "control",
+      "version": "1.0.0",
+      "owner": "logged-items/scribe-coordinator",
+      "schema": "scribe-batch-policy.schema.json",
+      "max_payload_bytes": 32768,
+      "changelog": "history/scribe.batch-policy.md"
     },
     "ai.provider-configure": {
       "plane": "control",
