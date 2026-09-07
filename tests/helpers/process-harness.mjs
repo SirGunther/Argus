@@ -134,7 +134,12 @@ export async function runServiceBatches(manifestPath, batches, timeoutMs = 2000,
   try {
     for (const [batchIndex, batch] of batches.entries()) {
       const startIndex = outputs.length;
-      for (const input of batch.inputs) child.stdin.write(`${JSON.stringify(input)}\n`);
+      // `batch.inputs` may be a plain array (existing behavior) or a function of the outputs
+      // observed so far, `(priorOutputs) => inputs[]`, evaluated only once earlier batches have
+      // already satisfied their own `expectedOutputCount` — for a batch whose input must be built
+      // from a value (e.g. a work_id) the service only reveals in an earlier batch's own output.
+      const inputs = typeof batch.inputs === 'function' ? batch.inputs(outputs.slice()) : batch.inputs;
+      for (const input of inputs) child.stdin.write(`${JSON.stringify(input)}\n`);
       cumulativeExpected += batch.expectedOutputCount;
       await waitForOutputCount(cumulativeExpected, batchIndex);
       batchOutputs.push(outputs.slice(startIndex, cumulativeExpected));
