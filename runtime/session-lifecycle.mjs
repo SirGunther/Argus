@@ -366,6 +366,9 @@ export class SessionLifecycle {
     if (checkpoint?.in_flight_batch) {
       throw conflict('SCRIBE_BATCH_UNACKNOWLEDGED', `Session ${sessionId} has an in-flight Scribe batch ${checkpoint.in_flight_batch.batch_identity.request_id} awaiting acknowledgement`);
     }
+    if (checkpoint?.pending_partial?.segments?.length > 0) {
+      throw conflict('SCRIBE_PENDING_EVIDENCE_UNACKNOWLEDGED', `Session ${sessionId} has ${checkpoint.pending_partial.segments.length} finalized Scribe row(s) admitted into the checkpoint but never batched`);
+    }
   }
 
   async #finalize(metadata, command, { failBeforePhase, failAfterPhase } = {}) {
@@ -901,11 +904,16 @@ function assertScribeCheckpointAdvancement(sessionId, existing, next) {
   if (next.admitted_through.last_sequence === existing.admitted_through.last_sequence && next.admitted_through.last_revision < existing.admitted_through.last_revision) {
     throw integrity('SCRIBE_CURSOR_REGRESSION', `Scribe cursor revision for ${sessionId} cannot move backward`);
   }
-  if (existing.in_flight_batch && next.in_flight_batch && existing.in_flight_batch.batch_identity.request_id !== next.in_flight_batch.batch_identity.request_id) {
-    throw conflict('SCRIBE_IN_FLIGHT_BATCH_CONFLICT', `Session ${sessionId} already has a different Scribe batch in flight`);
-  }
-  if (existing.in_flight_batch && next.in_flight_batch && next.in_flight_batch.attempt < existing.in_flight_batch.attempt) {
-    throw integrity('SCRIBE_CURSOR_REGRESSION', `Scribe in-flight attempt for ${sessionId} cannot move backward`);
+  if (existing.in_flight_batch && next.in_flight_batch) {
+    if (existing.in_flight_batch.batch_identity.request_id !== next.in_flight_batch.batch_identity.request_id) {
+      throw conflict('SCRIBE_IN_FLIGHT_BATCH_CONFLICT', `Session ${sessionId} already has a different Scribe batch in flight`);
+    }
+    if (fingerprintValue(existing.in_flight_batch.batch_identity) !== fingerprintValue(next.in_flight_batch.batch_identity)) {
+      throw conflict('SCRIBE_IN_FLIGHT_BATCH_IDENTITY_CONFLICT', `Session ${sessionId} retried Scribe batch ${next.in_flight_batch.batch_identity.request_id} with a mutated batch_identity`);
+    }
+    if (next.in_flight_batch.attempt < existing.in_flight_batch.attempt) {
+      throw integrity('SCRIBE_CURSOR_REGRESSION', `Scribe in-flight attempt for ${sessionId} cannot move backward`);
+    }
   }
   if (existing.in_flight_batch && !next.in_flight_batch) {
     const resolved = next.last_evaluated_batch;

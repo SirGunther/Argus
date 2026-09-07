@@ -463,7 +463,7 @@ function assertGovernedBatchIdentityShape(sessionId, identity, label) {
   }
 }
 
-function assertGovernedScribeItem(item, label, { requireUniqueSourceSegments = false } = {}) {
+function assertGovernedScribeItem(item, label, { requireUniqueSourceSegments = false, allowedSourceSegmentIds } = {}) {
   const allowed = new Set(['text', 'kind', 'source_segment_ids']);
   if (!item || typeof item !== 'object' || Object.keys(item).some((key) => !allowed.has(key))) throw new SessionStorageError('SCRIBE_ITEM_INVALID', `${label} item has an undeclared field`);
   if (!isNonEmptyString(item.text) || item.text.length > SCRIBE_ITEM_TEXT_MAX_LENGTH) throw new SessionStorageError('SCRIBE_ITEM_INVALID', `${label} item.text must be 1-${SCRIBE_ITEM_TEXT_MAX_LENGTH} characters`);
@@ -471,6 +471,9 @@ function assertGovernedScribeItem(item, label, { requireUniqueSourceSegments = f
   const ids = item.source_segment_ids;
   const idsValid = Array.isArray(ids) && ids.length >= 1 && ids.every((id) => isNonEmptyString(id)) && (!requireUniqueSourceSegments || new Set(ids).size === ids.length);
   if (!idsValid) throw new SessionStorageError('SCRIBE_ITEM_INVALID', `${label} item.source_segment_ids is not governed`);
+  if (allowedSourceSegmentIds && ids.some((id) => !allowedSourceSegmentIds.has(id))) {
+    throw new SessionStorageError('SCRIBE_ITEM_SOURCE_OUT_OF_BATCH', `${label} item cites a source_segment_id outside the batch's evidence`);
+  }
 }
 
 function assertGovernedBatchEvaluatedShape(sessionId, batch, label) {
@@ -482,7 +485,8 @@ function assertGovernedBatchEvaluatedShape(sessionId, batch, label) {
   if (!Number.isInteger(batch.attempt) || batch.attempt < 1) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.attempt must be a positive integer`);
   if (!SCRIBE_OUTCOME_VALUES.has(batch.outcome)) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.outcome is invalid`);
   if (!Array.isArray(batch.items) || batch.items.length > SCRIBE_BATCH_EVALUATED_MAX_ITEMS) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.items must be an array of at most ${SCRIBE_BATCH_EVALUATED_MAX_ITEMS} entries`);
-  for (const item of batch.items) assertGovernedScribeItem(item, label, { requireUniqueSourceSegments: true });
+  const allowedSourceSegmentIds = new Set(batch.batch_identity.segments.map((segment) => segment.segment_id));
+  for (const item of batch.items) assertGovernedScribeItem(item, label, { requireUniqueSourceSegments: true, allowedSourceSegmentIds });
   if (batch.outcome === 'empty-evaluated' && batch.items.length !== 0) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label} outcome empty-evaluated must carry zero items`);
   if (batch.outcome === 'items-recorded' && batch.items.length < 1) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label} outcome items-recorded must carry at least one item`);
   if (batch.outcome === 'failed' || batch.error !== undefined) {

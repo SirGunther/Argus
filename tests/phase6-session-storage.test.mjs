@@ -454,6 +454,37 @@ test('Scribe checkpoint rejects an invalid in-flight replacement and a batch dro
   });
 });
 
+test('Scribe checkpoint rejects a same-request_id retry whose batch_identity content was mutated', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-retry-identity-mutation';
+    const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    await lifecycle.record(command('record-1', sessionId));
+
+    const original = { batch_identity: scribeBatchIdentity(sessionId, 'batch-retry'), attempt: 1, dispatched_at: '2026-08-19T00:09:00.000Z' };
+    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { in_flight_batch: original }));
+
+    const differentSegments = {
+      batch_identity: scribeBatchIdentity(sessionId, 'batch-retry', { segments: [{ segment_id: `${sessionId}-segment-9`, revision: 0, sequence: 9 }] }),
+      attempt: 2,
+      dispatched_at: '2026-08-19T00:09:30.000Z'
+    };
+    await assert.rejects(() => lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { in_flight_batch: differentSegments })), (error) => error.code === 'SCRIBE_IN_FLIGHT_BATCH_IDENTITY_CONFLICT');
+
+    const differentPolicyVersion = {
+      batch_identity: { ...scribeBatchIdentity(sessionId, 'batch-retry'), policy_version: '2.0.0' },
+      attempt: 2,
+      dispatched_at: '2026-08-19T00:09:30.000Z'
+    };
+    await assert.rejects(() => lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { in_flight_batch: differentPolicyVersion })), (error) => error.code === 'SCRIBE_IN_FLIGHT_BATCH_IDENTITY_CONFLICT');
+
+    assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).in_flight_batch, original);
+
+    const identicalRetry = { batch_identity: scribeBatchIdentity(sessionId, 'batch-retry'), attempt: 2, dispatched_at: '2026-08-19T00:09:45.000Z' };
+    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { in_flight_batch: identicalRetry }));
+    assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).in_flight_batch, identicalRetry);
+  });
+});
+
 test('Scribe checkpoint rejects a structurally malformed shape', async () => {
   await withRoot(async (directory) => {
     const sessionId = 'scribe-malformed';
@@ -527,21 +558,37 @@ test('Scribe batch journal accepts a governed zero-item outcome', async () => {
   });
 });
 
+test('Scribe batch outcome rejects an item citing a source_segment_id outside the batch\'s own evidence', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-out-of-batch-provenance';
+    const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    await lifecycle.record(command('record-1', sessionId));
+
+    const fabricated = scribeBatchEvaluated(sessionId, 'batch-fabricated-provenance', {
+      items: [{ text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: [`${sessionId}-segment-99`] }],
+      loggedItemIds: [`${sessionId}-logged-item-0`]
+    });
+    await assert.rejects(() => lifecycle.recordScribeBatchOutcome(sessionId, fabricated), (error) => error.code === 'SCRIBE_ITEM_SOURCE_OUT_OF_BATCH');
+    assert.deepEqual(await lifecycle.getScribeBatchJournal(sessionId), []);
+  });
+});
+
 test('Scribe acknowledgement must correspond one-for-one with the recorded items', async () => {
   await withRoot(async (directory) => {
     const sessionId = 'scribe-multi-item-ack';
     const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
     await lifecycle.record(command('record-1', sessionId));
 
+    const segments = [{ segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 0 }, { segment_id: `${sessionId}-segment-1`, revision: 0, sequence: 1 }];
     const items = [
       { text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: [`${sessionId}-segment-0`] },
       { text: 'Confirm the reviewer.', kind: 'open-question', source_segment_ids: [`${sessionId}-segment-1`] }
     ];
-    const good = scribeBatchEvaluated(sessionId, 'batch-multi', { items, loggedItemIds: [`${sessionId}-logged-item-0`, `${sessionId}-logged-item-1`] });
+    const good = scribeBatchEvaluated(sessionId, 'batch-multi', { items, segments, loggedItemIds: [`${sessionId}-logged-item-0`, `${sessionId}-logged-item-1`] });
     const result = await lifecycle.recordScribeBatchOutcome(sessionId, good);
     assert.deepEqual(result.entry.batch.acknowledgement.logged_item_ids, [`${sessionId}-logged-item-0`, `${sessionId}-logged-item-1`]);
 
-    const mismatched = scribeBatchEvaluated(sessionId, 'batch-mismatch', { items, loggedItemIds: [`${sessionId}-logged-item-only-one`] });
+    const mismatched = scribeBatchEvaluated(sessionId, 'batch-mismatch', { items, segments, loggedItemIds: [`${sessionId}-logged-item-only-one`] });
     await assert.rejects(() => lifecycle.recordScribeBatchOutcome(sessionId, mismatched), (error) => error.code === 'SCRIBE_ACKNOWLEDGEMENT_MAPPING_INVALID');
   });
 });
@@ -632,6 +679,29 @@ test('Close refuses to seal an unacknowledged in-flight Scribe batch, and Stop/R
     await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { last_evaluated_batch: resolvedBatch }));
 
     const closed = await lifecycle.close(command('close-2', sessionId));
+    assert.equal(closed.state, 'closed');
+  });
+});
+
+test('Close refuses to seal unacknowledged pending Scribe evidence that was never batched, and Stop remains unaffected', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-pending-gap';
+    const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    await lifecycle.record(command('record-1', sessionId));
+    const pending = {
+      segments: [{ segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 0 }],
+      accumulated_since: '2026-08-19T00:06:00.000Z'
+    };
+    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { pending_partial: pending }));
+
+    await assert.rejects(() => lifecycle.close(command('close-1', sessionId)), (error) => error.code === 'SCRIBE_PENDING_EVIDENCE_UNACKNOWLEDGED');
+
+    await lifecycle.stop(command('stop-1', sessionId, '2026-08-19T00:06:30.000Z'));
+    assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).pending_partial, pending);
+    await assert.rejects(() => lifecycle.close(command('close-2', sessionId)), (error) => error.code === 'SCRIBE_PENDING_EVIDENCE_UNACKNOWLEDGED');
+
+    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { admitted_through: { last_segment_id: `${sessionId}-segment-0`, last_sequence: 0, last_revision: 0 } }));
+    const closed = await lifecycle.close(command('close-3', sessionId));
     assert.equal(closed.state, 'closed');
   });
 });
