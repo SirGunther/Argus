@@ -1,6 +1,7 @@
 import { SerialAiScheduler } from '../../runtime/serial-ai-scheduler.mjs';
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
-import { assertPurposeMatchesWorkload, fingerprintModelRequest, validateModelRequest, validateModelResponse } from '../../contracts/model-protocol.mjs';
+import { SCRIBE_BATCH_PROTOCOL_VERSION, assertPurposeMatchesWorkload, fingerprintModelRequest, validateModelRequest, validateModelResponse, validateScribeBatchModelRequest, validateScribeBatchModelResponse } from '../../contracts/model-protocol.mjs';
+import { scribeBatchInstruction } from '../../contracts/scribe-instruction.mjs';
 import { normalizeModelProviderSettings, readRuntimeModelConfig } from './model-config.mjs';
 
 const SERVICE = 'serial-ai-model-lane';
@@ -29,7 +30,7 @@ const scheduler = await SerialAiScheduler.create({
       if (!runtime) throw modelFailure('MODEL_PROVIDER_UNAVAILABLE', 'no governed AI provider configuration is active', 'unavailable', false);
       if (request.model !== runtime.configuration.model) throw modelFailure('MODEL_CONFIGURATION_CONFLICT', 'model request does not match the configured model name', 'validation', false);
       const response = await requestConfiguredModel(runtime, request);
-      return { status: 'succeeded', attempt, response: validateModelResponse(response, request.purpose, request.limits) };
+      return { status: 'succeeded', attempt, response: validateResponseForRequest(request, response) };
     } catch (error) {
       throw error instanceof ModelRequestError ? error : modelFailure(error.cause?.code || 'MODEL_REQUEST_FAILED', error.message, 'dependency', true);
     }
@@ -57,7 +58,7 @@ runLineService({ service: SERVICE, operations: {
     const work = normalizeWork(message.payload);
     try {
       const result = await scheduler.enqueue(work);
-      return [{ plane: 'control', messageType: 'ai.work-completed', schemaVersion: '1.4.0', identityKey: `${SERVICE}:ai.work-completed:${work.work_id}`, payload: {
+      return [{ plane: 'control', messageType: 'ai.work-completed', schemaVersion: completedSchemaVersion(work.input.model_request), identityKey: `${SERVICE}:ai.work-completed:${work.work_id}`, payload: {
         work_id: work.work_id, workload: work.workload, session_id: work.session_id, sequence: work.sequence,
         attempt: result.attempt, completed_at: new Date().toISOString(), result: {
           status: result.status, work_id: work.work_id, request_fingerprint: fingerprintModelRequest(work.input.model_request), response: result.response
@@ -65,7 +66,7 @@ runLineService({ service: SERVICE, operations: {
       } }];
     } catch (error) {
       const normalized = error instanceof ModelRequestError ? error : modelFailure(error.cause?.code || error.code || 'MODEL_REQUEST_FAILED', error.message, error.cause?.category || 'dependency', true);
-      return [{ plane: 'control', messageType: 'ai.work-completed', schemaVersion: '1.4.0', identityKey: `${SERVICE}:ai.work-completed:${work.work_id}`, payload: {
+      return [{ plane: 'control', messageType: 'ai.work-completed', schemaVersion: completedSchemaVersion(work.input.model_request), identityKey: `${SERVICE}:ai.work-completed:${work.work_id}`, payload: {
         work_id: work.work_id, workload: work.workload, session_id: work.session_id, sequence: work.sequence,
         attempt: work.recovery.max_attempts, completed_at: new Date().toISOString(), result: {
           status: 'failed', work_id: work.work_id, request_fingerprint: fingerprintModelRequest(work.input.model_request),
@@ -120,7 +121,34 @@ async function requestConfiguredModel(runtime, request) {
   }
 }
 
+/** A batch-shaped Scribe extraction request, distinguished only by its explicit protocol version. */
+function isScribeBatchRequest(request) {
+  return request?.protocol_version === SCRIBE_BATCH_PROTOCOL_VERSION;
+}
+
+/**
+ * The batch model_request/response variants exist only from `ai.work-completed` 1.5.0 onward, so a
+ * batch result is reported under that version while every 1.0.0 result keeps its existing version.
+ */
+function completedSchemaVersion(request) {
+  return isScribeBatchRequest(request) ? '1.5.0' : '1.4.0';
+}
+
+function validateRequestForProtocol(request) {
+  return isScribeBatchRequest(request) ? validateScribeBatchModelRequest(request) : validateModelRequest(request);
+}
+
+function validateResponseForRequest(request, response) {
+  return isScribeBatchRequest(request)
+    ? validateScribeBatchModelResponse(response, request.limits)
+    : validateModelResponse(response, request.purpose, request.limits);
+}
+
 function modelInstruction(request) {
+  // A Scribe batch carries the versioned Scribe instruction from shared contract infrastructure,
+  // so the prompt the provider receives is byte-identical to the one whose token cost the
+  // extraction path reserved inside the total context budget.
+  if (isScribeBatchRequest(request)) return scribeBatchInstruction(request.instruction_version).text;
   const shape = request.purpose === 'classification-enrichment'
     ? '{"protocol_version":"1.0.0","purpose":"classification-enrichment","suggested_classification":"task|note|observation|idea","confidence":0.0}'
     : '{"protocol_version":"1.0.0","purpose":"logged-item-extraction","text":"..."}';
@@ -133,7 +161,7 @@ function ollamaPrompt(request) {
 
 function normalizeWork(work) {
   if (!work || typeof work !== 'object' || !work.work_id || !work.session_id || !work.input?.model_request) throw new ServiceOperationError('ai.work-request must contain a provider-neutral model request', { code: 'INVALID_MODEL_REQUEST', category: 'validation' });
-  try { validateModelRequest(work.input.model_request); }
+  try { validateRequestForProtocol(work.input.model_request); }
   catch (error) { throw new ServiceOperationError(error.message, { code: error.cause?.code || 'INVALID_MODEL_REQUEST', category: 'validation' }); }
   try { assertPurposeMatchesWorkload(work.input.model_request.purpose, work.workload); }
   catch (error) { throw new ServiceOperationError(error.message, { code: error.cause?.code || 'MODEL_PURPOSE_WORKLOAD_CONFLICT', category: 'conflict' }); }

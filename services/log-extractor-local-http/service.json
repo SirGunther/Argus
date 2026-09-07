@@ -5,7 +5,8 @@
     "kind": "node",
     "entrypoint": "index.mjs",
     "includes": [
-      "model-boundary.mjs"
+      "model-boundary.mjs",
+      "scribe-batch-boundary.mjs"
     ],
     "environment": {
         "allow": ["ARGUS_MODEL_NAME"]
