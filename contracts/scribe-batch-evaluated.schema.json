@@ -34,11 +34,12 @@
     },
     "acknowledgement": {
       "type": "object",
-      "required": ["ack_id", "accepted", "acknowledged_at"],
+      "required": ["ack_id", "accepted", "acknowledged_at", "logged_item_ids"],
       "properties": {
         "ack_id": { "type": "string", "minLength": 1 },
         "accepted": { "type": "boolean" },
-        "acknowledged_at": { "type": ["string", "null"] }
+        "acknowledged_at": { "type": ["string", "null"] },
+        "logged_item_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
       },
       "additionalProperties": false
     }
@@ -48,6 +49,9 @@
     { "if": { "properties": { "outcome": { "const": "failed" } } }, "then": { "required": ["error"], "properties": { "error": { "type": "object" } } } },
     { "if": { "properties": { "outcome": { "const": "empty-evaluated" } } }, "then": { "properties": { "items": { "type": "array", "maxItems": 0 } } } },
     { "if": { "properties": { "outcome": { "const": "items-recorded" } } }, "then": { "properties": { "items": { "type": "array", "minItems": 1 } } } },
-    { "if": { "properties": { "acknowledgement": { "type": "object", "properties": { "accepted": { "const": true } } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "acknowledged_at": { "type": "string", "minLength": 1 } } } } } }
+    { "if": { "properties": { "acknowledgement": { "type": "object", "properties": { "accepted": { "const": true } } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "acknowledged_at": { "type": "string", "minLength": 1 } } } } } },
+    { "if": { "not": { "properties": { "outcome": { "const": "items-recorded" } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "logged_item_ids": { "type": "array", "maxItems": 0 } } } } } },
+    { "if": { "properties": { "acknowledgement": { "type": "object", "properties": { "accepted": { "const": false } } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "logged_item_ids": { "type": "array", "maxItems": 0 } } } } } },
+    { "if": { "properties": { "outcome": { "const": "items-recorded" }, "acknowledgement": { "type": "object", "properties": { "accepted": { "const": true } } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "logged_item_ids": { "type": "array", "minItems": 1 } } } } } }
   ]
 }

@@ -14,7 +14,9 @@
   },
   "evaluated_at": "2026-09-07T17:00:01.000Z",
   "attempt": 1,
-  "outcome": "empty-evaluated",
-  "items": [],
-  "acknowledgement": { "ack_id": "ack-batch-1", "accepted": true, "acknowledged_at": null, "logged_item_ids": [] }
+  "outcome": "items-recorded",
+  "items": [
+    { "text": "Ship the draft Friday.", "kind": "decision", "source_segment_ids": ["segment-10"] }
+  ],
+  "acknowledgement": { "ack_id": "ack-batch-1", "accepted": true, "acknowledged_at": "2026-09-07T17:00:02.000Z", "logged_item_ids": [] }
 }

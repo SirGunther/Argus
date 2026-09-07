@@ -28,12 +28,19 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
 - **Wiring**: no producer/consumer graph wires exist yet for `scribe.batch-policy`,
   the `2.0.0` model-request/response variants, or the checkpoint/journal artifacts.
   SCRIBE-02/03 must add them.
-- **Cross-message correlation**: the contract guarantees `items[].source_segment_ids`
-  in an `ai.work-completed` response are well-formed, unique, non-empty strings, but it
-  cannot verify they are actually a subset of the *originating* request's
-  `new_evidence_segments` (the response payload does not carry that list — only
-  `request_fingerprint`, an opaque hash). SCRIBE-02 must correlate `work_id` back to
-  the pending request in memory and enforce that subset relationship at runtime.
+- **Cross-message correlation**: `validateScribeBatchModelRequest` rejects a request
+  whose `identity.session_id`/`identity.batch_request_id`/`instruction_version`
+  conflicts with its own `batch_identity`, and requires `new_evidence_segments` to
+  match `batch_identity.segments` exactly — same segment IDs, same order, same
+  `sequence` per position, not merely the same set. `validateScribeBatchModelResponse`
+  rejects any item whose `source_segment_ids` cite a segment outside the response's own
+  `batch_identity.segments` (fabricated provenance is now structurally impossible, not
+  just well-formed). What remains runtime work: recognizing when a *response*'s
+  `batch_identity.request_id` does not match the batch SCRIBE-02 currently has
+  outstanding (a stale or superseded attempt) — that requires the in-memory pending-work
+  state the contract validators don't have when validating one message in isolation.
+  `scribe_checkpoint.in_flight_batch.attempt` (see below) exists so SCRIBE-02 has
+  something durable to compare an incoming result's `attempt` against.
 - **Idle timer and 8,000-token accounting**: `scribe.batch-policy` carries the
   governed defaults (`rows_per_batch: 3`, `idle_timeout_ms: 15000`,
   `max_total_context_tokens: 8000`) but does not implement a timer, a tokenizer, or
@@ -52,7 +59,9 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
   `ai.work-completed`'s `items[]` and in `scribe_batch_evaluated.items[]` cannot carry
   `item_id`/`revision` (rejected by `additionalProperties: false`). Only
   `logged-items/active-owner` may assign those, exactly as for the existing single-item
-  path (ADR-001, ADR-002).
+  path (ADR-001, ADR-002). Once assigned, `scribe_batch_evaluated.acknowledgement.
+  logged_item_ids` is the governed place to record the resulting authoritative IDs —
+  SCRIBE-03 still owns writing it after the owner accepts the batch.
 
 ## Key shape decisions
 
@@ -89,7 +98,14 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
   fixture) — settlement can never be represented as "accepted" without a durable time.
   A model-endpoint timeout with no response at all is represented as `outcome: "failed"`
   with `error.category: "timeout"` and `retryable: true`, exactly like the
-  `valid-failed` fixture; there is no separate "ambiguous" outcome.
+  `valid-failed` fixture; there is no separate "ambiguous" outcome. `acknowledgement.
+  logged_item_ids` holds the resulting authoritative Logged Item IDs and is governed by
+  `if`/`then` rules: non-empty only when `outcome: "items-recorded"` **and**
+  `accepted: true`; empty for every other outcome/acceptance combination (`empty-
+  evaluated`, `failed`, or a rejected `items-recorded` batch). The schema cannot enforce
+  that its length matches `items.length` one-for-one (no `$data` support in this repo's
+  AJV configuration) — that positional correspondence is a runtime invariant for
+  whichever component (`logged-items/active-owner` or SCRIBE-03) writes this field.
 - **Bounded queue**: `scribe_checkpoint.pending_partial.segments` is capped at
   `maxItems: 2`, matching ADR-021's "one- or two-row remainder" — a checkpoint can
   never describe a stranded partial batch larger than the policy allows.

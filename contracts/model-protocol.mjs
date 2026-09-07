@@ -159,11 +159,27 @@ export function validateScribeBatchModelRequest(request) {
   }
 
   const batchIdentity = validateScribeBatchIdentity(request.batch_identity);
-  validateSegments(request.new_evidence_segments, false);
-  const newEvidenceIds = new Set(request.new_evidence_segments.map((segment) => segment.segment_id));
-  if (newEvidenceIds.size !== batchIdentity.segmentIds.size || [...newEvidenceIds].some((id) => !batchIdentity.segmentIds.has(id))) {
-    throw protocolError('INVALID_MODEL_REQUEST', 'scribe new evidence segments must exactly match the batch identity segment list');
+  if (request.identity.session_id !== request.batch_identity.session_id) {
+    throw protocolError('INVALID_MODEL_REQUEST', 'scribe request identity session_id must match the batch identity session_id');
   }
+  if (request.identity.batch_request_id !== request.batch_identity.request_id) {
+    throw protocolError('INVALID_MODEL_REQUEST', 'scribe request identity batch_request_id must match the batch identity request_id');
+  }
+  if (request.instruction_version !== request.batch_identity.instruction_version) {
+    throw protocolError('INVALID_MODEL_REQUEST', 'scribe request instruction_version must match the batch identity instruction_version');
+  }
+
+  validateSegments(request.new_evidence_segments, false);
+  if (request.new_evidence_segments.length !== batchIdentity.segments.length) {
+    throw protocolError('INVALID_MODEL_REQUEST', 'scribe new evidence segments must exactly match the batch identity segment order and count');
+  }
+  request.new_evidence_segments.forEach((segment, index) => {
+    const expected = batchIdentity.segments[index];
+    if (segment.segment_id !== expected.segment_id || segment.sequence !== expected.sequence) {
+      throw protocolError('INVALID_MODEL_REQUEST', 'scribe new evidence segments must exactly match the batch identity segment order and sequence');
+    }
+  });
+  const newEvidenceIds = batchIdentity.segmentIds;
 
   requireExactKeys(request.background_context, ['transcript_segments', 'prior_logged_items']);
   validateSegments(request.background_context.transcript_segments, true);
@@ -184,10 +200,10 @@ export function validateScribeBatchModelResponse(response, limits) {
     throw protocolError('INVALID_MODEL_OUTPUT', 'model response protocol identity does not match the request');
   }
   requireExactKeys(response, ['protocol_version', 'purpose', 'batch_identity', 'items'], 'INVALID_MODEL_OUTPUT');
-  validateScribeBatchIdentity(response.batch_identity, 'INVALID_MODEL_OUTPUT');
+  const batchIdentity = validateScribeBatchIdentity(response.batch_identity, 'INVALID_MODEL_OUTPUT');
   if (!Array.isArray(response.items)) throw protocolError('INVALID_MODEL_OUTPUT', 'scribe batch items must be an array');
   if (response.items.length > EXTRACTION_BATCH_OUTPUT_LIMITS.max_items) throw protocolError('INVALID_MODEL_OUTPUT', 'scribe batch item count exceeds the declared limit');
-  for (const item of response.items) validateScribeProposedItem(item, 'INVALID_MODEL_OUTPUT');
+  for (const item of response.items) validateScribeProposedItem(item, 'INVALID_MODEL_OUTPUT', batchIdentity.segmentIds);
   const totalChars = response.items.reduce((sum, item) => sum + item.text.length, 0);
   if (totalChars > EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_chars) throw protocolError('INVALID_MODEL_OUTPUT', 'scribe batch output exceeds the declared total character limit');
   if (estimateModelTokens(response.items) > (limits?.max_output_tokens ?? EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens)) {
@@ -196,7 +212,7 @@ export function validateScribeBatchModelResponse(response, limits) {
   return { protocol_version: SCRIBE_BATCH_PROTOCOL_VERSION, purpose: 'logged-item-extraction', batch_identity: response.batch_identity, items: response.items };
 }
 
-function validateScribeProposedItem(item, code = 'INVALID_MODEL_REQUEST') {
+function validateScribeProposedItem(item, code = 'INVALID_MODEL_REQUEST', allowedSourceIds = null) {
   if ('item_id' in (item || {}) || 'revision' in (item || {})) {
     throw protocolError(code, 'scribe batch item cannot carry a provider-forged authoritative item_id or revision');
   }
@@ -209,6 +225,9 @@ function validateScribeProposedItem(item, code = 'INVALID_MODEL_REQUEST') {
     throw protocolError(code, 'scribe batch item source segment identifiers are required');
   }
   if (new Set(item.source_segment_ids).size !== item.source_segment_ids.length) throw protocolError(code, 'scribe batch item source segment identifiers must be unique');
+  if (allowedSourceIds && item.source_segment_ids.some((id) => !allowedSourceIds.has(id))) {
+    throw protocolError(code, 'scribe batch item source segment identifiers must be within the evaluated batch');
+  }
 }
 
 function validateScribeBatchIdentity(identity, code = 'INVALID_MODEL_REQUEST') {
@@ -234,5 +253,5 @@ function validateScribeBatchIdentity(identity, code = 'INVALID_MODEL_REQUEST') {
   }
   if (!['batch-complete', 'idle-timeout'].includes(identity.admission_reason)) throw protocolError(code, 'scribe batch admission_reason is invalid');
   if (!identity.policy_id || !identity.policy_version || !identity.instruction_version) throw protocolError(code, 'scribe batch policy/instruction identity is required');
-  return { segmentIds };
+  return { segmentIds, segments: identity.segments };
 }

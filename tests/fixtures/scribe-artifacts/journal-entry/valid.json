@@ -24,7 +24,7 @@
       { "text": "Ship the draft Friday.", "kind": "decision", "source_segment_ids": ["segment-10"] },
       { "text": "Confirm the reviewer.", "kind": "open-question", "source_segment_ids": ["segment-11"] }
     ],
-    "acknowledgement": { "ack_id": "ack-batch-1", "accepted": true, "acknowledged_at": "2026-09-07T17:00:02.000Z" }
+    "acknowledgement": { "ack_id": "ack-batch-1", "accepted": true, "acknowledged_at": "2026-09-07T17:00:02.000Z", "logged_item_ids": ["logged-item-batch-1-0", "logged-item-batch-1-1"] }
   },
   "written_at": "2026-09-07T17:00:02.500Z"
 }

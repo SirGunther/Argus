@@ -112,6 +112,27 @@ test('the batch identity invariant rejects duplicate segment ids and gapped/reor
   assert.throws(() => validateScribeBatchModelRequest(gapped.payload.input.model_request), /contiguous, gap-free/);
 });
 
+test('new_evidence_segments carrying the correct segment id set out of order is rejected, not silently accepted', async () => {
+  const reordered = await loadMessageFixture('ai.work-request', '1.5.0', 'invalid-reordered-evidence.json');
+  assert.throws(() => validateScribeBatchModelRequest(reordered.payload.input.model_request), /order and sequence/);
+});
+
+test('a request whose identity.session_id, batch_request_id, or instruction_version conflicts with batch_identity fails closed', async () => {
+  const base = (await loadMessageFixture('ai.work-request', '1.5.0', 'valid.json')).payload.input.model_request;
+
+  const wrongSession = structuredClone(base);
+  wrongSession.identity.session_id = 'a-different-session';
+  assert.throws(() => validateScribeBatchModelRequest(wrongSession), /identity session_id must match/);
+
+  const wrongBatchRequestId = structuredClone(base);
+  wrongBatchRequestId.identity.batch_request_id = 'a-different-batch';
+  assert.throws(() => validateScribeBatchModelRequest(wrongBatchRequestId), /batch_request_id must match/);
+
+  const wrongInstructionVersion = structuredClone(base);
+  wrongInstructionVersion.instruction_version = '9.9.9';
+  assert.throws(() => validateScribeBatchModelRequest(wrongInstructionVersion), /instruction_version must match/);
+});
+
 test('the batch request invariant rejects background context representing a new-evidence segment as background', async () => {
   const overlap = await loadMessageFixture('ai.work-request', '1.5.0', 'invalid-background-as-source.json');
   assert.throws(() => validateScribeBatchModelRequest(overlap.payload.input.model_request), /cannot represent a new-evidence segment as background/);
@@ -142,6 +163,21 @@ test('validateScribeBatchModelResponse rejects a provider-forged item identity e
   );
 });
 
+test('validateScribeBatchModelResponse rejects an item citing a source segment outside the evaluated batch', () => {
+  assert.throws(
+    () => validateScribeBatchModelResponse({
+      protocol_version: SCRIBE_BATCH_PROTOCOL_VERSION,
+      purpose: 'logged-item-extraction',
+      batch_identity: {
+        request_id: 'batch-1', session_id: 's', segments: [{ segment_id: 'segment-10', revision: 0, sequence: 10 }],
+        first_sequence: 10, last_sequence: 10, admission_reason: 'batch-complete', policy_id: 'p', policy_version: '1.0.0', instruction_version: '1.0.0'
+      },
+      items: [{ text: 'Fabricated provenance.', source_segment_ids: ['segment-999-never-in-batch'] }]
+    }, { max_output_tokens: 512 }),
+    /within the evaluated batch/
+  );
+});
+
 test('scribe_batch_identity artifact fixture is contract-valid', async () => {
   const fixture = await loadArtifactFixture('batch-identity', 'valid.json');
   assert.deepEqual(registry.validateArtifact('scribe_batch_identity', fixture), []);
@@ -169,6 +205,18 @@ test('scribe_batch_evaluated artifact rejects a malformed acknowledgement and an
 test('scribe_batch_evaluated artifact rejects an accepted acknowledgement with no durable timestamp', async () => {
   const fixture = await loadArtifactFixture('batch-evaluated', 'invalid-accepted-without-timestamp.json');
   assert.notDeepEqual(registry.validateArtifact('scribe_batch_evaluated', fixture), []);
+});
+
+test('scribe_batch_evaluated artifact carries the resulting authoritative Logged Item IDs and rejects them being missing or misplaced', async () => {
+  const items = await loadArtifactFixture('batch-evaluated', 'valid-items.json');
+  assert.deepEqual(registry.validateArtifact('scribe_batch_evaluated', items), []);
+  assert.deepEqual(items.acknowledgement.logged_item_ids, ['logged-item-batch-1-0', 'logged-item-batch-1-1']);
+
+  const missing = await loadArtifactFixture('batch-evaluated', 'invalid-items-recorded-without-logged-item-ids.json');
+  assert.notDeepEqual(registry.validateArtifact('scribe_batch_evaluated', missing), []);
+
+  const misplaced = await loadArtifactFixture('batch-evaluated', 'invalid-logged-item-ids-without-recorded-items.json');
+  assert.notDeepEqual(registry.validateArtifact('scribe_batch_evaluated', misplaced), []);
 });
 
 test('scribe_checkpoint artifact carries admitted-through position, a bounded pending partial, and rolling background context', async () => {
