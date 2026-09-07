@@ -1,0 +1,42 @@
+{
+  "service_name": "scribe-coordinator",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs",
+    "includes": [
+      "eligibility-policy.mjs",
+      "batch-identity.mjs",
+      "coordinator.mjs"
+    ],
+    "environment": { "allow": ["ARGUS_DIAGNOSTICS", "ARGUS_MODEL_NAME"] }
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [
+        "transcript.segment",
+        "logged-item.stored"
+      ],
+      "emits": []
+    },
+    "control": {
+      "accepts": [
+        "scribe.batch-policy",
+        "ai.work-completed",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "ai.work-request",
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed",
+        "operation.rejected"
+      ]
+    }
+  },
+  "state": "in-memory Scribe acknowledgement cursor, ordered finalized-row backlog, one in-flight batch attempt, and the single idle timer, keyed by session_id",
+  "side_effects": []
+}
