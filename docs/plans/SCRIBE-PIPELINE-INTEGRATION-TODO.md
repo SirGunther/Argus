@@ -95,6 +95,7 @@ For every ticket:
 5. The implementation agent commits and pushes its branch but never merges `main`.
 6. The coordinating agent reviews the exact commit, validates its ticket exit gate, merges it to `main`, pushes, and confirms the next wave's prerequisites.
 7. Every later wave starts from the updated `origin/main`; agents do not stack unmerged branches themselves.
+8. Every implementation agent must run `C:\dustin-thomason\scripts\notify-agent-complete.ps1` after pushing and before reporting completion, using a 5–9 word message containing `Codex`. If blocked and user input is required, the agent must send the notification before asking the question.
 
 If a ticket discovers that another ticket must own a file, it must stop and report the collision. It must not broaden its scope or edit the shared file preemptively.
 
