@@ -163,6 +163,17 @@ Phase 5 is intentionally split into two reviewable batches. Phase 5A proves logg
 - [x] Keep the durable globally shared AI journal deferred for integrated application/storage work and Phase 6 coordination.
 - [x] Update evidence and deferred-work records to make only graph-local, in-memory claims.
 
+### 5C. Current Scribe contract
+
+- [x] Define Scribe as the current evidence-recording role and reserve Assistant and Actor for future explicitly governed work.
+- [ ] Replace the current single-item model response with a governed zero-to-many Logged Item response.
+- [ ] Admit exactly three new finalized transcript rows per Scribe batch and add a decided idle trigger for a one- or two-row remainder.
+- [ ] Construct each LM Studio request statelessly within an approximately 8,000-token Argus-owned budget, including prior Logged Items needed for duplicate suppression.
+- [ ] Preserve exact transcript source ranges and stable batch/item identities through admission, retry, acknowledgement, persistence, and restart.
+- [ ] Keep the Scribe lane FIFO and concurrency-one with visible bounded queue state and no silent loss or duplication.
+- [ ] Prove zero-item, one-item, multiple-item, duplicate, malformed-response, timeout, retry, restart, and session-close outcomes against the provider-neutral boundary.
+- [ ] Keep Assistant reasoning and all Actor side effects out of this implementation slice.
+
 ## 6. Sessions and storage
 
 - [x] Define the session metadata contract and lifecycle state machine.

@@ -98,7 +98,7 @@ The production Electron graph validates with 12 supervised components and an exp
 - Visible per-capability status for transcript, logged-item pipeline, storage/session, clipboard, folder opening, and optional classification
 - Responsive stacked-pane fallback for narrower windows
 
-The architecture decision record in `Architecture/DesignDecisions.md` explains why extraction and optional classification are separate operations, how idle-time enrichment should work, and which transcript context belongs in each payload.
+The architecture decision record in `Architecture/DesignDecisions.md` explains why extraction and optional classification are separate operations, how idle-time enrichment should work, and which transcript context belongs in each payload. [`Architecture/OperationalAgentRoles.md`](Architecture/OperationalAgentRoles.md) defines Scribe as the current recording role and reserves Assistant and Actor as future boundaries without adding them to present implementation scope.
 
 Copy and open-folder controls are host commands. Copy uses a replaceable operating-system adapter when available; folder opening accepts only a session identity and is visibly unavailable when no authorized desktop/session-root capability is configured. The preload exposes only bootstrap, governed command, audio-chunk, capture-failure, shutdown-handshake, capability, projection, and redacted host-provider settings channels; it does not expose Node, filesystem, credentials, or process access to the renderer.
 

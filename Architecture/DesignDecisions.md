@@ -594,7 +594,7 @@ Automatic logged-item extraction admits work after **three new authoritative fin
 
 If a partial batch of one or two rows remains and no new finalized row arrives for a bounded idle period, Argus submits that partial batch. The exact idle duration remains an explicit pending decision rather than an implementation guess.
 
-The model is treated as a discretionary assistant. For each batch it determines whether anything new is worth recording, suppresses items already emitted, and may return zero, one, or multiple logged-item proposals such as summaries, actions, to-do items, or notes. These outputs remain proposals governed by the logged-item owner; model-generated labels do not become authoritative merely because the model selected them.
+The model performs the **Scribe** role. For each batch it determines whether anything new is worth recording, suppresses items already emitted, and may return zero, one, or multiple Logged Items such as actions, decisions, open questions, reminders, or other noteworthy information. It does not generate a routine summary for every batch. Outputs remain governed by the logged-item owner; model-generated labels do not become authoritative merely because the model selected them.
 
 The working model-context budget is approximately **8,000 tokens**. That context is owned, bounded, and reconstructed by Argus. Independent LM Studio/OpenAI-compatible HTTP calls are stateless and must not be assumed to retain prior requests. Argus must therefore supply the rolling context needed for continuity and duplicate suppression, including relevant prior model outputs. Once that rolling context is implemented and proven, a separate fixed two-row transcript lookback is unnecessary. Until then, the existing explicit lookback remains in place so context is not silently lost.
 
@@ -606,3 +606,27 @@ The exact idle timeout, token-budget calculation and response reserve, context p
 - Batch admission is predictable during continuous transcription while idle submission prevents one- or two-row tails from remaining stranded indefinitely.
 - Provider replacement remains possible because Argus, not LM Studio or another model server, owns batching, memory, duplicate suppression context, and output governance.
 - Session restart cannot silently discard or duplicate an admitted batch; its exact recovery policy must be resolved before implementation is considered complete.
+
+## ADR-022 — Scribe is current; Assistant and Actor are reserved roles
+
+**Status:** Accepted
+**Date:** 2026-09-07
+
+### Decision
+
+Argus defines three operational roles independently of how many models, processes, prompts, schedulers, or tools eventually implement them:
+
+- **Scribe** determines what happened that is worth retaining. It creates evidence-linked Logged Items from finalized transcript rows and has no external execution authority.
+- **Assistant** determines whether accumulated session state warrants attention, recommendation, delegation, or action. It is reserved for future development and is not a current runtime contract.
+- **Actor** performs a specific authorized external change inside a narrow capability and permission boundary. It is reserved for future development and has no authority until a capability-specific contract is explicitly approved and implemented.
+
+Only Scribe is in current implementation scope. Assistant and Actor establish future architectural boundaries without creating current services, model calls, queues, prompts, tools, or permissions. The canonical operational definitions and activation constraints are recorded in `Architecture/OperationalAgentRoles.md`.
+
+The current local Scribe path uses LM Studio through the provider-neutral loopback model boundary. Ollama remains a compatible optional provider, not a required dependency. Provider selection does not own Scribe memory or change the role boundary; Argus constructs the stateless request context under ADR-021.
+
+### Consequences
+
+- Scribe implementation cannot quietly expand into recommendation, delegation, or external action.
+- Assistant output, if later introduced, cannot itself authorize an Actor.
+- Every future Actor requires its own explicit contract, permission scope, validation, idempotency, audit, and failure behavior.
+- A future implementation may combine or separate runtime resources while preserving the three operational responsibilities.
