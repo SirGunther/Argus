@@ -11,6 +11,7 @@ import {
   failedScribeBatchEvaluation,
   fingerprintScribeBatchRequest,
   scribeBatchCompletionOutputs,
+  serializedRequestTokens,
   stableScribeDraftItemId
 } from '../services/log-extractor-local-http/scribe-batch-boundary.mjs';
 import { loadContractRegistry } from '../runtime/contract-registry.mjs';
@@ -20,6 +21,7 @@ import { startScribeBatchModelEndpoint } from './helpers/scribe-batch-model-endp
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const laneManifest = path.join(root, 'services', 'serial-ai-model-lane', 'service.json');
+const extractorManifest = path.join(root, 'services', 'log-extractor-local-http', 'service.json');
 const registry = await loadContractRegistry(path.join(root, 'contracts', 'catalog.json'));
 const session = 'scribe-extraction-session';
 const MODEL = 'scribe-test-model';
@@ -61,15 +63,24 @@ test('a bounded Scribe batch request reserves instruction, schema, evidence, bac
   assert.equal(budget.total_context_tokens, 8000);
   assert.equal(budget.instruction_tokens, instruction.tokens);
   assert.equal(budget.output_reserve_tokens, EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens);
-  assert.equal(budget.context_allowance_tokens, 8000 - instruction.tokens - EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens);
-  assert.equal(budget.new_evidence_tokens, estimateModelTokens(newEvidence()));
+  assert.equal(budget.request_allowance_tokens, 8000 - instruction.tokens - EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens);
+  assert.equal(budget.new_evidence_text_tokens, estimateModelTokens(newEvidence()));
   assert.deepEqual(budget.removed_background_transcript_segment_ids, []);
   assert.equal(budget.removed_prior_logged_items, 0);
 
+  // The governed total is measured against the complete serialized transmission, not text alone.
+  assert.equal(budget.serialized_request_tokens, serializedRequestTokens(request));
+  assert.equal(budget.total_tokens, instruction.tokens + budget.serialized_request_tokens + budget.output_reserve_tokens);
+  assert.ok(budget.total_tokens <= budget.total_context_tokens);
+  assert.ok(
+    budget.serialized_request_tokens > budget.new_evidence_text_tokens + budget.background_text_tokens,
+    'serialized accounting must exceed text-only accounting'
+  );
+
   assert.equal(request.protocol_version, '2.0.0');
   assert.equal(request.instruction_version, '1.0.0');
-  assert.equal(request.limits.max_context_tokens, budget.context_allowance_tokens);
-  assert.equal(request.limits.max_context_chars, budget.context_allowance_tokens * 4);
+  assert.equal(request.limits.max_context_tokens, budget.request_allowance_tokens);
+  assert.equal(request.limits.max_context_chars, budget.request_allowance_tokens * 4);
   assert.equal(request.limits.max_output_tokens, EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens);
   // New evidence and background stay in separate, non-overlapping fields.
   assert.deepEqual(request.new_evidence_segments, newEvidence());
@@ -81,35 +92,68 @@ test('a bounded Scribe batch request reserves instruction, schema, evidence, bac
 });
 
 test('background rolls oldest complete units first and prior Logged Items outlive distant transcript turns', () => {
-  const instruction = scribeBatchInstruction('1.0.0');
-  const reserve = instruction.tokens + EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens;
-  const evidenceTokens = estimateModelTokens(newEvidence());
-
-  // Allow the evidence plus roughly two background turns, so the oldest turn must roll out.
-  const partial = buildScribeBatchRequest(dispatchInput({ totalContextTokens: reserve + evidenceTokens + 26 }));
+  // The budget that compels exactly one removal is searched for, not hard-coded - see
+  // budgetForcingRemovals for why a constant threshold cannot be correct here.
+  const oneRemoval = budgetForcingRemovals(dispatchInput(), 1);
+  const partial = buildScribeBatchRequest(dispatchInput({ totalContextTokens: oneRemoval }));
+  assert.equal(removalCount(partial.budget), 1);
   assert.deepEqual(partial.budget.removed_background_transcript_segment_ids, ['segment-7']);
   assert.equal(partial.budget.removed_prior_logged_items, 0);
   // Surviving background keeps the order it was supplied in; only whole turns leave.
   assert.deepEqual(partial.request.background_context.transcript_segments.map((segment) => segment.segment_id), ['segment-8', 'segment-9']);
   assert.deepEqual(partial.request.new_evidence_segments, newEvidence());
+  assert.ok(partial.budget.total_tokens <= oneRemoval);
 
-  // Squeeze until the transcript pool is exhausted; prior Logged Items are the last background to go
-  // because they are what makes duplicate suppression possible.
-  const squeezed = buildScribeBatchRequest(dispatchInput({ totalContextTokens: reserve + evidenceTokens + 8 }));
+  // Squeeze past the transcript pool; prior Logged Items are the last background to go because
+  // they are what makes duplicate suppression possible.
+  const fourRemovals = budgetForcingRemovals(dispatchInput(), 4);
+  const squeezed = buildScribeBatchRequest(dispatchInput({ totalContextTokens: fourRemovals }));
   assert.deepEqual(squeezed.request.background_context.transcript_segments, []);
-  assert.equal(squeezed.budget.removed_background_transcript_segment_ids.length, 3);
   assert.deepEqual(squeezed.budget.removed_background_transcript_segment_ids, ['segment-7', 'segment-8', 'segment-9']);
   assert.equal(squeezed.budget.removed_prior_logged_items, 1);
   assert.deepEqual(squeezed.request.background_context.prior_logged_items.map((item) => item.text), ['Reviewer list was circulated.']);
   assert.deepEqual(squeezed.request.new_evidence_segments, newEvidence());
+  assert.ok(squeezed.budget.total_tokens <= fourRemovals);
+});
+
+test('a batch whose structural overhead breaks the budget rolls background instead of transmitting over the limit', () => {
+  // Regression for the accepted-over-budget defect: a background pool with short text but heavy
+  // JSON structure (ids, revisions, sequences, times, relations) whose text-only estimate sits far
+  // under 8,000 tokens while the request actually transmitted exceeds it.
+  const input = dispatchInput({ background: { transcript_segments: structuralBackground(170), prior_logged_items: backgroundContext().prior_logged_items } });
+  const instruction = scribeBatchInstruction('1.0.0');
+
+  const unrolled = buildScribeBatchRequest({ ...input, policy: scribePolicy(20000) });
+  const textOnlyTotal = instruction.tokens
+    + estimateModelTokens([...input.batch.new_evidence_segments, ...input.batch.background_context.transcript_segments, ...input.batch.background_context.prior_logged_items])
+    + EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens;
+
+  // The old text-only accounting would have accepted this batch outright...
+  assert.ok(textOnlyTotal < 8000, `text-only accounting reported ${textOnlyTotal} tokens, which must sit under the budget for this regression to be meaningful`);
+  // ...while the request it actually transmits overruns the governed budget.
+  assert.ok(unrolled.budget.total_tokens > 8000, `serialized transmission measured ${unrolled.budget.total_tokens} tokens, which must exceed the budget for this regression to be meaningful`);
+  assert.equal(unrolled.budget.removed_background_transcript_segment_ids.length, 0);
+
+  // Under the governed 8,000-token policy the same batch now rolls background until the real
+  // transmission fits, and never touches new evidence.
+  const bounded = buildScribeBatchRequest(input);
+  assert.ok(bounded.budget.total_tokens <= 8000);
+  assert.equal(bounded.budget.total_tokens, instruction.tokens + serializedRequestTokens(bounded.request) + EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens);
+  assert.ok(bounded.budget.removed_background_transcript_segment_ids.length > 0);
+  // Oldest structural turns leave first, in ascending sequence order.
+  assert.deepEqual(bounded.budget.removed_background_transcript_segment_ids, bounded.budget.removed_background_transcript_segment_ids.map((_unused, index) => `background-segment-${index}`));
+  assert.deepEqual(bounded.request.new_evidence_segments, newEvidence());
+  assert.deepEqual(bounded.request.background_context.prior_logged_items.map((item) => item.text), ['Draft is due for review.', 'Reviewer list was circulated.']);
 });
 
 test('mandatory instruction, schema, new evidence, and output reserve that cannot fit fail explicitly instead of truncating evidence', () => {
   const instruction = scribeBatchInstruction('1.0.0');
-  const reserve = instruction.tokens + EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens;
+  // One token of room for the whole serialized request: the instruction and the output reserve fit,
+  // so this exercises the mandatory-floor rejection rather than the reserve rejection.
+  const noRoomForEvidence = instruction.tokens + EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens + 1;
 
   assert.throws(
-    () => buildScribeBatchRequest(dispatchInput({ totalContextTokens: reserve + 1 })),
+    () => buildScribeBatchRequest(dispatchInput({ totalContextTokens: noRoomForEvidence })),
     (error) => {
       assert.equal(error.cause.code, 'SCRIBE_BATCH_BUDGET_EXCEEDED');
       assert.match(error.message, /new evidence is never truncated/);
@@ -431,6 +475,153 @@ test('retained Scribe batch dispatch bounds its capacity and produces the govern
   assert.equal(retention.size, 0);
 });
 
+test('reusing a Scribe batch work identity for different content is a conflict, not a silent overwrite', () => {
+  const retention = createScribeBatchRetention({ capacity: 4 });
+  const reusedWorkId = workId('batch-reused');
+  const first = retention.dispatch({ ...dispatchInput({ requestId: 'batch-reused' }), workId: reusedWorkId, modelName: MODEL, queuedAt: '2026-09-07T17:00:00.000Z' });
+
+  // Same work identity, different batch content: the retained request an outstanding attempt is
+  // still correlated against must not be replaced, or the next completion would be checked
+  // against content that was never dispatched.
+  const changedEvidence = newEvidence().map((segment, index) => index === 0 ? { ...segment, text: 'We agreed to ship the draft on Monday instead.' } : segment);
+  assert.throws(
+    () => retention.dispatch({
+      batch: { batch_identity: batchIdentity('batch-reused'), new_evidence_segments: changedEvidence, background_context: backgroundContext() },
+      policy: scribePolicy(), workId: reusedWorkId, modelName: MODEL, queuedAt: '2026-09-07T17:10:00.000Z'
+    }),
+    (error) => {
+      assert.equal(error.cause.code, 'SCRIBE_BATCH_WORK_ID_CONFLICT');
+      assert.equal(error.cause.details.work_id, reusedWorkId);
+      assert.equal(error.cause.details.retained_request_fingerprint, first.requestFingerprint);
+      assert.notEqual(error.cause.details.offered_request_fingerprint, first.requestFingerprint);
+      return true;
+    }
+  );
+  // The original retained request survives the rejected re-dispatch untouched.
+  assert.deepEqual(retention.get(reusedWorkId).request, first.request);
+  assert.equal(retention.get(reusedWorkId).requestFingerprint, first.requestFingerprint);
+  assert.equal(retention.size, 1);
+
+  // A byte-identical re-dispatch stays idempotent rather than conflicting.
+  const replayed = retention.dispatch({ ...dispatchInput({ requestId: 'batch-reused' }), workId: reusedWorkId, modelName: MODEL, queuedAt: '2026-09-07T17:20:00.000Z' });
+  assert.equal(replayed.requestFingerprint, first.requestFingerprint);
+  assert.deepEqual(replayed.request, first.request);
+  assert.equal(retention.size, 1);
+});
+
+test('the extractor service dispatches a bounded batch and turns zero, one, and multiple item completions into drafts', async () => {
+  for (const [label, items, expectedDrafts] of [
+    ['zero', [], 0],
+    ['one', [{ text: 'Confirm the reviewer.', kind: 'open-question', source_segment_ids: ['segment-11'] }], 1],
+    ['multiple', [
+      { text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: ['segment-10'] },
+      { text: 'Confirm the reviewer.', kind: 'open-question', source_segment_ids: ['segment-11'] },
+      { text: 'Remind the team about the Friday deadline.', kind: 'reminder', source_segment_ids: ['segment-11', 'segment-12'] }
+    ], 3]
+  ]) {
+    const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-service' }));
+    // policy: 1 completion; work-request: 1 emitted request + 1 completion; result: drafts + 1 completion.
+    const result = await runService(extractorManifest, [
+      policyEnvelope(),
+      batchProposalEnvelope(request),
+      batchCompletionEnvelope(request, { response: batchResponse(request, items) })
+    ], 4 + expectedDrafts, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
+
+    // The service, not a test helper, produced the bounded request it forwarded to the lane.
+    const forwarded = result.outputs.find((message) => message.message_type === 'ai.work-request');
+    assert.ok(forwarded, label);
+    assert.equal(forwarded.schema_version, '1.5.0', label);
+    assert.deepEqual(forwarded.payload.input.model_request, request, label);
+    assert.deepEqual(registry.validateEnvelope(forwarded), [], label);
+
+    const drafts = result.outputs.filter((message) => message.message_type === 'logged-item.draft');
+    assert.equal(drafts.length, expectedDrafts, label);
+    assert.equal(result.outputs.some((message) => message.message_type === 'service.failure'), false, label);
+    for (const draft of drafts) {
+      assert.deepEqual(registry.validateEnvelope(draft), [], label);
+      assert.equal(draft.payload.generator.input_window_id, 'batch-service', label);
+      assert.equal(draft.payload.revision, 0, label);
+    }
+    if (expectedDrafts === 3) {
+      assert.deepEqual(drafts.map((draft) => draft.payload.text), items.map((item) => item.text));
+      assert.equal(new Set(drafts.map((draft) => draft.payload.item_id)).size, 3);
+    }
+  }
+});
+
+test('a failed Scribe batch completion emits one visible failure carrying the complete failed evaluated outcome', async () => {
+  const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-service-failed' }));
+  const result = await runService(extractorManifest, [
+    policyEnvelope(),
+    batchProposalEnvelope(request),
+    batchCompletionEnvelope(request, { status: 'failed', error: { code: 'MODEL_ENDPOINT_TIMEOUT', category: 'timeout', message: 'model endpoint did not respond within 2000 ms', retryable: true } })
+  ], 5, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
+
+  assert.equal(result.outputs.some((message) => message.message_type === 'logged-item.draft'), false);
+  const failure = result.outputs.find((message) => message.message_type === 'service.failure');
+  assert.equal(failure.payload.error.code, 'MODEL_ENDPOINT_TIMEOUT');
+  assert.equal(failure.payload.error.category, 'timeout');
+  assert.equal(failure.payload.error.retryable, true);
+  assert.equal(failure.payload.error.details.retained_exact_context, true);
+  assert.equal(failure.payload.error.details.batch_request_id, 'batch-service-failed');
+  const evaluated = failure.payload.error.details.evaluated_batch;
+  assert.equal(evaluated.outcome, 'failed');
+  assert.deepEqual(evaluated.items, []);
+  assert.equal(evaluated.acknowledgement.accepted, false);
+  assert.deepEqual(registry.validateArtifact('scribe_batch_evaluated', evaluated), []);
+  assert.deepEqual(registry.validateEnvelope(failure), []);
+});
+
+test('a batch completion for work the extractor never dispatched is a named correlation conflict, not a single-window extraction error', async () => {
+  const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-unretained' }));
+  const result = await runService(extractorManifest, [
+    batchCompletionEnvelope(request, { response: batchResponse(request, []) })
+  ], 1, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
+
+  const failure = result.outputs.find((message) => message.message_type === 'service.failure');
+  assert.equal(failure.payload.error.code, 'SCRIBE_BATCH_NOT_RETAINED');
+  assert.equal(failure.payload.error.category, 'conflict');
+  assert.equal(failure.payload.error.details.batch_request_id, 'batch-unretained');
+  assert.equal(result.outputs.some((message) => message.message_type === 'logged-item.draft'), false);
+  assert.deepEqual(registry.validateEnvelope(failure), []);
+});
+
+test('a Scribe batch dispatch without a governed policy fails closed and forwards nothing', async () => {
+  const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-no-policy' }));
+  const result = await runService(extractorManifest, [batchProposalEnvelope(request)], 1, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
+  const failure = result.outputs.find((message) => message.message_type === 'service.failure');
+  assert.equal(failure.payload.error.code, 'SCRIBE_BATCH_POLICY_MISSING');
+  assert.equal(failure.payload.error.category, 'unavailable');
+  assert.equal(result.outputs.some((message) => message.message_type === 'ai.work-request'), false);
+});
+
+test('the extractor reuses a batch work identity conflict rather than overwriting a live dispatch, and ignores single-window work it produces', async () => {
+  const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-service-reused' }));
+  const changed = buildScribeBatchRequest({
+    ...dispatchInput({ requestId: 'batch-service-reused' }),
+    batch: {
+      batch_identity: batchIdentity('batch-service-reused'),
+      new_evidence_segments: newEvidence().map((segment, index) => index === 0 ? { ...segment, text: 'We agreed to ship the draft on Monday instead.' } : segment),
+      background_context: backgroundContext()
+    }
+  }).request;
+
+  // policy: 1; first proposal: 2; conflicting proposal: 1 failure; 1.0.0 proposal: 1 completion.
+  const result = await runService(extractorManifest, [
+    policyEnvelope(),
+    batchProposalEnvelope(request),
+    batchProposalEnvelope(changed, { idempotencyKey: 'scribe-proposal-conflict' }),
+    legacyWorkRequestEnvelope()
+  ], 5, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
+
+  const forwarded = result.outputs.filter((message) => message.message_type === 'ai.work-request');
+  assert.equal(forwarded.length, 1, 'only the first dispatch is forwarded');
+  const failure = result.outputs.find((message) => message.message_type === 'service.failure');
+  assert.equal(failure.payload.error.code, 'SCRIBE_BATCH_WORK_ID_CONFLICT');
+  // The 1.0.0 request this service produces is ignored on the accept side, not reinterpreted.
+  assert.equal(result.outputs.filter((message) => message.message_type === 'operation.completed').length, 3);
+});
+
 test('Scribe batch extraction needs no Ollama installation and leaves the 1.0.0 single-text protocol untouched', async () => {
   const endpoint = await startScribeBatchModelEndpoint({ reply: () => ({ items: [] }) });
   try {
@@ -506,9 +697,9 @@ function scribePolicy(totalContextTokens = 8000) {
   };
 }
 
-function dispatchInput({ requestId = 'batch-1', totalContextTokens, policy, batchIdentityOverrides } = {}) {
+function dispatchInput({ requestId = 'batch-1', totalContextTokens, policy, batchIdentityOverrides, background } = {}) {
   return {
-    batch: { batch_identity: batchIdentity(requestId, batchIdentityOverrides), new_evidence_segments: newEvidence(), background_context: backgroundContext() },
+    batch: { batch_identity: batchIdentity(requestId, batchIdentityOverrides), new_evidence_segments: newEvidence(), background_context: background ?? backgroundContext() },
     policy: policy ?? scribePolicy(totalContextTokens),
     workId: workId(requestId),
     modelName: MODEL
@@ -516,6 +707,100 @@ function dispatchInput({ requestId = 'batch-1', totalContextTokens, policy, batc
 }
 
 function workId(requestId) { return `logged-item-extraction:${session}:${requestId}`; }
+
+/** The real serialized total one dispatch consumes at the governed default budget. */
+function measuredTotalTokens(input) {
+  return buildScribeBatchRequest({ ...input, policy: scribePolicy(8000) }).budget.total_tokens;
+}
+
+function removalCount(budget) {
+  return budget.removed_background_transcript_segment_ids.length + budget.removed_prior_logged_items;
+}
+
+/**
+ * The largest governed budget that forces at least `count` background units out.
+ *
+ * This searches instead of hard-coding a threshold because `limits` is itself part of the
+ * serialized request, so the budget and the measured size are mutually dependent: a constant
+ * derived from one budget silently stops forcing a roll at another, and would also drift the
+ * moment the instruction wording or the request shape changed length. Taking the largest such
+ * budget means the removal count is the minimum the budget actually compels.
+ */
+function budgetForcingRemovals(input, count) {
+  for (let budget = measuredTotalTokens(input); budget >= 1; budget -= 1) {
+    let built;
+    try { built = buildScribeBatchRequest({ ...input, policy: scribePolicy(budget) }); } catch { break; }
+    if (removalCount(built.budget) >= count) return budget;
+  }
+  throw new Error(`no governed budget forced ${count} background removal(s)`);
+}
+
+/**
+ * Background turns whose text is short but whose JSON structure is heavy: long segment ids, a
+ * sequence, both timestamps, and a relation. This is the shape that makes a text-only token
+ * estimate diverge sharply from the request actually transmitted.
+ */
+function structuralBackground(count) {
+  return Array.from({ length: count }, (_unused, index) => ({
+    segment_id: `background-segment-${index}`,
+    sequence: index,
+    start_time: `00:00:${String(index % 60).padStart(2, '0')}.000`,
+    end_time: `00:00:${String((index + 1) % 60).padStart(2, '0')}.000`,
+    text: 'Short background turn.',
+    relation: 'lookback'
+  }));
+}
+
+function policyEnvelope(policy = scribePolicy()) {
+  return createEnvelope({
+    plane: 'control', messageType: 'scribe.batch-policy', producer: 'fixture-scribe-coordinator', correlationId: session,
+    schemaVersion: '1.0.0', idempotencyKey: `scribe-policy:${policy.policy_id}:${policy.policy_version}`, payload: policy
+  });
+}
+
+/** The coordinator's bounded-batch proposal, carried on the governed 1.5.0 work-request shape. */
+function batchProposalEnvelope(request, { idempotencyKey, maxAttempts = 2 } = {}) {
+  return createEnvelope({
+    plane: 'control', messageType: 'ai.work-request', producer: 'fixture-scribe-coordinator', correlationId: session,
+    schemaVersion: '1.5.0', idempotencyKey: idempotencyKey ?? `scribe-proposal:${request.batch_identity.request_id}`, payload: {
+      work_id: request.identity.work_id, workload: 'logged-item-extraction', session_id: session,
+      sequence: request.batch_identity.last_sequence, queued_at: '2026-09-07T17:00:00.000Z',
+      input: { model_request: request }, recovery: { max_attempts: maxAttempts }
+    }
+  });
+}
+
+function batchCompletionEnvelope(request, { response, status = 'succeeded', error } = {}) {
+  return createEnvelope({
+    plane: 'control', messageType: 'ai.work-completed', producer: 'fixture-model-lane', correlationId: session,
+    schemaVersion: '1.5.0', idempotencyKey: `scribe-completion:${request.batch_identity.request_id}`, payload: {
+      work_id: request.identity.work_id, workload: 'logged-item-extraction', session_id: session,
+      sequence: request.batch_identity.last_sequence, attempt: 1, completed_at: '2026-09-07T17:00:01.000Z',
+      result: {
+        status, work_id: request.identity.work_id, request_fingerprint: fingerprintScribeBatchRequest(request),
+        ...(status === 'failed' ? { error } : { response })
+      }
+    }
+  });
+}
+
+/** A 1.0.0 work request of the kind this service produces; it must be ignored on the accept side. */
+function legacyWorkRequestEnvelope() {
+  return createEnvelope({
+    plane: 'control', messageType: 'ai.work-request', producer: 'fixture-extractor', correlationId: session,
+    schemaVersion: '1.4.0', idempotencyKey: 'legacy-work-request', payload: {
+      work_id: 'logged-item-extraction:legacy:window-1', workload: 'logged-item-extraction', session_id: session,
+      sequence: 1, queued_at: '2026-09-07T17:00:00.000Z', recovery: { max_attempts: 2 },
+      input: { model_request: {
+        protocol_version: '1.0.0', purpose: 'logged-item-extraction', model: MODEL,
+        authoritative_source_segments: [{ segment_id: 'segment-1', sequence: 1, start_time: '00:00:01.000', end_time: '00:00:02.000', text: 'Legacy window.' }],
+        bounded_context_segments: [], policy_profile: 'neutral-contextual-log', instruction_version: '1.0.0',
+        limits: { max_context_chars: 100, max_context_tokens: 25, max_output_chars: 512, max_output_tokens: 128 },
+        identity: { work_id: 'logged-item-extraction:legacy:window-1', session_id: session, context_window_id: 'window-1' }
+      } }
+    }
+  });
+}
 
 function batchResponse(request, items) {
   return { protocol_version: '2.0.0', purpose: 'logged-item-extraction', batch_identity: structuredClone(request.batch_identity), items: structuredClone(items) };

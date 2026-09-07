@@ -34,6 +34,13 @@ export const SCRIBE_POLICY_DEFAULT_TOTAL_CONTEXT_TOKENS = 8000;
  * Budget accounting reserves all five components named by the policy: instruction, response
  * schema (carried inside the instruction text), new evidence, background context, and the
  * bounded output. New evidence is mandatory and is never truncated; only background rolls.
+ *
+ * The evidence and background components are counted as the **complete serialized request** that
+ * is actually transmitted, not as concatenated segment text. Counting text alone under-reports a
+ * real transmission by everything JSON carries around it - `batch_identity` segment ids,
+ * revisions and sequences, per-segment ids/times/relations, prior-item kinds and
+ * `source_segment_ids`, plus `limits`, `identity`, `policy_profile` and `instruction_version` -
+ * which let an over-budget request validate as under budget.
  */
 export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
   const batchIdentity = requireObject(batch?.batch_identity, 'scribe batch identity is required');
@@ -57,17 +64,43 @@ export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
 
   const instruction = scribeBatchInstruction(batchIdentity.instruction_version);
   const outputReserveTokens = EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens;
-  const contextAllowanceTokens = totalContextTokens - instruction.tokens - outputReserveTokens;
-  if (contextAllowanceTokens < 1) {
+  const requestAllowanceTokens = totalContextTokens - instruction.tokens - outputReserveTokens;
+  if (requestAllowanceTokens < 1) {
     throw budgetError(`scribe batch budget of ${totalContextTokens} tokens cannot hold the ${instruction.tokens}-token instruction and schema plus the ${outputReserveTokens}-token output reserve`);
   }
 
-  const newEvidenceTokens = estimateModelTokens(newEvidenceSegments);
-  if (newEvidenceTokens > contextAllowanceTokens) {
-    // New evidence is the authoritative reason the batch exists. Dropping or clipping part of
-    // it would silently evaluate a different batch than the one whose identity is recorded, so
-    // an over-budget mandatory input fails visibly instead.
-    throw budgetError(`scribe batch new evidence needs ${newEvidenceTokens} tokens but only ${contextAllowanceTokens} remain after the instruction and output reserve; new evidence is never truncated`);
+  // `limits` are the governed protocol ceilings on context *text*, which the SCRIBE-01 request
+  // validator enforces. They are fixed once, before background rolls, because they are part of
+  // the serialized request: recomputing them per roll would make the budget self-referential.
+  // The binding constraint below is the serialized-request measurement, which is never looser.
+  const limits = {
+    // Char and token ceilings are held at the same tightness (the governed estimator is
+    // ceil(chars / 4)) so the text ceiling and the token ceiling cannot disagree.
+    max_context_chars: requestAllowanceTokens * 4,
+    max_context_tokens: requestAllowanceTokens,
+    max_output_chars: EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_chars,
+    max_output_tokens: EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens
+  };
+  const assemble = (transcriptSegments, loggedItems) => ({
+    protocol_version: SCRIBE_BATCH_PROTOCOL_VERSION,
+    purpose: 'logged-item-extraction',
+    model: modelName,
+    batch_identity: structuredClone(batchIdentity),
+    new_evidence_segments: structuredClone(newEvidenceSegments),
+    background_context: { transcript_segments: structuredClone(transcriptSegments), prior_logged_items: structuredClone(loggedItems) },
+    policy_profile: generation.policy_profile,
+    instruction_version: instruction.version,
+    limits,
+    identity: { work_id: workId, session_id: batchIdentity.session_id, batch_request_id: batchIdentity.request_id }
+  });
+
+  // The mandatory floor is the request with no background at all: instruction, schema, the whole
+  // serialized new evidence and its structure, and the output reserve. New evidence is the
+  // authoritative reason the batch exists, so if the floor does not fit, the dispatch fails
+  // visibly rather than clipping evidence and evaluating a batch that is not the recorded one.
+  const mandatoryTotalTokens = instruction.tokens + serializedRequestTokens(assemble([], [])) + outputReserveTokens;
+  if (mandatoryTotalTokens > totalContextTokens) {
+    throw budgetError(`scribe batch mandatory instruction, schema, serialized new evidence, and output reserve need ${mandatoryTotalTokens} tokens but the governed budget is ${totalContextTokens}; new evidence is never truncated`);
   }
 
   const transcriptSegments = [...backgroundTranscript];
@@ -79,40 +112,26 @@ export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
   // Background transcript turns go before prior Logged Items because the prior items are what
   // makes duplicate suppression possible (ADR-021) - losing them re-admits information already
   // recorded, while losing distant transcript turns only costs interpretive context.
-  while (estimateModelTokens([...newEvidenceSegments, ...transcriptSegments, ...loggedItems]) > contextAllowanceTokens) {
+  //
+  // The predicate measures the complete serialized request each pass. Removing a unit strictly
+  // shrinks that serialization, and the mandatory floor above is already proven to fit, so the
+  // loop always terminates; the pass count is bounded by the policy-bounded background pool.
+  let totalTokens = instruction.tokens + serializedRequestTokens(assemble(transcriptSegments, loggedItems)) + outputReserveTokens;
+  while (totalTokens > totalContextTokens) {
     if (transcriptSegments.length) {
       const oldest = oldestSegmentIndex(transcriptSegments);
       removedTranscriptSegmentIds.push(transcriptSegments[oldest].segment_id);
       transcriptSegments.splice(oldest, 1);
-      continue;
-    }
-    if (loggedItems.length) {
+    } else if (loggedItems.length) {
       loggedItems.shift();
       removedPriorLoggedItems += 1;
-      continue;
+    } else {
+      throw budgetError(`scribe batch cannot fit its mandatory instruction, schema, serialized new evidence, and output reserve within ${totalContextTokens} tokens`);
     }
-    throw budgetError(`scribe batch cannot fit its mandatory instruction, schema, new evidence, and output reserve within ${totalContextTokens} tokens`);
+    totalTokens = instruction.tokens + serializedRequestTokens(assemble(transcriptSegments, loggedItems)) + outputReserveTokens;
   }
 
-  const request = {
-    protocol_version: SCRIBE_BATCH_PROTOCOL_VERSION,
-    purpose: 'logged-item-extraction',
-    model: modelName,
-    batch_identity: structuredClone(batchIdentity),
-    new_evidence_segments: structuredClone(newEvidenceSegments),
-    background_context: { transcript_segments: structuredClone(transcriptSegments), prior_logged_items: structuredClone(loggedItems) },
-    policy_profile: generation.policy_profile,
-    instruction_version: instruction.version,
-    limits: {
-      // Char and token ceilings are held at the same tightness (the governed estimator is
-      // ceil(chars / 4)) so the protocol validator enforces exactly the allowance computed here.
-      max_context_chars: contextAllowanceTokens * 4,
-      max_context_tokens: contextAllowanceTokens,
-      max_output_chars: EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_chars,
-      max_output_tokens: EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens
-    },
-    identity: { work_id: workId, session_id: batchIdentity.session_id, batch_request_id: batchIdentity.request_id }
-  };
+  const request = assemble(transcriptSegments, loggedItems);
   validateScribeBatchModelRequest(request);
 
   return {
@@ -121,13 +140,27 @@ export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
       total_context_tokens: totalContextTokens,
       instruction_tokens: instruction.tokens,
       output_reserve_tokens: outputReserveTokens,
-      context_allowance_tokens: contextAllowanceTokens,
-      new_evidence_tokens: newEvidenceTokens,
-      background_tokens: estimateModelTokens([...transcriptSegments, ...loggedItems]),
+      request_allowance_tokens: requestAllowanceTokens,
+      // The measured size of the transmission this dispatch produces, and the whole governed
+      // total it consumes. `total_tokens` is the number the ~8,000-token policy actually bounds.
+      serialized_request_tokens: serializedRequestTokens(request),
+      total_tokens: totalTokens,
+      new_evidence_text_tokens: estimateModelTokens(newEvidenceSegments),
+      background_text_tokens: estimateModelTokens([...transcriptSegments, ...loggedItems]),
       removed_background_transcript_segment_ids: Object.freeze([...removedTranscriptSegmentIds]),
       removed_prior_logged_items: removedPriorLoggedItems
     })
   };
+}
+
+/**
+ * Tokens for the complete request exactly as the model lane transmits it: `JSON.stringify` of the
+ * governed request, placed as the user message beside the instruction system prompt. The provider's
+ * own chat envelope (`model`, `stream`, `temperature`, the `messages` wrapper) is provider framing
+ * rather than governed content and is deliberately outside the content budget.
+ */
+export function serializedRequestTokens(request) {
+  return estimateModelTokens(JSON.stringify(request));
 }
 
 export function fingerprintScribeBatchRequest(request) {
@@ -267,11 +300,24 @@ export function createScribeBatchRetention({ capacity = 32, instance = IMPLEMENT
     release(workId) { return pending.delete(workId); },
     clear() { pending.clear(); },
     dispatch({ batch, policy, workId, modelName, queuedAt, maxAttempts }) {
-      if (!pending.has(workId) && pending.size >= capacity) {
+      const retained = pending.get(workId);
+      if (!retained && pending.size >= capacity) {
         throw capacityError(`pending scribe batch capacity reached: ${capacity}`, capacity);
       }
       const { request, budget } = buildScribeBatchRequest({ batch, policy, workId, modelName });
       const requestFingerprint = fingerprintScribeBatchRequest(request);
+      if (retained) {
+        // A reused work identity must describe the identical batch. Overwriting would silently
+        // retire the request an outstanding attempt is still being correlated against, so the
+        // next completion would be checked against content that was never dispatched. A changed
+        // payload on a reused identity is therefore a conflict, not an update - the same rule the
+        // single-window boundary applies when a completion's fingerprint disagrees with the
+        // request retained for it. An identical re-dispatch stays idempotent.
+        if (retained.requestFingerprint !== requestFingerprint) {
+          throw workIdConflictError(`scribe batch work ${workId} is already retained for a different request`, { work_id: workId, retained_request_fingerprint: retained.requestFingerprint, offered_request_fingerprint: requestFingerprint });
+        }
+        return { ...retained, workRequest: scribeBatchWorkRequest({ request: retained.request, queuedAt, maxAttempts, instance }) };
+      }
       pending.set(workId, { request, requestFingerprint, budget });
       return { request, requestFingerprint, budget, workRequest: scribeBatchWorkRequest({ request, queuedAt, maxAttempts, instance }) };
     }
@@ -352,4 +398,5 @@ function requireArray(value, message) {
 }
 function inputError(message) { return new Error(message, { cause: { code: 'INVALID_MODEL_INPUT', category: 'validation' } }); }
 function budgetError(message) { return new Error(message, { cause: { code: 'SCRIBE_BATCH_BUDGET_EXCEEDED', category: 'validation' } }); }
-function capacityError(message, capacity) { return new Error(message, { cause: { code: 'SCRIBE_BATCH_PENDING_FULL', category: 'capacity', details: { capacity } } }); }
+function capacityError(message, capacity) { return new Error(message, { cause: { code: 'SCRIBE_BATCH_PENDING_FULL', category: 'unavailable', details: { capacity } } }); }
+function workIdConflictError(message, details) { return new Error(message, { cause: { code: 'SCRIBE_BATCH_WORK_ID_CONFLICT', category: 'conflict', details } }); }

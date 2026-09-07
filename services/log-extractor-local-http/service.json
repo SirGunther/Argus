@@ -24,6 +24,8 @@
     },
     "control": {
       "accepts": [
+        "scribe.batch-policy",
+        "ai.work-request",
         "ai.work-completed",
         "lifecycle.health-check",
         "lifecycle.drain"
@@ -37,6 +39,6 @@
       ]
     }
   },
-  "state": "bounded in-memory exact retry context; pending capacity 32; model-name configuration only",
+  "state": "bounded in-memory exact retry context for single-window and scribe-batch work, pending capacity 32 each; up to 8 retained scribe batch policies; model-name configuration only",
   "side_effects": []
 }
