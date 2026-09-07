@@ -165,6 +165,8 @@ Phase 5 is intentionally split into two reviewable batches. Phase 5A proves logg
 
 ### 5C. Current Scribe contract
 
+Delivery and agent ownership are defined in `docs/plans/SCRIBE-PIPELINE-INTEGRATION-TODO.md`; isolated agents use `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md`.
+
 - [x] Define Scribe as the current evidence-recording role and reserve Assistant and Actor for future explicitly governed work.
 - [ ] Replace the current single-item model response with a governed zero-to-many Logged Item response.
 - [ ] Admit exactly three new finalized transcript rows per Scribe batch and add a decided idle trigger for a one- or two-row remainder.

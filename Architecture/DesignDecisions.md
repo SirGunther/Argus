@@ -592,13 +592,15 @@ unreachable runtime, or failed connection test produces an unavailable/degraded 
 
 Automatic logged-item extraction admits work after **three new authoritative finalized transcript rows**. A batch contains only rows that have not already been admitted. Continued speech does not trigger a separate elapsed-time flush while batches of three are being produced.
 
-If a partial batch of one or two rows remains and no new finalized row arrives for a bounded idle period, Argus submits that partial batch. The exact idle duration remains an explicit pending decision rather than an implementation guess.
+If a partial batch of one or two rows remains and no new finalized row arrives for **15 seconds**, Argus submits that partial batch. Close forces any remainder after transcript finalization settles; Stop does not because the session may resume.
+
+Transcript history is the durable Scribe backlog and a durable acknowledgement cursor is its queue position. One event-driven coordinator pump evaluates eligibility when a finalized row arrives, the single idle timer expires, model work completes or fails, recovery restores state, or Close begins. It does not repeatedly poll or copy transcript history into another queue. While one batch is active, new rows remain in transcript history. Completion immediately wakes the same pump, so complete three-row groups do not wait for the partial-batch threshold.
 
 The model performs the **Scribe** role. For each batch it determines whether anything new is worth recording, suppresses items already emitted, and may return zero, one, or multiple Logged Items such as actions, decisions, open questions, reminders, or other noteworthy information. It does not generate a routine summary for every batch. Outputs remain governed by the logged-item owner; model-generated labels do not become authoritative merely because the model selected them.
 
 The working model-context budget is approximately **8,000 tokens**. That context is owned, bounded, and reconstructed by Argus. Independent LM Studio/OpenAI-compatible HTTP calls are stateless and must not be assumed to retain prior requests. Argus must therefore supply the rolling context needed for continuity and duplicate suppression, including relevant prior model outputs. Once that rolling context is implemented and proven, a separate fixed two-row transcript lookback is unnecessary. Until then, the existing explicit lookback remains in place so context is not silently lost.
 
-The exact idle timeout, token-budget calculation and response reserve, context persistence/restart behavior, prompt-management surface, and governed zero-to-many response schema remain pending decisions.
+The exact token-budget calculation and response reserve, context persistence/restart behavior, prompt-management surface, and governed zero-to-many response schema remain pending decisions.
 
 ### Consequences
 
@@ -606,6 +608,7 @@ The exact idle timeout, token-budget calculation and response reserve, context p
 - Batch admission is predictable during continuous transcription while idle submission prevents one- or two-row tails from remaining stranded indefinitely.
 - Provider replacement remains possible because Argus, not LM Studio or another model server, owns batching, memory, duplicate suppression context, and output governance.
 - Session restart cannot silently discard or duplicate an admitted batch; its exact recovery policy must be resolved before implementation is considered complete.
+- The main application and graph runtime do not own Scribe admission rules. A standalone contracted Scribe coordinator owns the pure eligibility policy, timer, cursor transitions, and recovery interaction while reusing existing storage and scheduling boundaries.
 
 ## ADR-022 — Scribe is current; Assistant and Actor are reserved roles
 
