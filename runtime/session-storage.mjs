@@ -3,6 +3,7 @@ import { access, appendFile, copyFile, mkdir, readFile, rename, writeFile, lstat
 import path from 'node:path';
 
 export const STORAGE_SCHEMA_VERSION = '1.0.0';
+export const SCRIBE_CHECKPOINT_SCHEMA_VERSION = '1.0.0';
 export const FINALIZATION_PHASES = Object.freeze([
   'none',
   'writes-blocked',
@@ -26,8 +27,17 @@ const RECOVERY_BACKUP_FILE_NAMES = Object.freeze([
   'finalization',
   'transcriptHistory',
   'loggedItemHistory',
-  'closeEvidence'
+  'closeEvidence',
+  'scribeCheckpoint',
+  'scribeBatchJournal'
 ]);
+const SCRIBE_ITEM_KIND_VALUES = new Set(['action', 'decision', 'open-question', 'reminder', 'other']);
+const SCRIBE_ADMISSION_REASON_VALUES = new Set(['batch-complete', 'idle-timeout']);
+const SCRIBE_OUTCOME_VALUES = new Set(['items-recorded', 'empty-evaluated', 'failed']);
+const SCRIBE_BATCH_EVALUATED_MAX_ITEMS = 8;
+const SCRIBE_CHECKPOINT_PENDING_MAX_SEGMENTS = 2;
+const SCRIBE_BATCH_IDENTITY_MAX_SEGMENTS = 16;
+const SCRIBE_ITEM_TEXT_MAX_LENGTH = 512;
 
 export class SessionStorageError extends Error {
   constructor(code, message, { retryable = false, details } = {}) {
@@ -82,6 +92,8 @@ export class SessionStorage {
       transcriptHistory: path.join(permanent, HISTORY_FILE_BY_KIND.transcript),
       loggedItemHistory: path.join(permanent, HISTORY_FILE_BY_KIND['logged-item']),
       closeEvidence: path.join(permanent, 'close.evidence.json'),
+      scribeCheckpoint: path.join(active, 'scribe.checkpoint.json'),
+      scribeBatchJournal: path.join(permanent, 'scribe.batch-journal.ndjson'),
       recoveryBackups: this.#insideRoot(path.join(session, 'recovery-backups'))
     });
   }
@@ -168,6 +180,74 @@ export class SessionStorage {
   async writeCloseEvidence(sessionId, evidence) {
     const paths = await this.ensureSession(sessionId);
     return this.#writeAtomic(paths.closeEvidence, evidence);
+  }
+
+  async readScribeCheckpoint(sessionId) {
+    await this.ensureRoot();
+    const paths = this.paths(sessionId);
+    await this.#assertSafeSessionPaths(paths, ['scribeCheckpoint']);
+    const checkpoint = await this.#readJson(paths.scribeCheckpoint, { missing: undefined, label: 'Scribe checkpoint' });
+    if (checkpoint !== undefined) assertGovernedScribeCheckpointShape(sessionId, checkpoint);
+    return checkpoint;
+  }
+
+  async writeScribeCheckpoint(sessionId, checkpoint) {
+    assertGovernedScribeCheckpointShape(sessionId, checkpoint);
+    const paths = await this.ensureSession(sessionId);
+    return this.#writeAtomic(paths.scribeCheckpoint, checkpoint);
+  }
+
+  async readScribeBatchJournal(sessionId) {
+    await this.ensureRoot();
+    const paths = this.paths(sessionId);
+    await this.#assertSafeSessionPaths(paths, ['scribeBatchJournal']);
+    let content;
+    try {
+      content = await readFile(paths.scribeBatchJournal, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') return [];
+      throw new SessionStorageError('SCRIBE_JOURNAL_READ_FAILED', `Unable to read Scribe batch journal: ${error.message}`, { retryable: true });
+    }
+    const entries = [];
+    let expectedSequence = 0;
+    for (const [index, line] of content.split(/\r?\n/).entries()) {
+      if (!line.trim()) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch (error) {
+        throw new SessionStorageError('SCRIBE_JOURNAL_INTEGRITY_FAILURE', `Scribe batch journal line ${index + 1} is not valid JSON`, { details: { cause: error.message } });
+      }
+      assertGovernedJournalEntryShape(sessionId, entry, index + 1);
+      if (entry.journal_sequence !== expectedSequence) {
+        throw new SessionStorageError('SCRIBE_JOURNAL_INTEGRITY_FAILURE', `Scribe batch journal line ${index + 1} has out-of-order journal_sequence ${entry.journal_sequence}; expected ${expectedSequence}`);
+      }
+      expectedSequence += 1;
+      entries.push(entry);
+    }
+    return entries;
+  }
+
+  async appendScribeBatchJournal(sessionId, { batch, writtenAt = new Date().toISOString() } = {}) {
+    assertGovernedBatchEvaluatedShape(sessionId, batch, 'Scribe batch outcome');
+    const paths = await this.ensureSession(sessionId);
+    await this.#assertSafeSessionPaths(paths, ['scribeBatchJournal']);
+    const existing = await this.readScribeBatchJournal(sessionId);
+    const identityKey = `${batch.batch_identity.request_id}:${batch.attempt}`;
+    const fingerprint = fingerprintValue(batch);
+    const known = existing.find((entry) => `${entry.batch.batch_identity.request_id}:${entry.batch.attempt}` === identityKey);
+    if (known) {
+      if (fingerprintValue(known.batch) !== fingerprint) throw new SessionStorageError('SCRIBE_JOURNAL_REPLAY_CONFLICT', `Scribe batch ${identityKey} was already journaled with different content`);
+      return { duplicate: true, entry: structuredClone(known) };
+    }
+    const ackConflict = existing.find((entry) => entry.batch.acknowledgement.ack_id === batch.acknowledgement.ack_id);
+    if (ackConflict) throw new SessionStorageError('SCRIBE_JOURNAL_ACK_ID_CONFLICT', `Acknowledgement ${batch.acknowledgement.ack_id} was already recorded for a different Scribe batch`);
+    const entry = {
+      journal_sequence: existing.length,
+      session_id: sessionId,
+      batch: structuredClone(batch),
+      written_at: writtenAt
+    };
+    await appendFile(paths.scribeBatchJournal, `${JSON.stringify(entry)}\n`, 'utf8');
+    return { duplicate: false, entry };
   }
 
   async backupSessionFiles(sessionId, { backupId, fileNames = RECOVERY_BACKUP_FILE_NAMES } = {}) {
@@ -356,6 +436,139 @@ export class SessionStorage {
       throw new SessionStorageError('SNAPSHOT_WRITE_FAILED', `Unable to atomically replace ${path.basename(file)}: ${error.message}`, { retryable: true });
     }
   }
+}
+
+function isNonEmptyString(value) { return typeof value === 'string' && value.length > 0; }
+function isNonNegativeInteger(value) { return Number.isInteger(value) && value >= 0; }
+
+function assertGovernedBatchIdentityShape(sessionId, identity, label) {
+  if (!identity || typeof identity !== 'object') throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity must be an object`);
+  const allowed = new Set(['request_id', 'session_id', 'segments', 'first_sequence', 'last_sequence', 'admission_reason', 'policy_id', 'policy_version', 'instruction_version']);
+  if (Object.keys(identity).some((key) => !allowed.has(key))) throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity has an undeclared field`);
+  if (!isNonEmptyString(identity.request_id)) throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.request_id is required`);
+  if (identity.session_id !== sessionId) throw new SessionStorageError('SCRIBE_BATCH_SESSION_CONFLICT', `${label} batch_identity targets a different session`, { details: { session_id: identity.session_id } });
+  if (!Array.isArray(identity.segments) || identity.segments.length < 1 || identity.segments.length > SCRIBE_BATCH_IDENTITY_MAX_SEGMENTS) {
+    throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.segments must contain 1-${SCRIBE_BATCH_IDENTITY_MAX_SEGMENTS} entries`);
+  }
+  for (const entry of identity.segments) {
+    const keysOk = entry && typeof entry === 'object' && Object.keys(entry).every((key) => ['segment_id', 'revision', 'sequence'].includes(key));
+    if (!keysOk || !isNonEmptyString(entry.segment_id) || !isNonNegativeInteger(entry.revision) || !isNonNegativeInteger(entry.sequence)) {
+      throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.segments contains an invalid entry`);
+    }
+  }
+  if (!isNonNegativeInteger(identity.first_sequence) || !isNonNegativeInteger(identity.last_sequence)) throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity sequence bounds are invalid`);
+  if (!SCRIBE_ADMISSION_REASON_VALUES.has(identity.admission_reason)) throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.admission_reason is invalid`);
+  if (!isNonEmptyString(identity.policy_id) || !isNonEmptyString(identity.policy_version) || !isNonEmptyString(identity.instruction_version)) {
+    throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity policy/instruction identity is invalid`);
+  }
+}
+
+function assertGovernedScribeItem(item, label, { requireUniqueSourceSegments = false } = {}) {
+  const allowed = new Set(['text', 'kind', 'source_segment_ids']);
+  if (!item || typeof item !== 'object' || Object.keys(item).some((key) => !allowed.has(key))) throw new SessionStorageError('SCRIBE_ITEM_INVALID', `${label} item has an undeclared field`);
+  if (!isNonEmptyString(item.text) || item.text.length > SCRIBE_ITEM_TEXT_MAX_LENGTH) throw new SessionStorageError('SCRIBE_ITEM_INVALID', `${label} item.text must be 1-${SCRIBE_ITEM_TEXT_MAX_LENGTH} characters`);
+  if (item.kind !== undefined && !SCRIBE_ITEM_KIND_VALUES.has(item.kind)) throw new SessionStorageError('SCRIBE_ITEM_INVALID', `${label} item.kind is invalid`);
+  const ids = item.source_segment_ids;
+  const idsValid = Array.isArray(ids) && ids.length >= 1 && ids.every((id) => isNonEmptyString(id)) && (!requireUniqueSourceSegments || new Set(ids).size === ids.length);
+  if (!idsValid) throw new SessionStorageError('SCRIBE_ITEM_INVALID', `${label} item.source_segment_ids is not governed`);
+}
+
+function assertGovernedBatchEvaluatedShape(sessionId, batch, label) {
+  if (!batch || typeof batch !== 'object') throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label} must be an object`);
+  const allowed = new Set(['batch_identity', 'evaluated_at', 'attempt', 'outcome', 'items', 'error', 'acknowledgement']);
+  if (Object.keys(batch).some((key) => !allowed.has(key))) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label} has an undeclared field`);
+  assertGovernedBatchIdentityShape(sessionId, batch.batch_identity, label);
+  if (!isNonEmptyString(batch.evaluated_at)) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.evaluated_at is required`);
+  if (!Number.isInteger(batch.attempt) || batch.attempt < 1) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.attempt must be a positive integer`);
+  if (!SCRIBE_OUTCOME_VALUES.has(batch.outcome)) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.outcome is invalid`);
+  if (!Array.isArray(batch.items) || batch.items.length > SCRIBE_BATCH_EVALUATED_MAX_ITEMS) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.items must be an array of at most ${SCRIBE_BATCH_EVALUATED_MAX_ITEMS} entries`);
+  for (const item of batch.items) assertGovernedScribeItem(item, label, { requireUniqueSourceSegments: true });
+  if (batch.outcome === 'empty-evaluated' && batch.items.length !== 0) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label} outcome empty-evaluated must carry zero items`);
+  if (batch.outcome === 'items-recorded' && batch.items.length < 1) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label} outcome items-recorded must carry at least one item`);
+  if (batch.outcome === 'failed' || batch.error !== undefined) {
+    const error = batch.error;
+    const allowedError = new Set(['code', 'category', 'message', 'retryable']);
+    if (!error || typeof error !== 'object' || Object.keys(error).some((key) => !allowedError.has(key)) || !isNonEmptyString(error.code) || !isNonEmptyString(error.category) || !isNonEmptyString(error.message) || typeof error.retryable !== 'boolean') {
+      throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.error is not governed`);
+    }
+  }
+  const ack = batch.acknowledgement;
+  const allowedAck = new Set(['ack_id', 'accepted', 'acknowledged_at', 'logged_item_ids']);
+  if (!ack || typeof ack !== 'object' || Object.keys(ack).some((key) => !allowedAck.has(key)) || !isNonEmptyString(ack.ack_id) || typeof ack.accepted !== 'boolean'
+    || !(ack.acknowledged_at === null || typeof ack.acknowledged_at === 'string') || !Array.isArray(ack.logged_item_ids)
+    || ack.logged_item_ids.some((id) => !isNonEmptyString(id)) || new Set(ack.logged_item_ids).size !== ack.logged_item_ids.length) {
+    throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.acknowledgement is not governed`);
+  }
+  if (ack.accepted === true && !isNonEmptyString(ack.acknowledged_at)) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.acknowledgement.accepted requires a durable acknowledged_at timestamp`);
+  const acknowledgesItems = batch.outcome === 'items-recorded' && ack.accepted === true;
+  if (!acknowledgesItems && ack.logged_item_ids.length !== 0) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.acknowledgement.logged_item_ids must be empty unless items were recorded and accepted`);
+  if (acknowledgesItems && ack.logged_item_ids.length < 1) throw new SessionStorageError('SCRIBE_BATCH_EVALUATED_INVALID', `${label}.acknowledgement.logged_item_ids must be non-empty when items were recorded and accepted`);
+  if (acknowledgesItems && ack.logged_item_ids.length !== batch.items.length) {
+    throw new SessionStorageError('SCRIBE_ACKNOWLEDGEMENT_MAPPING_INVALID', `${label}.acknowledgement.logged_item_ids must correspond one-for-one with items (${batch.items.length} expected, received ${ack.logged_item_ids.length})`);
+  }
+}
+
+export function assertGovernedScribeCheckpointShape(sessionId, checkpoint) {
+  if (!checkpoint || typeof checkpoint !== 'object') throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint must be an object');
+  const allowed = new Set(['schema_version', 'session_id', 'saved_at', 'admitted_through', 'pending_partial', 'background_context', 'policy_id', 'policy_version', 'in_flight_batch', 'last_evaluated_batch']);
+  if (Object.keys(checkpoint).some((key) => !allowed.has(key))) throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint has an undeclared field');
+  if (checkpoint.schema_version !== SCRIBE_CHECKPOINT_SCHEMA_VERSION) throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', `Scribe checkpoint schema_version must be ${SCRIBE_CHECKPOINT_SCHEMA_VERSION}`);
+  if (checkpoint.session_id !== sessionId) throw new SessionStorageError('SCRIBE_CHECKPOINT_SESSION_CONFLICT', 'Scribe checkpoint targets a different session', { details: { session_id: checkpoint.session_id } });
+  if (!isNonEmptyString(checkpoint.saved_at)) throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.saved_at is required');
+
+  const admitted = checkpoint.admitted_through;
+  const allowedAdmitted = new Set(['last_segment_id', 'last_sequence', 'last_revision']);
+  if (!admitted || typeof admitted !== 'object' || Object.keys(admitted).some((key) => !allowedAdmitted.has(key))
+    || !(admitted.last_segment_id === null || typeof admitted.last_segment_id === 'string')
+    || !Number.isInteger(admitted.last_sequence) || admitted.last_sequence < -1
+    || !isNonNegativeInteger(admitted.last_revision)) {
+    throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.admitted_through is not governed');
+  }
+
+  const pending = checkpoint.pending_partial;
+  const allowedPending = new Set(['segments', 'accumulated_since']);
+  if (!pending || typeof pending !== 'object' || Object.keys(pending).some((key) => !allowedPending.has(key))
+    || !Array.isArray(pending.segments) || pending.segments.length > SCRIBE_CHECKPOINT_PENDING_MAX_SEGMENTS
+    || !(pending.accumulated_since === null || typeof pending.accumulated_since === 'string')) {
+    throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.pending_partial is not governed');
+  }
+  for (const entry of pending.segments) {
+    const keysOk = entry && typeof entry === 'object' && Object.keys(entry).every((key) => ['segment_id', 'revision', 'sequence'].includes(key));
+    if (!keysOk || !isNonEmptyString(entry.segment_id) || !isNonNegativeInteger(entry.revision) || !isNonNegativeInteger(entry.sequence)) {
+      throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.pending_partial.segments contains an invalid entry');
+    }
+  }
+
+  const background = checkpoint.background_context;
+  if (!background || typeof background !== 'object' || Object.keys(background).some((key) => key !== 'prior_logged_items') || !Array.isArray(background.prior_logged_items)) {
+    throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.background_context is not governed');
+  }
+  for (const item of background.prior_logged_items) assertGovernedScribeItem(item, 'Scribe checkpoint.background_context.prior_logged_items');
+
+  if (!isNonEmptyString(checkpoint.policy_id) || !isNonEmptyString(checkpoint.policy_version)) throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint policy identity is invalid');
+
+  if (checkpoint.in_flight_batch !== undefined) {
+    const inFlight = checkpoint.in_flight_batch;
+    const allowedInFlight = new Set(['batch_identity', 'attempt', 'dispatched_at']);
+    if (!inFlight || typeof inFlight !== 'object' || Object.keys(inFlight).some((key) => !allowedInFlight.has(key)) || !Number.isInteger(inFlight.attempt) || inFlight.attempt < 1 || !isNonEmptyString(inFlight.dispatched_at)) {
+      throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.in_flight_batch is not governed');
+    }
+    assertGovernedBatchIdentityShape(sessionId, inFlight.batch_identity, 'Scribe checkpoint.in_flight_batch');
+  }
+
+  if (checkpoint.last_evaluated_batch !== undefined) {
+    assertGovernedBatchEvaluatedShape(sessionId, checkpoint.last_evaluated_batch, 'Scribe checkpoint.last_evaluated_batch');
+  }
+}
+
+function assertGovernedJournalEntryShape(sessionId, entry, lineNumber) {
+  if (!entry || typeof entry !== 'object') throw new SessionStorageError('SCRIBE_JOURNAL_INTEGRITY_FAILURE', `Scribe batch journal line ${lineNumber} is not a governed entry`);
+  const allowed = new Set(['journal_sequence', 'session_id', 'batch', 'written_at']);
+  if (Object.keys(entry).some((key) => !allowed.has(key))) throw new SessionStorageError('SCRIBE_JOURNAL_INTEGRITY_FAILURE', `Scribe batch journal line ${lineNumber} has an undeclared field`);
+  if (!isNonNegativeInteger(entry.journal_sequence)) throw new SessionStorageError('SCRIBE_JOURNAL_INTEGRITY_FAILURE', `Scribe batch journal line ${lineNumber} has an invalid journal_sequence`);
+  if (entry.session_id !== sessionId) throw new SessionStorageError('SCRIBE_JOURNAL_SESSION_CONFLICT', `Scribe batch journal line ${lineNumber} contains another session`, { details: { session_id: entry.session_id } });
+  if (!isNonEmptyString(entry.written_at)) throw new SessionStorageError('SCRIBE_JOURNAL_INTEGRITY_FAILURE', `Scribe batch journal line ${lineNumber} has an invalid written_at`);
+  assertGovernedBatchEvaluatedShape(sessionId, entry.batch, `Scribe batch journal line ${lineNumber}`);
 }
 
 export function fingerprintValue(value) {

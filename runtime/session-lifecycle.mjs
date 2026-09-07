@@ -1,4 +1,4 @@
-import { fingerprintValue, FINALIZATION_PHASES, SessionStorage, SessionStorageError, STORAGE_SCHEMA_VERSION, validateSessionId } from './session-storage.mjs';
+import { assertGovernedScribeCheckpointShape, fingerprintValue, FINALIZATION_PHASES, SessionStorage, SessionStorageError, STORAGE_SCHEMA_VERSION, validateSessionId } from './session-storage.mjs';
 
 export const SESSION_METADATA_VERSION = '1.0.0';
 const ACTIVE_CACHE_LIMIT = 32;
@@ -53,7 +53,7 @@ export class SessionLifecycle {
     }
     await this.storage.ensureSession(command.session_id);
     const paths = this.storage.paths(command.session_id);
-    const hasResidue = await Promise.all(['transcriptActive', 'loggedItemActive', 'transcriptOutbox', 'finalization', 'closeEvidence'].map((name) => this.storage.hasFile(command.session_id, name)));
+    const hasResidue = await Promise.all(['transcriptActive', 'loggedItemActive', 'transcriptOutbox', 'finalization', 'closeEvidence', 'scribeCheckpoint', 'scribeBatchJournal'].map((name) => this.storage.hasFile(command.session_id, name)));
     if (hasResidue.some(Boolean)) throw integrity('SESSION_RESIDUE', `Session ${command.session_id} has files but no governed metadata`);
     const now = this.clock();
     const metadata = createMetadata(command.session_id, now);
@@ -259,6 +259,35 @@ export class SessionLifecycle {
     return this.#resolveRevision(sessionId, 'logged-item', revisionId);
   }
 
+  async acceptScribeCheckpoint(sessionId, checkpoint, { savedAt = this.clock() } = {}) {
+    const metadata = await this.#loadMetadata(sessionId);
+    if (metadata.state === 'closed') throw conflict('SESSION_CLOSED', `Session ${sessionId} is sealed`);
+    if (!checkpoint || typeof checkpoint !== 'object') throw invalid('Scribe checkpoint must be an object');
+    assertGovernedScribeCheckpointShape(sessionId, checkpoint);
+    const existing = await this.storage.readScribeCheckpoint(sessionId);
+    assertScribeCheckpointAdvancement(sessionId, existing, checkpoint);
+    const next = { ...checkpoint, saved_at: savedAt };
+    await this.storage.writeScribeCheckpoint(sessionId, next);
+    return { session_id: sessionId, saved_at: savedAt };
+  }
+
+  async getScribeCheckpoint(sessionId) {
+    validateSessionId(sessionId);
+    return this.storage.readScribeCheckpoint(sessionId);
+  }
+
+  async recordScribeBatchOutcome(sessionId, batch, { writtenAt = this.clock() } = {}) {
+    const metadata = await this.#loadMetadata(sessionId);
+    if (metadata.state === 'closed') throw conflict('SESSION_CLOSED', `Session ${sessionId} is sealed`);
+    if (!batch || batch.batch_identity?.session_id !== sessionId) throw integrity('SCRIBE_BATCH_SESSION_CONFLICT', `Scribe batch outcome targets a different session`);
+    return this.storage.appendScribeBatchJournal(sessionId, { batch, writtenAt });
+  }
+
+  async getScribeBatchJournal(sessionId) {
+    validateSessionId(sessionId);
+    return this.storage.readScribeBatchJournal(sessionId);
+  }
+
   memoryStats() {
     return {
       transcript_cache_entries: this.transcriptCache.size,
@@ -332,8 +361,16 @@ export class SessionLifecycle {
     return metadata;
   }
 
+  async #assertNoUnacknowledgedScribeGap(sessionId) {
+    const checkpoint = await this.storage.readScribeCheckpoint(sessionId);
+    if (checkpoint?.in_flight_batch) {
+      throw conflict('SCRIBE_BATCH_UNACKNOWLEDGED', `Session ${sessionId} has an in-flight Scribe batch ${checkpoint.in_flight_batch.batch_identity.request_id} awaiting acknowledgement`);
+    }
+  }
+
   async #finalize(metadata, command, { failBeforePhase, failAfterPhase } = {}) {
     const sessionId = metadata.session_id;
+    await this.#assertNoUnacknowledgedScribeGap(sessionId);
     if (metadata.state !== 'closing') {
       metadata.state = 'closing';
       metadata.updated_at = this.clock();
@@ -494,6 +531,8 @@ export class SessionLifecycle {
       this.storage.readHistory(sessionId, 'transcript'),
       this.storage.readHistory(sessionId, 'logged-item')
     ]);
+    await this.storage.readScribeCheckpoint(sessionId);
+    await this.storage.readScribeBatchJournal(sessionId);
     if (!transcriptSnapshot || transcriptSnapshot.session_id !== sessionId || !Array.isArray(transcriptSnapshot.segments)) throw integrity('ACTIVE_SNAPSHOT_INVALID', `Active transcript snapshot is not governed for ${sessionId}`);
     if (!loggedItemSnapshot || loggedItemSnapshot.session_id !== sessionId || !Array.isArray(loggedItemSnapshot.items)) throw integrity('ACTIVE_SNAPSHOT_INVALID', `Active logged-item snapshot is not governed for ${sessionId}`);
     if (outbox && (outbox.session_id !== sessionId || outbox.schema_version !== STORAGE_SCHEMA_VERSION || !Array.isArray(outbox.pending))) throw integrity('TRANSCRIPT_OUTBOX_INVALID', `Transcript pending outbox is not governed for ${sessionId}`);
@@ -854,6 +893,26 @@ function recoveryRevisionId(segment, explicitId) {
 function reportRevisionId(segment, fallback) { return recoveryRevisionId(segment) || (segment?.revision_id || `${fallback}`); }
 function compareRecoveryCandidates(a, b) { return (a.segment?.sequence ?? Number.MAX_SAFE_INTEGER) - (b.segment?.sequence ?? Number.MAX_SAFE_INTEGER) || (a.segment?.revision ?? Number.MAX_SAFE_INTEGER) - (b.segment?.revision ?? Number.MAX_SAFE_INTEGER) || a.revisionId.localeCompare(b.revisionId); }
 function ensureLatestHistory(history, id, value) { const entry = history.find((item) => item.history_entry_id === id); if (!entry) throw integrity('MISSING_AUTHORITATIVE_HISTORY', `Missing authoritative history entry ${id}`); if (entry.fingerprint !== fingerprintValue(value)) throw integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${id} differs from active state`); }
+function assertScribeCheckpointAdvancement(sessionId, existing, next) {
+  if (!existing) return;
+  if (next.admitted_through.last_sequence < existing.admitted_through.last_sequence) {
+    throw integrity('SCRIBE_CURSOR_REGRESSION', `Scribe cursor for ${sessionId} cannot move backward from ${existing.admitted_through.last_sequence} to ${next.admitted_through.last_sequence}`);
+  }
+  if (next.admitted_through.last_sequence === existing.admitted_through.last_sequence && next.admitted_through.last_revision < existing.admitted_through.last_revision) {
+    throw integrity('SCRIBE_CURSOR_REGRESSION', `Scribe cursor revision for ${sessionId} cannot move backward`);
+  }
+  if (existing.in_flight_batch && next.in_flight_batch && existing.in_flight_batch.batch_identity.request_id !== next.in_flight_batch.batch_identity.request_id) {
+    throw conflict('SCRIBE_IN_FLIGHT_BATCH_CONFLICT', `Session ${sessionId} already has a different Scribe batch in flight`);
+  }
+  if (existing.in_flight_batch && next.in_flight_batch && next.in_flight_batch.attempt < existing.in_flight_batch.attempt) {
+    throw integrity('SCRIBE_CURSOR_REGRESSION', `Scribe in-flight attempt for ${sessionId} cannot move backward`);
+  }
+  if (existing.in_flight_batch && !next.in_flight_batch) {
+    const resolved = next.last_evaluated_batch;
+    const matches = resolved && resolved.batch_identity.request_id === existing.in_flight_batch.batch_identity.request_id && resolved.attempt === existing.in_flight_batch.attempt;
+    if (!matches) throw integrity('SCRIBE_UNACKNOWLEDGED_BATCH_DROPPED', `Session ${sessionId} cleared an in-flight Scribe batch without recording its outcome`);
+  }
+}
 function invalid(message) { return new SessionLifecycleError('INVALID_INPUT', message); }
 function conflict(code, message) { return new SessionLifecycleError(code, message, { rejected: true }); }
 function integrity(code, message) { return new SessionLifecycleError(code, message); }
