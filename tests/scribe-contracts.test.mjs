@@ -166,6 +166,11 @@ test('scribe_batch_evaluated artifact rejects a malformed acknowledgement and an
   assert.notDeepEqual(registry.validateArtifact('scribe_batch_evaluated', mismatch), []);
 });
 
+test('scribe_batch_evaluated artifact rejects an accepted acknowledgement with no durable timestamp', async () => {
+  const fixture = await loadArtifactFixture('batch-evaluated', 'invalid-accepted-without-timestamp.json');
+  assert.notDeepEqual(registry.validateArtifact('scribe_batch_evaluated', fixture), []);
+});
+
 test('scribe_checkpoint artifact carries admitted-through position, a bounded pending partial, and rolling background context', async () => {
   const fixture = await loadArtifactFixture('checkpoint', 'valid.json');
   assert.deepEqual(registry.validateArtifact('scribe_checkpoint', fixture), []);
@@ -174,6 +179,18 @@ test('scribe_checkpoint artifact carries admitted-through position, a bounded pe
 
 test('scribe_checkpoint artifact rejects a pending partial batch beyond the two-row architectural bound', async () => {
   const fixture = await loadArtifactFixture('checkpoint', 'invalid-pending-partial-overflow.json');
+  assert.notDeepEqual(registry.validateArtifact('scribe_checkpoint', fixture), []);
+});
+
+test('scribe_checkpoint artifact preserves the identical in-flight batch identity and attempt across a crash/restart', async () => {
+  const fixture = await loadArtifactFixture('checkpoint', 'valid-in-flight.json');
+  assert.deepEqual(registry.validateArtifact('scribe_checkpoint', fixture), []);
+  assert.equal(fixture.in_flight_batch.batch_identity.request_id, 'batch-3-single');
+  assert.equal(fixture.in_flight_batch.attempt, 2);
+});
+
+test('scribe_checkpoint artifact rejects an in-flight batch missing its dispatched_at settlement clock', async () => {
+  const fixture = await loadArtifactFixture('checkpoint', 'invalid-in-flight-missing-dispatched-at.json');
   assert.notDeepEqual(registry.validateArtifact('scribe_checkpoint', fixture), []);
 });
 

@@ -42,7 +42,12 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
 - **Durable file I/O**: `scribe_checkpoint` (versioned snapshot, atomic
   replace-by-rename per ADR-015's existing pattern) and `scribe_batch_journal_entry`
   (one NDJSON line per evaluated batch, append-only) are shapes only. SCRIBE-03 owns
-  reading/writing them and reconstructing `background_context` on restart.
+  reading/writing them and reconstructing `background_context` on restart. The
+  checkpoint shape carries `in_flight_batch` (`batch_identity`, `attempt`,
+  `dispatched_at`) precisely so a crash between dispatch and evaluation has a governed
+  place to recover the identical batch identity and attempt count for retry — SCRIBE-03
+  still owns writing it before dispatch and clearing it once `last_evaluated_batch`
+  is written, but the slot exists.
 - **Assigning authoritative item identity**: proposed items in
   `ai.work-completed`'s `items[]` and in `scribe_batch_evaluated.items[]` cannot carry
   `item_id`/`revision` (rejected by `additionalProperties: false`). Only
@@ -78,7 +83,13 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
   item set), and `failed` (with `error.code/category/message/retryable`) — plus a
   terminal `acknowledgement` (`ack_id`, `accepted`, `acknowledged_at`). `if`/`then`
   rules in the schema enforce that `items` is empty for `empty-evaluated`, non-empty
-  for `items-recorded`, and that `error` is present for `failed`.
+  for `items-recorded`, that `error` is present for `failed`, and that an `accepted:
+  true` acknowledgement always carries a real `acknowledged_at` timestamp (a null
+  timestamp is only valid alongside `accepted: false`, matching the `valid-failed`
+  fixture) — settlement can never be represented as "accepted" without a durable time.
+  A model-endpoint timeout with no response at all is represented as `outcome: "failed"`
+  with `error.category: "timeout"` and `retryable: true`, exactly like the
+  `valid-failed` fixture; there is no separate "ambiguous" outcome.
 - **Bounded queue**: `scribe_checkpoint.pending_partial.segments` is capped at
   `maxItems: 2`, matching ADR-021's "one- or two-row remainder" — a checkpoint can
   never describe a stranded partial batch larger than the policy allows.

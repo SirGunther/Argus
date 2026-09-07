@@ -47,6 +47,7 @@
   "allOf": [
     { "if": { "properties": { "outcome": { "const": "failed" } } }, "then": { "required": ["error"], "properties": { "error": { "type": "object" } } } },
     { "if": { "properties": { "outcome": { "const": "empty-evaluated" } } }, "then": { "properties": { "items": { "type": "array", "maxItems": 0 } } } },
-    { "if": { "properties": { "outcome": { "const": "items-recorded" } } }, "then": { "properties": { "items": { "type": "array", "minItems": 1 } } } }
+    { "if": { "properties": { "outcome": { "const": "items-recorded" } } }, "then": { "properties": { "items": { "type": "array", "minItems": 1 } } } },
+    { "if": { "properties": { "acknowledgement": { "type": "object", "properties": { "accepted": { "const": true } } } } }, "then": { "properties": { "acknowledgement": { "type": "object", "properties": { "acknowledged_at": { "type": "string", "minLength": 1 } } } } } }
   ]
 }

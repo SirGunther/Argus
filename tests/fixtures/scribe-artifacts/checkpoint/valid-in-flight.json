@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "session_id": "fixture-scribe-session",
+  "saved_at": "2026-09-07T17:10:00.000Z",
+  "admitted_through": { "last_segment_id": "segment-30", "last_sequence": 30, "last_revision": 0 },
+  "pending_partial": { "segments": [], "accumulated_since": null },
+  "background_context": {
+    "prior_logged_items": [
+      { "text": "Ship the draft Friday.", "kind": "decision", "source_segment_ids": ["segment-10"] }
+    ]
+  },
+  "policy_id": "fixture-default",
+  "policy_version": "1.0.0",
+  "in_flight_batch": {
+    "batch_identity": {
+      "request_id": "batch-3-single",
+      "session_id": "fixture-scribe-session",
+      "segments": [
+        { "segment_id": "segment-30", "revision": 0, "sequence": 30 }
+      ],
+      "first_sequence": 30,
+      "last_sequence": 30,
+      "admission_reason": "batch-complete",
+      "policy_id": "fixture-default",
+      "policy_version": "1.0.0",
+      "instruction_version": "1.0.0"
+    },
+    "attempt": 2,
+    "dispatched_at": "2026-09-07T17:10:00.000Z"
+  },
+  "last_evaluated_batch": {
+    "batch_identity": {
+      "request_id": "batch-2-partial",
+      "session_id": "fixture-scribe-session",
+      "segments": [
+        { "segment_id": "segment-20", "revision": 0, "sequence": 20 },
+        { "segment_id": "segment-21", "revision": 0, "sequence": 21 }
+      ],
+      "first_sequence": 20,
+      "last_sequence": 21,
+      "admission_reason": "idle-timeout",
+      "policy_id": "fixture-default",
+      "policy_version": "1.0.0",
+      "instruction_version": "1.0.0"
+    },
+    "evaluated_at": "2026-09-07T17:05:01.000Z",
+    "attempt": 1,
+    "outcome": "empty-evaluated",
+    "items": [],
+    "acknowledgement": { "ack_id": "ack-batch-2-partial", "accepted": true, "acknowledged_at": "2026-09-07T17:05:02.000Z" }
+  }
+}

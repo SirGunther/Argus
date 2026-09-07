@@ -60,6 +60,16 @@
     },
     "policy_id": { "type": "string", "minLength": 1 },
     "policy_version": { "type": "string", "minLength": 1 },
+    "in_flight_batch": {
+      "type": "object",
+      "required": ["batch_identity", "attempt", "dispatched_at"],
+      "properties": {
+        "batch_identity": { "$ref": "argus.scribe-batch-identity.v1" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "dispatched_at": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "last_evaluated_batch": { "$ref": "argus.scribe-batch-evaluated.v1" }
   },
   "additionalProperties": false
