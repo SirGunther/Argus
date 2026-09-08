@@ -34,10 +34,17 @@ export class OrderedStreamGuard {
   // Recovery-only: seed the guard with the correct next-expected sequence for a stream whose
   // prior history was persisted elsewhere (e.g. a durable checkpoint), without replaying every
   // historical `accept()` call. Additive and backward compatible: no existing caller uses it, and
-  // `accept()`/`expected()` behavior for a stream that was never seeded is unchanged.
+  // `accept()`/`expected()` behavior for a stream that was never seeded is unchanged. Monotonic
+  // only: it can advance a stream's expectation (typically from its unseeded default of 0) but
+  // can never rewind one that already advanced further, which would let an already-consumed
+  // sequence be accepted again as if it were new.
   seed(streamId, nextSequence) {
     if (typeof streamId !== 'string' || !streamId) throw new Error('streamId is required');
     if (!Number.isInteger(nextSequence) || nextSequence < 0) throw new Error('nextSequence must be a non-negative integer');
+    const current = this.#nextByStream.get(streamId) || 0;
+    if (nextSequence < current) {
+      throw new Error(`Stream ${streamId} cannot be seeded backward from ${current} to ${nextSequence}`);
+    }
     this.#nextByStream.set(streamId, nextSequence);
   }
 }
