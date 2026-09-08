@@ -1,0 +1,59 @@
+{
+  "$id": "argus.scribe-batch-admitted.v1",
+  "type": "object",
+  "required": ["batch_identity", "new_evidence_segments", "background_context", "policy_profile", "instruction_version"],
+  "properties": {
+    "batch_identity": { "$ref": "argus.scribe-batch-identity.v1" },
+    "new_evidence_segments": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/segment" } },
+    "background_context": { "$ref": "#/$defs/scribeBackgroundContext" },
+    "policy_profile": { "type": "string", "minLength": 1 },
+    "instruction_version": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "required": ["segment_id", "sequence", "start_time", "end_time", "text"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "contextSegment": {
+      "type": "object",
+      "required": ["segment_id", "sequence", "start_time", "end_time", "text", "relation"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "relation": { "type": "string", "enum": ["lookback", "forward"] }
+      },
+      "additionalProperties": false
+    },
+    "scribeProposedItem": {
+      "type": "object",
+      "required": ["text", "source_segment_ids"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "kind": { "type": "string", "enum": ["action", "decision", "open-question", "reminder", "other"] },
+        "source_segment_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
+    "scribeBackgroundContext": {
+      "type": "object",
+      "required": ["transcript_segments", "prior_logged_items"],
+      "properties": {
+        "transcript_segments": { "type": "array", "items": { "$ref": "#/$defs/contextSegment" } },
+        "prior_logged_items": { "type": "array", "items": { "$ref": "#/$defs/scribeProposedItem" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}

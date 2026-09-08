@@ -1,0 +1,37 @@
+{
+  "message_id": "fixture-scribe-batch-evaluated-forged-session-id",
+  "plane": "domain",
+  "message_type": "scribe.batch-evaluated",
+  "timestamp": "2026-09-07T17:00:02.000Z",
+  "producer": "fixture-log-extractor-local-http",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "batch": {
+      "batch_identity": {
+        "request_id": "batch-1",
+        "session_id": "fixture-scribe-session",
+        "segments": [
+          { "segment_id": "segment-10", "revision": 0, "sequence": 10 }
+        ],
+        "first_sequence": 10,
+        "last_sequence": 10,
+        "admission_reason": "batch-complete",
+        "policy_id": "fixture-default",
+        "policy_version": "1.0.0",
+        "instruction_version": "1.0.0"
+      },
+      "evaluated_at": "2026-09-07T17:00:01.000Z",
+      "attempt": 1,
+      "outcome": "empty-evaluated",
+      "items": [],
+      "acknowledgement": {
+        "ack_id": "ack-batch-1",
+        "accepted": true,
+        "acknowledged_at": "2026-09-07T17:00:02.000Z",
+        "logged_item_ids": []
+      }
+    },
+    "session_id": "a-different-session"
+  }
+}

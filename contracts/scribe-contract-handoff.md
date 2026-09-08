@@ -4,6 +4,12 @@ Governed shapes Wave 2 (SCRIBE-02 through SCRIBE-05) must consume. No runtime, s
 graph, UI, or storage implementation was changed by this ticket; everything below is
 schema, catalog, changelog, fixture, and doc governance only.
 
+> **SCRIBE-04A addendum below.** Two additive transport messages now carry the
+> coordinator <-> extraction-boundary Scribe batch channel. Everything in the original
+> SCRIBE-01 body remains true and byte-identical; jump to
+> [SCRIBE-04A addendum](#scribe-04a-addendum--provider-neutral-batch-transport) for the
+> new message types SCRIBE-04, SCRIBE-02, and SCRIBE-05 must consume.
+
 ## Exact versions to consume
 
 | Contract | Kind | Version | Schema |
@@ -113,3 +119,132 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
 - **Bounded queue**: `scribe_checkpoint.pending_partial.segments` is capped at
   `maxItems: 2`, matching ADR-021's "one- or two-row remainder" — a checkpoint can
   never describe a stranded partial batch larger than the policy allows.
+
+---
+
+# SCRIBE-04A addendum — provider-neutral batch transport
+
+Addressed to whoever finishes **SCRIBE-04** (`agent/scribe-model-extraction`, currently on
+hold) and to **SCRIBE-02** and **SCRIBE-05**. Contracts only: SCRIBE-04A changed no runtime,
+service, wiring, UI, or storage file, and no byte of any shape SCRIBE-01 shipped.
+
+## Why these exist
+
+SCRIBE-04 reused `ai.work-request` as the coordinator's inbound batch-proposal channel and
+`ai.work-completed`'s failed path (via `service.failure`) as the only reachable outbound
+outcome. That had two concrete structural defects:
+
+1. `ai-work-request.schema.json`'s `protocol_version: "2.0.0"` `modelRequest` variant
+   **requires** a non-empty `model`. A coordinator that per
+   `Architecture/OperationalAgentRoles.md` holds no provider or model knowledge would have to
+   fabricate a `model` string on every batch proposal purely to satisfy the schema — which the
+   extraction boundary then discards and replaces with `readModelName()`.
+2. A **settled non-failed** batch outcome (`empty-evaluated` or `items-recorded`) had **no
+   message carrier back to the coordinator at all**, so SCRIBE-02 had no governed way to
+   advance its durable cursor on the normal path.
+
+Reusing one message type for two semantically different transports also forced the extraction
+boundary to guard against its own emitted `ai.work-request` messages looping back.
+
+`ai.work-request` / `ai.work-completed` **stay exactly as they are** and remain the
+**control-plane** channel between the extraction boundary and the serial AI model lane. The two
+messages below are the **domain-plane** Scribe batch channel.
+
+## Exact versions to consume
+
+| Contract | Kind | Version | Plane | Owner | Schema |
+| --- | --- | --- | --- | --- | --- |
+| `scribe.batch-admitted` | catalog message | `1.0.0` | `domain` | `logged-items/scribe-coordinator` | `contracts/scribe-batch-admitted.schema.json` (`$id: argus.scribe-batch-admitted.v1`) |
+| `scribe.batch-evaluated` | catalog message | `1.0.0` | `domain` | `logged-items/extraction` | `contracts/scribe-batch-evaluated-message.schema.json` (`$id: argus.scribe-batch-evaluated-message.v1`) |
+
+Catalog `schema_version` moved `1.13.0` -> **`1.14.0`** (additive minor). Both messages sit on
+the `domain` plane, following the existing `transcript.context-window` extraction-trigger
+precedent: an admitted or evaluated batch is a session evidence fact, not AI-lane scheduling.
+Note the **schema filename** for the evaluated message carries a `-message` suffix because
+`contracts/scribe-batch-evaluated.schema.json` is already the SCRIBE-01 **artifact**; the
+message type itself is plain `scribe.batch-evaluated`.
+
+## `scribe.batch-admitted` — coordinator -> extraction boundary
+
+Emitted by the Scribe coordinator when its governed admission policy closes a batch. Payload,
+all five fields required, `additionalProperties: false`:
+
+| Field | Meaning |
+| --- | --- |
+| `batch_identity` | `$ref argus.scribe-batch-identity.v1` — the immutable SCRIBE-01 identity, unchanged. Carries `request_id`, `session_id`, the ordered contiguous `segments`, `first_sequence`/`last_sequence`, `admission_reason`, `policy_id`/`policy_version`/`instruction_version`. |
+| `new_evidence_segments` | The batch's new authoritative finalized rows (`segment_id`/`sequence`/`start_time`/`end_time`/`text`), same shape as `ai-work-request`'s `segment`. `minItems: 1`, `maxItems: 16`. Must match `batch_identity.segments` exactly — same ids, same order, same `sequence` per position. Only these rows may trigger new Logged Items. |
+| `background_context` | `{ transcript_segments, prior_logged_items }`, same shape as `ai-work-request`'s `scribeBackgroundContext`. Bounded lookback/forward context plus previously emitted **non-authoritative** Logged Items for duplicate suppression (ADR-021). Both arrays may be empty. A `prior_logged_items` entry may **not** carry `item_id`/`revision`. |
+| `policy_profile` | The generation profile the batch was admitted under (mirrors `scribe.batch-policy.generation.policy_profile`). |
+| `instruction_version` | The Scribe instruction version the batch was admitted under (mirrors `batch_identity.instruction_version`). |
+
+**There is deliberately no `model`, provider, endpoint, or `limits` field**, and
+`additionalProperties: false` makes adding one a contract violation rather than a convention.
+A focused test asserts the whole schema contains no provider vocabulary at all.
+
+What the **extraction boundary** supplies for itself when composing the `2.0.0` model request:
+
+- **`model`** — from its own local configuration (`readModelName()`), never from the message.
+- **`limits`** — from its own budget math against the retained `scribe.batch-policy`
+  (`context.max_total_context_tokens`) plus the governed `EXTRACTION_BATCH_OUTPUT_LIMITS`
+  ceilings in `contracts/model-protocol.mjs`.
+- **`identity`** (`work_id`/`session_id`/`batch_request_id`) — AI-lane scheduler identity it
+  owns, derivable from `batch_identity.session_id` + `batch_identity.request_id`. The
+  coordinator no longer mints a scheduler `work_id`.
+- **`recovery.max_attempts`** — its own governed retry budget; the admitted message carries no
+  attempt count. The **attempt number** still arrives on `ai.work-completed.attempt`, exactly
+  as SCRIBE-04 already reads it, and is what fills `scribe_batch_evaluated.attempt`.
+
+`policy_profile` and `instruction_version` are governance fields the coordinator legitimately
+stamps, **not** authority: the extraction boundary must keep cross-checking them against the
+retained `scribe.batch-policy` for the session (SCRIBE-04's `assertPolicyAgreement`) and fail
+visibly on disagreement rather than prompting under a version the batch was not admitted under.
+
+`tests/fixtures/contracts/scribe.batch-admitted/1.0.0/` retains `valid.json` (three-row
+`batch-complete`), `valid-partial-idle-batch.json` (two-row `idle-timeout`, empty background),
+`invalid-model-field.json`, `invalid-missing-background-context.json`,
+`invalid-empty-new-evidence.json`, `invalid-forged-prior-item-id.json`.
+
+## `scribe.batch-evaluated` — extraction boundary -> coordinator
+
+Payload is a single required field, `additionalProperties: false`:
+
+| Field | Meaning |
+| --- | --- |
+| `batch` | `$ref argus.scribe-batch-evaluated.v1` — the SCRIBE-01 `scribe_batch_evaluated` artifact, embedded verbatim and **not redefined**. |
+
+So all three settled outcomes now have a real carrier: **`empty-evaluated`** (zero items),
+**`items-recorded`** (the complete item set plus the owner-confirmed
+`acknowledgement.logged_item_ids`), and **`failed`** (with
+`error.code`/`category`/`message`/`retryable`). Everything the SCRIBE-01 body says about that
+artifact still governs it unchanged — the `if`/`then` outcome/items rules, the
+`accepted: true` requires a real `acknowledged_at` rule, the `logged_item_ids` placement rules,
+and the runtime-only one-for-one `logged_item_ids` <-> `items` correspondence.
+
+The payload deliberately **does not repeat `session_id`** or anything else the artifact already
+holds: `batch.batch_identity` is the authoritative identity and the envelope's
+`correlation_id` carries the session. A duplicated routing key would be a forgeable divergence
+the payload schema cannot detect (this repository's Ajv configuration has no `$data` support).
+Provenance of the evaluation is the envelope's `producer`.
+
+`tests/fixtures/contracts/scribe.batch-evaluated/1.0.0/` retains `valid.json` (two items),
+`valid-one-item.json`, `valid-empty-evaluated.json`, `valid-failed.json` (timeout, retryable,
+unaccepted), `invalid-missing-batch.json`, `invalid-forged-item-id.json`,
+`invalid-empty-evaluated-with-item.json`, `invalid-forged-session-id.json`.
+
+## What SCRIBE-04A did **not** do — still owned downstream
+
+- **No wiring.** No producer/consumer ports or graph wires exist for either message. The
+  Scribe coordinator must declare `scribe.batch-admitted` under its `domain.emits` and
+  `scribe.batch-evaluated` under its `domain.accepts`; `log-extractor-local-http` must declare
+  the mirror image. SCRIBE-05 adds the graph wires.
+- **No runtime change to SCRIBE-04.** Its `'ai.work-request'` handler (`dispatch-scribe-batch`)
+  must be re-pointed at `scribe.batch-admitted`, dropping the `proposal.identity.work_id` check
+  and the `protocol_version === "2.0.0"` self-emission guard, which the plane and message-type
+  split make unnecessary. Its settled-outcome path must emit `scribe.batch-evaluated` for
+  **every** outcome, not just route failures through `service.failure`.
+- **No cursor or acknowledgement behavior.** SCRIBE-02 still owns comparing an incoming
+  `batch.batch_identity.request_id`/`attempt` against the batch it currently has outstanding
+  (a stale or superseded attempt), and advancing the cursor only on a settled accepted outcome.
+- **No existing shape changed.** `ai.work-request` and `ai.work-completed` stay at `1.5.0` with
+  the `2.0.0` `modelRequest`/`modelResponse` variants exactly as SCRIBE-01 shipped them,
+  `model` still required there because the model lane genuinely needs it.

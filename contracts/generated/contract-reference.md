@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.13.0`
+- Catalog version: `1.14.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -33,6 +33,8 @@
 | `ai.work-request` | control | `1.5.0` | `runtime/ai-scheduling` | 256 KiB |
 | `ai.work-completed` | control | `1.5.0` | `runtime/ai-scheduling` | 256 KiB |
 | `scribe.batch-policy` | control | `1.0.0` | `logged-items/scribe-coordinator` | 32 KiB |
+| `scribe.batch-admitted` | domain | `1.0.0` | `logged-items/scribe-coordinator` | 256 KiB |
+| `scribe.batch-evaluated` | domain | `1.0.0` | `logged-items/extraction` | 64 KiB |
 | `ai.provider-configure` | control | `1.0.0` | `runtime/ai-provider-settings` | 8 KiB |
 | `logged-item.update` | domain | `1.3.0` | `logged-items/active-owner` | 64 KiB |
 | `classification.suggestion` | domain | `1.2.0` | `logged-items/classification` | 64 KiB |
@@ -451,6 +453,36 @@
 | `admission` | yes | object | requires `rows_per_batch`, `idle_timeout_ms` |
 | `context` | yes | object | requires `max_total_context_tokens` |
 | `generation` | yes | object | requires `policy_profile`, `instruction_version` |
+
+## `scribe.batch-admitted`
+
+- Plane: `domain`
+- Version: `1.0.0`
+- Owner: `logged-items/scribe-coordinator`
+- Schema: [`scribe-batch-admitted.schema.json`](../scribe-batch-admitted.schema.json)
+- History: [`history/scribe.batch-admitted.md`](../history/scribe.batch-admitted.md)
+- Maximum payload: 256 KiB (262144 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `batch_identity` | yes | any | — |
+| `new_evidence_segments` | yes | array<value> | min items 1 |
+| `background_context` | yes | any | — |
+| `policy_profile` | yes | string | min length 1 |
+| `instruction_version` | yes | string | min length 1 |
+
+## `scribe.batch-evaluated`
+
+- Plane: `domain`
+- Version: `1.0.0`
+- Owner: `logged-items/extraction`
+- Schema: [`scribe-batch-evaluated-message.schema.json`](../scribe-batch-evaluated-message.schema.json)
+- History: [`history/scribe.batch-evaluated.md`](../history/scribe.batch-evaluated.md)
+- Maximum payload: 64 KiB (65536 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `batch` | yes | any | — |
 
 ## `ai.provider-configure`
 
