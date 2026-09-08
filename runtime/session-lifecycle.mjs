@@ -266,9 +266,21 @@ export class SessionLifecycle {
     assertGovernedScribeCheckpointShape(sessionId, checkpoint);
     const existing = await this.storage.readScribeCheckpoint(sessionId);
     assertScribeCheckpointAdvancement(sessionId, existing, checkpoint);
+    if (existing?.in_flight_batch && !checkpoint.in_flight_batch) {
+      await this.#assertScribeBatchOutcomeJournaled(sessionId, checkpoint.last_evaluated_batch);
+    }
     const next = { ...checkpoint, saved_at: savedAt };
     await this.storage.writeScribeCheckpoint(sessionId, next);
     return { session_id: sessionId, saved_at: savedAt };
+  }
+
+  async #assertScribeBatchOutcomeJournaled(sessionId, resolvedBatch) {
+    const journal = await this.storage.readScribeBatchJournal(sessionId);
+    const key = `${resolvedBatch.batch_identity.request_id}:${resolvedBatch.attempt}`;
+    const journaled = journal.find((entry) => `${entry.batch.batch_identity.request_id}:${entry.batch.attempt}` === key);
+    if (!journaled || fingerprintValue(journaled.batch) !== fingerprintValue(resolvedBatch)) {
+      throw conflict('SCRIBE_BATCH_OUTCOME_NOT_JOURNALED', `Session ${sessionId} cleared an in-flight Scribe batch whose outcome was not recorded via recordScribeBatchOutcome first`);
+    }
   }
 
   async getScribeCheckpoint(sessionId) {
