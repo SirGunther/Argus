@@ -1,0 +1,47 @@
+{
+  "message_id": "fixture-scribe-batch-admitted-idle",
+  "plane": "domain",
+  "message_type": "scribe.batch-admitted",
+  "timestamp": "2026-09-07T17:00:30.000Z",
+  "producer": "fixture-scribe-coordinator",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "batch_identity": {
+      "request_id": "batch-2-idle",
+      "session_id": "fixture-scribe-session",
+      "segments": [
+        { "segment_id": "segment-13", "revision": 0, "sequence": 13 },
+        { "segment_id": "segment-14", "revision": 1, "sequence": 14 }
+      ],
+      "first_sequence": 13,
+      "last_sequence": 14,
+      "admission_reason": "idle-timeout",
+      "policy_id": "fixture-default",
+      "policy_version": "1.0.0",
+      "instruction_version": "1.0.0"
+    },
+    "new_evidence_segments": [
+      {
+        "segment_id": "segment-13",
+        "sequence": 13,
+        "start_time": "00:00:13.000",
+        "end_time": "00:00:14.000",
+        "text": "Let us hold the pricing question for legal."
+      },
+      {
+        "segment_id": "segment-14",
+        "sequence": 14,
+        "start_time": "00:00:14.000",
+        "end_time": "00:00:15.000",
+        "text": "Nothing else before we wrap up."
+      }
+    ],
+    "background_context": {
+      "transcript_segments": [],
+      "prior_logged_items": []
+    },
+    "policy_profile": "neutral-contextual-log",
+    "instruction_version": "1.0.0"
+  }
+}

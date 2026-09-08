@@ -247,3 +247,161 @@ test('scribe_batch_journal_entry artifact wraps one evaluated batch outcome for 
   assert.deepEqual(registry.validateArtifact('scribe_batch_journal_entry', fixture), []);
   assert.equal(fixture.batch.outcome, 'items-recorded');
 });
+
+// SCRIBE-04A — the provider-neutral coordinator <-> extraction-boundary batch transport.
+// `ai.work-request`/`ai.work-completed` remain the control-plane channel to the serial AI model
+// lane; these two domain-plane messages are the Scribe batch channel, so no message type has to
+// serve two different transports and no consumer has to guard against its own emissions looping
+// back. Still contracts only: no coordinator, wiring, or extraction behavior is exercised here.
+
+const SCRIBE_TRANSPORT_MESSAGE_TYPES = ['scribe.batch-admitted', 'scribe.batch-evaluated'];
+
+test('catalog registers the Scribe batch transport messages additively without disturbing the SCRIBE-01 entries', () => {
+  const catalog = registry.catalog;
+  assert.equal(catalog.schema_version, '1.14.0');
+  for (const messageType of SCRIBE_TRANSPORT_MESSAGE_TYPES) {
+    const definition = catalog.messages[messageType];
+    assert.ok(definition, `${messageType} must be registered`);
+    assert.equal(definition.version, '1.0.0');
+    // The admitted batch is the Scribe extraction trigger, so it takes the plane the existing
+    // `transcript.context-window` trigger already carries rather than inventing a convention.
+    assert.equal(definition.plane, 'domain', `${messageType} must follow the transcript.context-window trigger plane`);
+    assert.equal(definition.plane, catalog.messages['transcript.context-window'].plane);
+    assert.ok(definition.owner);
+  }
+  // Every shape SCRIBE-01 shipped keeps the exact version and plane current code emits/consumes.
+  assert.equal(catalog.messages['ai.work-request'].version, '1.5.0');
+  assert.equal(catalog.messages['ai.work-completed'].version, '1.5.0');
+  assert.equal(catalog.messages['scribe.batch-policy'].version, '1.0.0');
+  assert.equal(catalog.messages['scribe.batch-policy'].plane, 'control');
+});
+
+test('scribe.batch-admitted declares no model, provider, or endpoint field at all', async () => {
+  const schema = JSON.parse(await readFile(path.join(root, 'contracts', 'scribe-batch-admitted.schema.json'), 'utf8'));
+  assert.equal(Object.hasOwn(schema.properties, 'model'), false);
+  assert.equal(schema.additionalProperties, false, 'a provider field must be a contract violation, not a convention');
+  // The coordinator holds no provider knowledge, so no provider vocabulary may exist anywhere in
+  // this schema - including inside a $defs shape a later minor could reference.
+  const serialized = JSON.stringify(schema);
+  for (const forbidden of ['model', 'provider', 'endpoint', 'api_key', 'base_url']) {
+    assert.equal(serialized.includes(forbidden), false, `scribe.batch-admitted must not mention ${forbidden}`);
+  }
+});
+
+test('scribe.batch-admitted carries a full three-row batch-complete batch and a two-row idle-timeout remainder', async () => {
+  const full = await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'valid.json');
+  assert.deepEqual(registry.validateEnvelope(full), []);
+  assert.equal(full.payload.batch_identity.segments.length, 3);
+  assert.equal(full.payload.batch_identity.admission_reason, 'batch-complete');
+  assert.equal(Object.hasOwn(full.payload, 'model'), false);
+
+  const partial = await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'valid-partial-idle-batch.json');
+  assert.deepEqual(registry.validateEnvelope(partial), []);
+  assert.equal(partial.payload.batch_identity.segments.length, 2);
+  assert.equal(partial.payload.batch_identity.admission_reason, 'idle-timeout');
+  // A remainder admitted on the idle timer may legitimately have no background at all.
+  assert.deepEqual(partial.payload.background_context, { transcript_segments: [], prior_logged_items: [] });
+});
+
+test('scribe.batch-admitted rejects a smuggled model name, a missing background context, empty evidence, and forged prior-item identity', async () => {
+  const withModel = await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'invalid-model-field.json');
+  assert.match(registry.validateEnvelope(withModel).join('\n'), /model is not allowed/);
+
+  const missingBackground = await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'invalid-missing-background-context.json');
+  assert.match(registry.validateEnvelope(missingBackground).join('\n'), /background_context is required/);
+
+  const emptyEvidence = await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'invalid-empty-new-evidence.json');
+  assert.match(registry.validateEnvelope(emptyEvidence).join('\n'), /fewer than 1 items/);
+
+  // Prior Scribe context is non-authoritative background; only the Logged Item owner assigns
+  // identity (ADR-001/ADR-002), so a proposal may not carry item_id/revision.
+  const forgedPriorItem = await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'invalid-forged-prior-item-id.json');
+  assert.match(registry.validateEnvelope(forgedPriorItem).join('\n'), /item_id is not allowed/);
+});
+
+test('an admitted batch carries everything needed to build the governed 2.0.0 model request once the extraction boundary adds its own provider detail', async () => {
+  const admitted = (await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'valid.json')).payload;
+  const workId = `logged-item-extraction:${admitted.batch_identity.session_id}:${admitted.batch_identity.request_id}`;
+  const modelRequest = {
+    protocol_version: SCRIBE_BATCH_PROTOCOL_VERSION,
+    purpose: 'logged-item-extraction',
+    // Supplied by the extraction boundary from its own local configuration, never by the
+    // coordinator; the same is true of the request ceilings below.
+    model: 'locally-configured-model',
+    batch_identity: admitted.batch_identity,
+    new_evidence_segments: admitted.new_evidence_segments,
+    background_context: admitted.background_context,
+    policy_profile: admitted.policy_profile,
+    instruction_version: admitted.instruction_version,
+    limits: {
+      max_context_chars: 4000,
+      max_context_tokens: 2000,
+      max_output_chars: EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_chars,
+      max_output_tokens: EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens
+    },
+    identity: { work_id: workId, session_id: admitted.batch_identity.session_id, batch_request_id: admitted.batch_identity.request_id }
+  };
+
+  // The SCRIBE-01 cross-message invariant accepts it: evidence matches the batch identity exactly,
+  // and no background segment is presented as new evidence.
+  assert.equal(validateScribeBatchModelRequest(modelRequest).protocol_version, SCRIBE_BATCH_PROTOCOL_VERSION);
+
+  const validateWorkRequest = registry.definitionFor('ai.work-request').validate;
+  assert.equal(validateWorkRequest({
+    work_id: workId,
+    workload: 'logged-item-extraction',
+    session_id: admitted.batch_identity.session_id,
+    sequence: admitted.batch_identity.last_sequence,
+    queued_at: '2026-09-07T17:00:00.000Z',
+    input: { model_request: modelRequest },
+    recovery: { max_attempts: 2 }
+  }), true);
+});
+
+test('scribe.batch-evaluated transmits zero-item, one-item, multi-item, and failed outcomes as real messages', async () => {
+  const empty = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'valid-empty-evaluated.json');
+  const one = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'valid-one-item.json');
+  const many = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'valid.json');
+  const failed = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'valid-failed.json');
+  for (const fixture of [empty, one, many, failed]) {
+    assert.deepEqual(registry.validateEnvelope(fixture), [], fixture.message_id);
+    // The message wraps the SCRIBE-01 artifact verbatim, so the same payload validates as one.
+    assert.deepEqual(registry.validateArtifact('scribe_batch_evaluated', fixture.payload.batch), []);
+  }
+  assert.equal(empty.payload.batch.outcome, 'empty-evaluated');
+  assert.equal(empty.payload.batch.items.length, 0);
+  assert.equal(one.payload.batch.items.length, 1);
+  assert.equal(many.payload.batch.items.length, 2);
+  assert.equal(failed.payload.batch.outcome, 'failed');
+  assert.equal(failed.payload.batch.error.retryable, true);
+  assert.equal(failed.payload.batch.acknowledgement.accepted, false);
+});
+
+test('scribe.batch-evaluated advances the cursor only on an accepted outcome whose logged item ids match its recorded items', async () => {
+  const many = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'valid.json');
+  const accepted = many.payload.batch.acknowledgement;
+  assert.equal(accepted.accepted, true);
+  assert.deepEqual(accepted.logged_item_ids, ['logged-item-batch-1-0', 'logged-item-batch-1-1']);
+
+  // A zero-item settlement is a real advance with no Logged Items, which is exactly the outcome
+  // that previously had no carrier back to the coordinator at all.
+  const empty = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'valid-empty-evaluated.json');
+  assert.equal(empty.payload.batch.acknowledgement.accepted, true);
+  assert.deepEqual(empty.payload.batch.acknowledgement.logged_item_ids, []);
+});
+
+test('scribe.batch-evaluated rejects a missing batch, a forged item identity, an outcome/items mismatch, and a forged sibling routing key', async () => {
+  const missing = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'invalid-missing-batch.json');
+  assert.match(registry.validateEnvelope(missing).join('\n'), /batch is required/);
+
+  const forgedItemId = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'invalid-forged-item-id.json');
+  assert.match(registry.validateEnvelope(forgedItemId).join('\n'), /item_id is not allowed/);
+
+  const mismatch = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'invalid-empty-evaluated-with-item.json');
+  assert.notDeepEqual(registry.validateEnvelope(mismatch), []);
+
+  // The batch identity and the envelope's correlation_id are the only session keys; a duplicated
+  // one would be a divergence this repository's Ajv configuration cannot detect ($data is absent).
+  const forgedSession = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'invalid-forged-session-id.json');
+  assert.match(registry.validateEnvelope(forgedSession).join('\n'), /session_id is not allowed/);
+});

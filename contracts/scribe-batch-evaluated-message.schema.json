@@ -1,0 +1,9 @@
+{
+  "$id": "argus.scribe-batch-evaluated-message.v1",
+  "type": "object",
+  "required": ["batch"],
+  "properties": {
+    "batch": { "$ref": "argus.scribe-batch-evaluated.v1" }
+  },
+  "additionalProperties": false
+}

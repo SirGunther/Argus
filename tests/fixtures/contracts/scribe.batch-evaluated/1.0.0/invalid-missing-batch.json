@@ -1,0 +1,10 @@
+{
+  "message_id": "fixture-scribe-batch-evaluated-missing-batch",
+  "plane": "domain",
+  "message_type": "scribe.batch-evaluated",
+  "timestamp": "2026-09-07T17:00:02.000Z",
+  "producer": "fixture-log-extractor-local-http",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.0.0",
+  "payload": {}
+}

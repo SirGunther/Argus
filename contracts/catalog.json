@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.13.0",
+  "schema_version": "1.14.0",
   "governance": {
     "compatibility_policy": "backward-compatible-minor",
     "plane_change": "breaking",
@@ -172,6 +172,22 @@
       "schema": "scribe-batch-policy.schema.json",
       "max_payload_bytes": 32768,
       "changelog": "history/scribe.batch-policy.md"
+    },
+    "scribe.batch-admitted": {
+      "plane": "domain",
+      "version": "1.0.0",
+      "owner": "logged-items/scribe-coordinator",
+      "schema": "scribe-batch-admitted.schema.json",
+      "max_payload_bytes": 262144,
+      "changelog": "history/scribe.batch-admitted.md"
+    },
+    "scribe.batch-evaluated": {
+      "plane": "domain",
+      "version": "1.0.0",
+      "owner": "logged-items/extraction",
+      "schema": "scribe-batch-evaluated-message.schema.json",
+      "max_payload_bytes": 65536,
+      "changelog": "history/scribe.batch-evaluated.md"
     },
     "ai.provider-configure": {
       "plane": "control",
