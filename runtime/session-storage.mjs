@@ -38,6 +38,10 @@ const SCRIBE_BATCH_EVALUATED_MAX_ITEMS = 8;
 const SCRIBE_CHECKPOINT_PENDING_MAX_SEGMENTS = 2;
 const SCRIBE_BATCH_IDENTITY_MAX_SEGMENTS = 16;
 const SCRIBE_ITEM_TEXT_MAX_LENGTH = 512;
+// 64 = ceiling on prior_logged_items even if the entire ~8000-token scribe.batch-policy context budget were
+// spent on them alone: at ~4 chars/token, a max-length (512-char, SCRIBE_ITEM_TEXT_MAX_LENGTH) item is ~128
+// tokens, so 8000/128 ~= 62 is the realistic max a policy-governed caller could ever produce; 64 rounds up.
+const SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX = 64;
 
 export class SessionStorageError extends Error {
   constructor(code, message, { retryable = false, details } = {}) {
@@ -66,6 +70,7 @@ export function resolveSessionRoot(environment = process.env) {
 
 export class SessionStorage {
   #root;
+  #scribeJournalChains = new Map();
 
   constructor({ root = resolveSessionRoot(), environment, faultInjector } = {}) {
     this.#root = path.resolve(root || resolveSessionRoot(environment));
@@ -226,7 +231,14 @@ export class SessionStorage {
     return entries;
   }
 
-  async appendScribeBatchJournal(sessionId, { batch, writtenAt = new Date().toISOString() } = {}) {
+  async appendScribeBatchJournal(sessionId, options = {}) {
+    const previousChain = this.#scribeJournalChains.get(sessionId) || Promise.resolve();
+    const runPromise = previousChain.catch(() => {}).then(() => this.#appendScribeBatchJournalExclusive(sessionId, options));
+    this.#scribeJournalChains.set(sessionId, runPromise);
+    return runPromise;
+  }
+
+  async #appendScribeBatchJournalExclusive(sessionId, { batch, writtenAt = new Date().toISOString() } = {}) {
     assertGovernedBatchEvaluatedShape(sessionId, batch, 'Scribe batch outcome');
     const paths = await this.ensureSession(sessionId);
     await this.#assertSafeSessionPaths(paths, ['scribeBatchJournal']);
@@ -456,7 +468,18 @@ function assertGovernedBatchIdentityShape(sessionId, identity, label) {
       throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.segments contains an invalid entry`);
     }
   }
-  if (!isNonNegativeInteger(identity.first_sequence) || !isNonNegativeInteger(identity.last_sequence)) throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity sequence bounds are invalid`);
+  if (new Set(identity.segments.map((entry) => entry.segment_id)).size !== identity.segments.length) {
+    throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.segments must not repeat a segment_id`);
+  }
+  for (let index = 1; index < identity.segments.length; index += 1) {
+    if (identity.segments[index].sequence !== identity.segments[index - 1].sequence + 1) {
+      throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.segments must be ordered and contiguous by ascending sequence`);
+    }
+  }
+  if (!isNonNegativeInteger(identity.first_sequence) || !isNonNegativeInteger(identity.last_sequence)
+    || identity.first_sequence !== identity.segments[0].sequence || identity.last_sequence !== identity.segments.at(-1).sequence) {
+    throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.first_sequence/last_sequence must match the segment list's actual bounds`);
+  }
   if (!SCRIBE_ADMISSION_REASON_VALUES.has(identity.admission_reason)) throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity.admission_reason is invalid`);
   if (!isNonEmptyString(identity.policy_id) || !isNonEmptyString(identity.policy_version) || !isNonEmptyString(identity.instruction_version)) {
     throw new SessionStorageError('SCRIBE_BATCH_IDENTITY_INVALID', `${label} batch_identity policy/instruction identity is invalid`);
@@ -536,16 +559,26 @@ export function assertGovernedScribeCheckpointShape(sessionId, checkpoint) {
     || !(pending.accumulated_since === null || typeof pending.accumulated_since === 'string')) {
     throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.pending_partial is not governed');
   }
+  if (pending.segments.length > 0 && pending.accumulated_since === null) {
+    throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.pending_partial.accumulated_since is required while segments are pending');
+  }
+  if (pending.segments.length === 0 && pending.accumulated_since !== null) {
+    throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.pending_partial.accumulated_since must be null while no segments are pending');
+  }
   for (const entry of pending.segments) {
     const keysOk = entry && typeof entry === 'object' && Object.keys(entry).every((key) => ['segment_id', 'revision', 'sequence'].includes(key));
     if (!keysOk || !isNonEmptyString(entry.segment_id) || !isNonNegativeInteger(entry.revision) || !isNonNegativeInteger(entry.sequence)) {
       throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.pending_partial.segments contains an invalid entry');
     }
+    if (entry.sequence <= admitted.last_sequence) {
+      throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.pending_partial.segments contains a sequence at or behind the acknowledged cursor');
+    }
   }
 
   const background = checkpoint.background_context;
-  if (!background || typeof background !== 'object' || Object.keys(background).some((key) => key !== 'prior_logged_items') || !Array.isArray(background.prior_logged_items)) {
-    throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', 'Scribe checkpoint.background_context is not governed');
+  if (!background || typeof background !== 'object' || Object.keys(background).some((key) => key !== 'prior_logged_items') || !Array.isArray(background.prior_logged_items)
+    || background.prior_logged_items.length > SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX) {
+    throw new SessionStorageError('SCRIBE_CHECKPOINT_INVALID', `Scribe checkpoint.background_context.prior_logged_items must not exceed ${SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX} entries`);
   }
   for (const item of background.prior_logged_items) assertGovernedScribeItem(item, 'Scribe checkpoint.background_context.prior_logged_items');
 

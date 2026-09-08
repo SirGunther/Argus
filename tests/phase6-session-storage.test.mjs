@@ -485,6 +485,46 @@ test('Scribe checkpoint rejects a same-request_id retry whose batch_identity con
   });
 });
 
+test('Scribe batch identity rejects duplicate segment_ids, reordered/gapped sequences, and mismatched first/last_sequence bounds', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-identity-ordering';
+    const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    await lifecycle.record(command('record-1', sessionId));
+
+    const duplicateSegmentId = scribeBatchEvaluated(sessionId, 'batch-duplicate', {
+      segments: [{ segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 0 }, { segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 1 }],
+      items: [{ text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: [`${sessionId}-segment-0`] }],
+      loggedItemIds: [`${sessionId}-logged-item-0`]
+    });
+    await assert.rejects(() => lifecycle.recordScribeBatchOutcome(sessionId, duplicateSegmentId), (error) => error.code === 'SCRIBE_BATCH_IDENTITY_INVALID');
+
+    const reordered = scribeBatchEvaluated(sessionId, 'batch-reordered', {
+      segments: [{ segment_id: `${sessionId}-segment-1`, revision: 0, sequence: 1 }, { segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 0 }],
+      items: [{ text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: [`${sessionId}-segment-0`] }],
+      loggedItemIds: [`${sessionId}-logged-item-0`]
+    });
+    await assert.rejects(() => lifecycle.recordScribeBatchOutcome(sessionId, reordered), (error) => error.code === 'SCRIBE_BATCH_IDENTITY_INVALID');
+
+    const gapped = scribeBatchEvaluated(sessionId, 'batch-gapped', {
+      segments: [{ segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 0 }, { segment_id: `${sessionId}-segment-2`, revision: 0, sequence: 2 }],
+      items: [{ text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: [`${sessionId}-segment-0`] }],
+      loggedItemIds: [`${sessionId}-logged-item-0`]
+    });
+    await assert.rejects(() => lifecycle.recordScribeBatchOutcome(sessionId, gapped), (error) => error.code === 'SCRIBE_BATCH_IDENTITY_INVALID');
+
+    const validSegments = [{ segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 0 }, { segment_id: `${sessionId}-segment-1`, revision: 0, sequence: 1 }];
+    const badBounds = scribeBatchEvaluated(sessionId, 'batch-bad-bounds', {
+      segments: validSegments,
+      items: [{ text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: [`${sessionId}-segment-0`] }],
+      loggedItemIds: [`${sessionId}-logged-item-0`]
+    });
+    badBounds.batch_identity.last_sequence = 5;
+    await assert.rejects(() => lifecycle.recordScribeBatchOutcome(sessionId, badBounds), (error) => error.code === 'SCRIBE_BATCH_IDENTITY_INVALID');
+
+    assert.deepEqual(await lifecycle.getScribeBatchJournal(sessionId), []);
+  });
+});
+
 test('Scribe checkpoint rejects a structurally malformed shape', async () => {
   await withRoot(async (directory) => {
     const sessionId = 'scribe-malformed';
@@ -493,6 +533,52 @@ test('Scribe checkpoint rejects a structurally malformed shape', async () => {
     const malformed = scribeCheckpoint(sessionId);
     delete malformed.admitted_through;
     await assert.rejects(() => lifecycle.acceptScribeCheckpoint(sessionId, malformed), (error) => error.code === 'SCRIBE_CHECKPOINT_INVALID');
+  });
+});
+
+test('Scribe checkpoint pending_partial rejects a sequence behind the cursor and an ungoverned segments/accumulated_since correlation', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-pending-cross-checks';
+    const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    await lifecycle.record(command('record-1', sessionId));
+
+    const behindCursor = scribeCheckpoint(sessionId, {
+      admitted_through: { last_segment_id: `${sessionId}-segment-2`, last_sequence: 2, last_revision: 0 },
+      pending_partial: { segments: [{ segment_id: `${sessionId}-segment-1`, revision: 0, sequence: 1 }], accumulated_since: '2026-08-19T00:01:00.000Z' }
+    });
+    await assert.rejects(() => lifecycle.acceptScribeCheckpoint(sessionId, behindCursor), (error) => error.code === 'SCRIBE_CHECKPOINT_INVALID');
+
+    const missingAccumulatedSince = scribeCheckpoint(sessionId, {
+      pending_partial: { segments: [{ segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 0 }], accumulated_since: null }
+    });
+    await assert.rejects(() => lifecycle.acceptScribeCheckpoint(sessionId, missingAccumulatedSince), (error) => error.code === 'SCRIBE_CHECKPOINT_INVALID');
+
+    const strandedAccumulatedSince = scribeCheckpoint(sessionId, {
+      pending_partial: { segments: [], accumulated_since: '2026-08-19T00:01:00.000Z' }
+    });
+    await assert.rejects(() => lifecycle.acceptScribeCheckpoint(sessionId, strandedAccumulatedSince), (error) => error.code === 'SCRIBE_CHECKPOINT_INVALID');
+
+    const governed = scribeCheckpoint(sessionId, {
+      pending_partial: { segments: [{ segment_id: `${sessionId}-segment-0`, revision: 0, sequence: 0 }], accumulated_since: '2026-08-19T00:01:00.000Z' }
+    });
+    await lifecycle.acceptScribeCheckpoint(sessionId, governed);
+    assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).pending_partial, governed.pending_partial);
+  });
+});
+
+test('Scribe checkpoint background_context.prior_logged_items is bounded', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-background-items-bound';
+    const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    await lifecycle.record(command('record-1', sessionId));
+
+    const priorLoggedItem = (index) => ({ text: `Duplicate-suppression item ${index}.`, kind: 'other', source_segment_ids: [`${sessionId}-segment-${index}`] });
+    const atMax = scribeCheckpoint(sessionId, { background_context: { prior_logged_items: Array.from({ length: 64 }, (_, index) => priorLoggedItem(index)) } });
+    await lifecycle.acceptScribeCheckpoint(sessionId, atMax);
+    assert.equal((await lifecycle.getScribeCheckpoint(sessionId)).background_context.prior_logged_items.length, 64);
+
+    const overMax = scribeCheckpoint(sessionId, { background_context: { prior_logged_items: Array.from({ length: 65 }, (_, index) => priorLoggedItem(index)) } });
+    await assert.rejects(() => lifecycle.acceptScribeCheckpoint(sessionId, overMax), (error) => error.code === 'SCRIBE_CHECKPOINT_INVALID');
   });
 });
 
@@ -523,6 +609,50 @@ test('Scribe batch journal appends are idempotent by stable batch/attempt identi
     assert.equal(replay.duplicate, true);
     assert.deepEqual(replay.entry, first.entry);
     assert.equal((await lifecycle.getScribeBatchJournal(sessionId)).length, 1);
+  });
+});
+
+test('Scribe batch journal appends serialize per session, so concurrent identical-content calls settle to exactly one entry', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-journal-concurrent-identical';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+
+    const batch = scribeBatchEvaluated(sessionId, 'batch-concurrent');
+    const results = await Promise.all(Array.from({ length: 8 }, () => lifecycle.recordScribeBatchOutcome(sessionId, batch)));
+
+    assert.equal(results.filter((result) => result.duplicate === false).length, 1);
+    assert.equal(results.filter((result) => result.duplicate === true).length, 7);
+    for (const result of results) assert.equal(result.entry.journal_sequence, 0);
+
+    const journal = await storage.readScribeBatchJournal(sessionId);
+    assert.equal(journal.length, 1);
+    assert.deepEqual(journal.map((entry) => entry.journal_sequence), [0]);
+  });
+});
+
+test('Scribe batch journal appends serialize per session, so concurrent distinct-content calls all land with contiguous sequences', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-journal-concurrent-distinct';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+
+    const batches = Array.from({ length: 8 }, (_, index) => scribeBatchEvaluated(sessionId, `batch-concurrent-${index}`, {
+      segments: [{ segment_id: `${sessionId}-segment-${index}`, revision: 0, sequence: index }],
+      items: [{ text: `Item ${index}.`, kind: 'decision', source_segment_ids: [`${sessionId}-segment-${index}`] }],
+      loggedItemIds: [`${sessionId}-logged-item-${index}`]
+    }));
+    const results = await Promise.all(batches.map((batch) => lifecycle.recordScribeBatchOutcome(sessionId, batch)));
+
+    assert.equal(results.every((result) => result.duplicate === false), true);
+    assert.deepEqual(results.map((result) => result.entry.journal_sequence).sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7]);
+
+    const journal = await storage.readScribeBatchJournal(sessionId);
+    assert.equal(journal.length, 8);
+    assert.deepEqual(journal.map((entry) => entry.journal_sequence), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(new Set(journal.map((entry) => entry.batch.batch_identity.request_id)).size, 8);
   });
 });
 
@@ -661,6 +791,29 @@ test('Scribe checkpoint survives Stop and Resume unchanged', async () => {
 
     await lifecycle.resume(command('resume-1', sessionId, '2026-08-19T00:05:00.000Z'));
     assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).in_flight_batch, inFlight);
+  });
+});
+
+test('Scribe checkpoint refuses to clear an in-flight batch whose outcome was never journaled', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-outcome-not-journaled';
+    const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    await lifecycle.record(command('record-1', sessionId));
+
+    const inFlight = { batch_identity: scribeBatchIdentity(sessionId, 'batch-not-journaled'), attempt: 1, dispatched_at: '2026-08-19T00:06:00.000Z' };
+    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { in_flight_batch: inFlight }));
+
+    const resolvedBatch = scribeBatchEvaluated(sessionId, 'batch-not-journaled', { attempt: 1 });
+    await assert.rejects(
+      () => lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { last_evaluated_batch: resolvedBatch })),
+      (error) => error.code === 'SCRIBE_BATCH_OUTCOME_NOT_JOURNALED'
+    );
+    assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).in_flight_batch, inFlight);
+    assert.deepEqual(await lifecycle.getScribeBatchJournal(sessionId), []);
+
+    await lifecycle.recordScribeBatchOutcome(sessionId, resolvedBatch);
+    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { last_evaluated_batch: resolvedBatch }));
+    assert.equal((await lifecycle.getScribeCheckpoint(sessionId)).in_flight_batch, undefined);
   });
 });
 
