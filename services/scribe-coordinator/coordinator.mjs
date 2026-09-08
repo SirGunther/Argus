@@ -20,6 +20,22 @@ const DEFAULT_POLICY = Object.freeze({
 // still-pending batch (governed recovery, not an infinite tight loop against a broken endpoint).
 const DEFAULT_MAX_DISPATCH_ATTEMPTS = 3;
 
+// Surfaced when a batch stalls (either the dispatch-attempt ceiling was reached, or the failure
+// was marked non-retryable) while a caller is waiting on Close's `settled` promise: rows remain
+// pending and no further automatic progress will happen, so Close must never report success.
+export class ScribeBatchStalledError extends Error {
+  constructor(sessionId, batchIdentity, cause) {
+    super(`Scribe batch ${batchIdentity.request_id} for session ${sessionId} is stalled with rows still pending`);
+    this.name = 'ScribeBatchStalledError';
+    this.code = 'SCRIBE_BATCH_STALLED';
+    this.category = 'conflict';
+    this.retryable = false;
+    this.sessionId = sessionId;
+    this.batchIdentity = batchIdentity;
+    this.cause = cause;
+  }
+}
+
 /**
  * The standalone Scribe coordinator: a cursor-driven admission state machine, independent of
  * storage and model HTTP calls (SCRIBE-02). One event-driven pump is woken by finalized
@@ -152,11 +168,21 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
     // One expected slot per validated response item, in item order, each carrying the exact
     // source-segment boundary independently derived from that item's own `source_segment_ids`
     // (already proven by `validateScribeBatchModelResponse` to cite only this batch's own
-    // segments). `acceptStoredItem` below fills a slot only when a stored item's real `source`
-    // boundary matches that slot's derived boundary, so a count-only, arbitrary, or reordered
-    // item_id can never fill an unrelated slot.
+    // segments) plus the item's own proposed text. `acceptStoredItem` below fills a slot only
+    // when a stored item's real `source` boundary AND `text` match that slot, so a count-only,
+    // arbitrary, or reordered item_id can never fill an unrelated slot.
+    //
+    // This is a best-effort correlation, not a true identity match: neither the model-response
+    // schema nor `logged-item.stored` carries a shared deterministic item identifier (the model
+    // is never allowed to assign authoritative identity, and this standalone coordinator has no
+    // access to whatever identity the active Logged Item owner assigns), so two *distinct*
+    // response items that legitimately share both the same source range and the same text
+    // remain indistinguishable and are filled in encounter order. Eliminating that residual
+    // ambiguity requires a deterministic evaluated-batch/item-identity carrier that does not yet
+    // exist in the governed contracts (SCRIBE-04/SCRIBE-01 territory) — this coordinator cannot
+    // invent one unilaterally without risking divergence from whatever the extractor implements.
     inFlight.awaitingAck = {
-      expectedItems: response.items.map((item) => sourceBoundaryForItem(item, inFlight.batchIdentity.segments)),
+      expectedItems: response.items.map((item) => ({ ...sourceBoundaryForItem(item, inFlight.batchIdentity.segments), text: item.text })),
       assigned: new Array(response.items.length).fill(null)
     };
     return [];
@@ -174,9 +200,9 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
     // logged-item-stored.schema.json) as the batch request_id, matching the existing single-item
     // boundary the handoff doc says the draft-id derivation must match. Each individual item is
     // then correlated to its exact `items[]` position by matching the stored item's own
-    // `source.first_segment_id`/`last_segment_id` boundary against the boundary independently
-    // derived for that slot in `acceptWorkCompleted` above — a count-only check would let an
-    // arbitrary, out-of-order, or unrelated item_id silently fill any open slot.
+    // `source.first_segment_id`/`last_segment_id` boundary and `text` against the slot derived
+    // for it in `acceptWorkCompleted` above — a count-only check would let an arbitrary,
+    // out-of-order, or unrelated item_id silently fill any open slot.
     const storedRequestId = storedItem?.generator?.input_window_id;
     if (!inFlight || !awaitingAck || storedRequestId !== expectedRequestId) {
       throw new ServiceOperationError(`No Scribe batch is awaiting an item acknowledgement matching ${storedItem?.item_id}`, { code: 'SCRIBE_ACKNOWLEDGEMENT_CONFLICT', category: 'conflict' });
@@ -184,7 +210,8 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
     if (awaitingAck.assigned.includes(storedItem.item_id)) return [];
     const slot = awaitingAck.expectedItems.findIndex((expected, index) => awaitingAck.assigned[index] === null
       && expected.first_segment_id === storedItem.source?.first_segment_id
-      && expected.last_segment_id === storedItem.source?.last_segment_id);
+      && expected.last_segment_id === storedItem.source?.last_segment_id
+      && expected.text === storedItem.text);
     if (slot === -1) {
       throw new ServiceOperationError(`Stored item ${storedItem.item_id} does not match any pending Scribe extraction item for batch ${expectedRequestId}`, { code: 'SCRIBE_ACKNOWLEDGEMENT_CONFLICT', category: 'conflict' });
     }
@@ -318,9 +345,16 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
     // backlog so the next pump rebuilds the identical batch identity (deterministic from
     // segment content + policy/instruction identity in batch-identity.mjs).
     state.pendingSegments = [...inFlight.admittedSegments, ...state.pendingSegments];
-    if (inFlight.attempt >= DEFAULT_MAX_DISPATCH_ATTEMPTS) {
+    // A non-retryable error (e.g. permanently malformed model output) must never be
+    // auto-retried, not even once — retrying it would just reproduce the identical failure.
+    // Only a retryable error gets up to DEFAULT_MAX_DISPATCH_ATTEMPTS dispatch attempts before
+    // the coordinator gives up and stalls.
+    if (error.retryable === false || inFlight.attempt >= DEFAULT_MAX_DISPATCH_ATTEMPTS) {
       state.stalledRequestId = inFlight.batchIdentity.request_id;
-      resolveSettleWaiters(state);
+      // A stall means rows remain pending with no further automatic progress: Close's `settled`
+      // must reject, not resolve, or a caller (and the wire-level drain confirmation) would
+      // wrongly conclude the session fully drained while a batch sits stalled and unacknowledged.
+      rejectSettleWaiters(state, new ScribeBatchStalledError(sessionId, inFlight.batchIdentity, error));
       return [failureOutput];
     }
     return [failureOutput, ...pump(sessionId)];
@@ -376,16 +410,22 @@ export function createScribeCoordinator({ clock = {}, onSpontaneousDispatch } = 
   function whenSettled(sessionId) {
     const state = stateFor(sessionId);
     if (!state.inFlight) return Promise.resolve();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       state.settleWaiters ||= [];
-      state.settleWaiters.push(resolve);
+      state.settleWaiters.push({ resolve, reject });
     });
   }
 
   function resolveSettleWaiters(state) {
     const waiters = state.settleWaiters;
     state.settleWaiters = undefined;
-    if (waiters) for (const resolve of waiters) resolve();
+    if (waiters) for (const waiter of waiters) waiter.resolve();
+  }
+
+  function rejectSettleWaiters(state, error) {
+    const waiters = state.settleWaiters;
+    state.settleWaiters = undefined;
+    if (waiters) for (const waiter of waiters) waiter.reject(error);
   }
 
   function workIdFor(sessionId, batchIdentity, attempt) {

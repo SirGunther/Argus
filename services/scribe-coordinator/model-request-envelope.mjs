@@ -46,16 +46,3 @@ export function readModelName(env = process.env) {
   if (!modelName) throw new ServiceOperationError('ARGUS_MODEL_NAME is required', { code: 'INVALID_MODEL_CONFIGURATION', category: 'validation' });
   return modelName;
 }
-
-// ADR-021's "preserve ... exact request fingerprint across retry" invariant means the *content*
-// fingerprint used for dispatch/result correlation must stay identical across attempts of the
-// identical batch, even though `identity.work_id` is deliberately attempt-specific (each retry is
-// tracked as its own `ai.work-request`/work_id). Fingerprinting the request as transmitted would
-// make every retry's fingerprint differ purely because of that tracking id, which would falsely
-// read as content drift between attempts. Fingerprint a clone with `identity.work_id` normalized
-// to the attempt-invariant `batch_request_id` instead. This is a coordinator-established
-// convention: SCRIBE-04's extractor must compute `result.request_fingerprint` the same way for
-// `acceptWorkCompleted`'s fingerprint-correlation check in coordinator.mjs to succeed.
-export function stableFingerprintInput(request) {
-  return { ...request, identity: { ...request.identity, work_id: request.identity.batch_request_id } };
-}

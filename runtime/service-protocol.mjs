@@ -62,7 +62,24 @@ export function runLineService({ service, operations, onDrain, onReady }) {
           service,
           pending_operations: 0
         }, message.message_id);
-        if (whenDrained) whenDrained.then(emitDrained, emitDrained);
+        // A rejected `whenDrained` means draining did not actually complete (e.g. a stalled batch
+        // left rows pending with no further automatic progress) — it must never be reported as
+        // `service.drained`, which would tell a caller the session fully drained when it did not.
+        const emitDrainFailure = (error) => {
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          emit(producer, 'control', 'service.failure', message.correlation_id, {
+            service: producer,
+            operation: 'lifecycle.drain',
+            outcome: 'failure',
+            error: {
+              code: normalized.code || 'DRAIN_INCOMPLETE',
+              category: normalized.category || 'conflict',
+              message: normalized.message,
+              retryable: Boolean(normalized.retryable)
+            }
+          }, message.message_id);
+        };
+        if (whenDrained) whenDrained.then(emitDrained, emitDrainFailure);
         else emitDrained();
         return;
       }

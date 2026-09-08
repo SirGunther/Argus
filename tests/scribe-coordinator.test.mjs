@@ -5,8 +5,8 @@ import test from 'node:test';
 import { createEnvelope } from '../runtime/orchestrator.mjs';
 import { loadContractRegistry } from '../runtime/contract-registry.mjs';
 import { fingerprintModelRequest } from '../contracts/model-protocol.mjs';
+import { OrderedStreamGuard } from '../runtime/ordered-stream.mjs';
 import { createScribeCoordinator } from '../services/scribe-coordinator/coordinator.mjs';
-import { stableFingerprintInput } from '../services/scribe-coordinator/model-request-envelope.mjs';
 import { runService, runServiceBatches } from './helpers/process-harness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -107,12 +107,12 @@ function failed({ workId, sessionId, batchIdentity, attempt, error }) {
   };
 }
 
-function storedItem(sessionId, itemId, batchRequestId, sourceBoundary = { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }) {
+function storedItem(sessionId, itemId, batchRequestId, sourceBoundary = { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }, text = 'Stored item text.') {
   return {
     item_id: itemId,
     session_id: sessionId,
     stored_at: new Date().toISOString(),
-    text: 'Stored item text.',
+    text,
     revision: 0,
     source: { ...sourceBoundary, start_time: '00:00:00.000', end_time: '00:00:01.000' },
     generator: { implementation: 'log-extractor-local-http', input_window_id: batchRequestId }
@@ -262,10 +262,10 @@ test('the cursor stays unchanged until every evaluated item is acknowledged, the
   }));
   assert.deepEqual(completedOutputs, [], 'nothing advances until the item acknowledgements arrive');
   assert.equal(coordinator.status('s1').cursor.last_sequence, -1);
-  const afterFirst = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }));
+  const afterFirst = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }, 'First item.'));
   assert.deepEqual(afterFirst, []);
   assert.equal(coordinator.status('s1').cursor.last_sequence, -1, 'a partial acknowledgement must not advance the cursor');
-  const afterSecond = coordinator.acceptStoredItem(storedItem('s1', 'item-2', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' }));
+  const afterSecond = coordinator.acceptStoredItem(storedItem('s1', 'item-2', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' }, 'Second item.'));
   const evaluated = afterSecond.find((output) => output.type === 'evaluated');
   assert.deepEqual(evaluated.acknowledgement.logged_item_ids, ['item-1', 'item-2']);
   assert.equal(coordinator.status('s1').cursor.last_sequence, 2);
@@ -283,9 +283,9 @@ test('stored-item acknowledgements arriving out of arrival order still produce i
   // The owner confirms the *second* item's storage first (concurrent processing, no ordering
   // guarantee on logged-item.stored arrival) — the final acknowledgement must still list
   // logged_item_ids in the original items[] order, not arrival order.
-  const afterSecondArrivedFirst = coordinator.acceptStoredItem(storedItem('s1', 'item-2', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' }));
+  const afterSecondArrivedFirst = coordinator.acceptStoredItem(storedItem('s1', 'item-2', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' }, 'Second item.'));
   assert.deepEqual(afterSecondArrivedFirst, []);
-  const afterFirstArrivedSecond = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }));
+  const afterFirstArrivedSecond = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }, 'First item.'));
   const evaluated = afterFirstArrivedSecond.find((output) => output.type === 'evaluated');
   assert.deepEqual(evaluated.acknowledgement.logged_item_ids, ['item-1', 'item-2'], 'logged_item_ids must reflect items[] position order, not confirmation arrival order');
 });
@@ -299,9 +299,23 @@ test('a stored item whose source boundary matches no pending extraction item is 
   // Correct batch/request correlation, but an arbitrary item_id whose claimed source boundary
   // does not match the one pending item's real source_segment_ids-derived boundary must still be
   // rejected — count-and-request-id correlation alone is not sufficient one-for-one proof.
-  assert.throws(() => coordinator.acceptStoredItem(storedItem('s1', 'item-x', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' })), /does not match any pending Scribe extraction item/);
+  assert.throws(() => coordinator.acceptStoredItem(storedItem('s1', 'item-x', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-1', last_segment_id: 'seg-1' }, 'Only item.')), /does not match any pending Scribe extraction item/);
   assert.equal(coordinator.status('s1').cursor.last_sequence, -1);
   assert.equal(coordinator.status('s1').busy, true, 'the real in-flight batch must remain intact after rejecting the mismatched acknowledgement');
+});
+
+test('an item with the pending item\'s correct source range but different text is rejected, not advanced on range alone', () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  const dispatch = admitThreeRows(coordinator, 's1');
+  coordinator.acceptWorkCompleted(succeeded({ workId: dispatch.workId, sessionId: 's1', batchIdentity: dispatch.batchIdentity, attempt: dispatch.attempt, items: [{ text: 'Only item.', source_segment_ids: ['seg-0'] }] }));
+  // Correct batch/request correlation and the correct source range, but unrelated text: source
+  // range alone is not sufficient proof this is the actual pending item, not a different item
+  // that happens to share the same range.
+  assert.throws(() => coordinator.acceptStoredItem(storedItem('s1', 'item-x', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }, 'Unrelated text.')), /does not match any pending Scribe extraction item/);
+  assert.equal(coordinator.status('s1').cursor.last_sequence, -1);
+  assert.equal(coordinator.status('s1').busy, true, 'the real in-flight batch must remain intact after rejecting the unrelated-text acknowledgement');
 });
 
 test('a stale or unrelated stored-item acknowledgement is rejected without mutating the cursor', () => {
@@ -346,9 +360,9 @@ test('a duplicate stored-item acknowledgement is idempotent and does not double-
   coordinator.configurePolicy(policy('s1'));
   const dispatch = admitThreeRows(coordinator, 's1');
   coordinator.acceptWorkCompleted(succeeded({ workId: dispatch.workId, sessionId: 's1', batchIdentity: dispatch.batchIdentity, attempt: dispatch.attempt, items: [{ text: 'a', source_segment_ids: ['seg-0'] }, { text: 'b', source_segment_ids: ['seg-1'] }] }));
-  const first = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id));
+  const first = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }, 'a'));
   assert.deepEqual(first, []);
-  const duplicate = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id));
+  const duplicate = coordinator.acceptStoredItem(storedItem('s1', 'item-1', dispatch.batchIdentity.request_id, { first_segment_id: 'seg-0', last_segment_id: 'seg-0' }, 'a'));
   assert.deepEqual(duplicate, [], 'a redelivered confirmation for an already-recorded item must be a no-op, not an error');
   assert.equal(coordinator.status('s1').inFlight.awaitingAck.storedItemIds.length, 1);
 });
@@ -389,6 +403,39 @@ test('repeated terminal failures stall the batch after the retry ceiling without
   assert.equal(coordinator.status('s1').stalled, true);
   assert.equal(coordinator.status('s1').busy, false);
   assert.equal(coordinator.status('s1').pendingCount, 3, 'the exact same three rows must remain pending, not lost');
+});
+
+test('a failure marked non-retryable stalls immediately, without any automatic retry attempt', () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  const dispatch = admitThreeRows(coordinator, 's1');
+  const afterFailure = coordinator.acceptWorkCompleted(failed({
+    workId: dispatch.workId, sessionId: 's1', batchIdentity: dispatch.batchIdentity, attempt: dispatch.attempt,
+    error: { code: 'INVALID_MODEL_OUTPUT', category: 'validation', message: 'malformed output', retryable: false }
+  }));
+  const retryDispatch = afterFailure.find((output) => output.type === 'dispatch');
+  assert.equal(retryDispatch, undefined, 'a non-retryable failure must never be auto-retried, not even once');
+  assert.equal(coordinator.status('s1').stalled, true);
+  assert.equal(coordinator.status('s1').busy, false);
+  assert.equal(coordinator.status('s1').pendingCount, 3, 'the exact same three rows must remain pending, not lost');
+});
+
+test('Close\'s settled promise rejects, and never resolves, when the forced batch stalls with rows still pending', async () => {
+  const { clock } = createFakeClock();
+  const coordinator = createScribeCoordinator({ clock });
+  coordinator.configurePolicy(policy('s1'));
+  const dispatch = admitThreeRows(coordinator, 's1');
+  const { settled } = coordinator.close('s1');
+  let settledOutcome;
+  settled.then(() => { settledOutcome = 'resolved'; }, () => { settledOutcome = 'rejected'; });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    coordinator.acceptWorkCompleted(failed({ workId: coordinator.status('s1').inFlight.workId, sessionId: 's1', batchIdentity: dispatch.batchIdentity, attempt: coordinator.status('s1').inFlight.attempt, error: { code: 'MODEL_ENDPOINT_UNAVAILABLE', category: 'unavailable', message: 'unavailable', retryable: true } }));
+  }
+  await assert.rejects(() => settled, /stalled/);
+  assert.equal(settledOutcome, 'rejected', 'Close must never report success while a stalled batch leaves rows pending and unacknowledged');
+  assert.equal(coordinator.status('s1').stalled, true);
+  assert.equal(coordinator.status('s1').pendingCount, 3, 'the exact same three rows must remain pending, not lost, after a stalled Close');
 });
 
 // --- Restart state -----------------------------------------------------------
@@ -449,6 +496,21 @@ test('recovery is rejected as conflicting once the coordinator already has live 
   coordinator.configurePolicy(policy('s1'));
   coordinator.acceptFinalizedSegment(segment('s1', 0));
   assert.throws(() => coordinator.restoreState('s1', { cursor: { last_segment_id: null, last_sequence: -1, last_revision: 0 }, pendingSegments: [] }), /already has coordinator state/);
+});
+
+test('OrderedStreamGuard.seed cannot rewind a stream past its current expectation, which would permit a duplicate sequence', () => {
+  const guard = new OrderedStreamGuard();
+  guard.accept('s1', 0);
+  guard.accept('s1', 1);
+  guard.accept('s1', 2);
+  assert.equal(guard.expected('s1'), 3);
+  assert.throws(() => guard.seed('s1', 1), /cannot be seeded backward/);
+  assert.equal(guard.expected('s1'), 3, 'a rejected seed must not partially apply');
+  // Without the rewind guard, seeding back to 1 would let sequence 1 (already consumed) be
+  // accepted again as if it were new.
+  assert.throws(() => guard.accept('s1', 1), /already advanced/);
+  guard.seed('s1', 5);
+  assert.equal(guard.expected('s1'), 5, 'seeding forward past the current expectation is still allowed');
 });
 
 // --- Stop --------------------------------------------------------------------
@@ -571,7 +633,7 @@ test('Close over the wire (lifecycle.drain) releases the pending remainder, and 
           payload: {
             work_id: request.payload.work_id, workload: 'logged-item-extraction', session_id: sessionId,
             sequence: request.payload.sequence, attempt: 1, completed_at: new Date().toISOString(),
-            result: { status: 'succeeded', work_id: request.payload.work_id, request_fingerprint: fingerprintModelRequest(stableFingerprintInput(modelRequest)), response: { protocol_version: '2.0.0', purpose: 'logged-item-extraction', batch_identity: modelRequest.batch_identity, items: [] } }
+            result: { status: 'succeeded', work_id: request.payload.work_id, request_fingerprint: fingerprintModelRequest(modelRequest), response: { protocol_version: '2.0.0', purpose: 'logged-item-extraction', batch_identity: modelRequest.batch_identity, items: [] } }
           }
         })];
       },
@@ -589,7 +651,7 @@ test('Close over the wire (lifecycle.drain) releases the pending remainder, and 
   assert.deepEqual(registry.validateEnvelope(drained), []);
 });
 
-test('retry attempts of the identical batch produce a stable content fingerprint despite each attempt having its own work_id', async () => {
+test('retry attempts preserve an identical batch_identity, with each attempt tracked by its own work_id and its own (necessarily distinct) request fingerprint', async () => {
   const sessionId = 'retry-fingerprint-session';
   const inputs = [0, 1, 2].map((sequence) => createEnvelope({ plane: 'domain', messageType: 'transcript.segment', producer: 'contract-test', correlationId: sessionId, payload: segment(sessionId, sequence) }));
   const result = await runServiceBatches(MANIFEST, [
@@ -613,9 +675,12 @@ test('retry attempts of the identical batch produce a stable content fingerprint
   const requests = result.outputs.filter((message) => message.message_type === 'ai.work-request').map((message) => message.payload.input.model_request);
   assert.equal(requests.length, 2, 'the failed attempt must be retried with a second ai.work-request');
   assert.notEqual(requests[0].identity.work_id, requests[1].identity.work_id, 'each attempt is tracked as its own work_id');
-  assert.equal(requests[0].batch_identity.request_id, requests[1].batch_identity.request_id, 'both attempts describe the identical batch');
+  // ADR-021's "preserve an identical batch ID ... across retry" is satisfied by batch_identity
+  // itself (deterministic from segment content + policy/instruction identity), not by the raw
+  // request fingerprint. services/serial-ai-model-lane/index.mjs independently computes
+  // `result.request_fingerprint` over the exact request it received, work_id included, so the raw
+  // fingerprint necessarily differs per attempt — that is expected, not a stability violation.
+  assert.deepEqual(requests[0].batch_identity, requests[1].batch_identity, 'both attempts describe the identical batch_identity');
   const rawFingerprints = requests.map((request) => fingerprintModelRequest(request));
-  assert.notEqual(rawFingerprints[0], rawFingerprints[1], 'fingerprinting the transmitted request as-is differs per attempt purely due to its own work_id');
-  const stableFingerprints = requests.map((request) => fingerprintModelRequest(stableFingerprintInput(request)));
-  assert.equal(stableFingerprints[0], stableFingerprints[1], 'normalizing the attempt-specific work_id before fingerprinting must yield an identical content fingerprint across retries');
+  assert.notEqual(rawFingerprints[0], rawFingerprints[1], 'the raw request fingerprint differs per attempt purely due to its own work_id, matching what the real model lane echoes back');
 });

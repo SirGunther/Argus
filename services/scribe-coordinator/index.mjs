@@ -2,7 +2,7 @@ import { createMessageIdentity, fingerprintMessage } from '../../runtime/message
 import { runLineService } from '../../runtime/service-protocol.mjs';
 import { fingerprintModelRequest } from '../../contracts/model-protocol.mjs';
 import { createScribeCoordinator } from './coordinator.mjs';
-import { buildModelRequestEnvelope, readModelName, stableFingerprintInput } from './model-request-envelope.mjs';
+import { buildModelRequestEnvelope, readModelName } from './model-request-envelope.mjs';
 
 const SERVICE = 'scribe-coordinator';
 const INSTANCE = process.env.ARGUS_SERVICE_INSTANCE_ID || SERVICE;
@@ -80,7 +80,14 @@ function toWireOutputs(pumpResults) {
 
 function dispatchToOutput(dispatch) {
   const request = buildModelRequestEnvelope(dispatch, { modelName: readModelName() });
-  const fingerprint = fingerprintModelRequest(stableFingerprintInput(request));
+  // Fingerprint the request exactly as transmitted (work_id included). services/serial-ai-model-
+  // lane/index.mjs independently computes `result.request_fingerprint` the same way, over the
+  // raw `model_request` it actually received — any coordinator-side normalization here would
+  // permanently disagree with that real echoed value and fail every completion. `batch_identity`
+  // (deterministic from segment content + policy/instruction identity, unconditionally identical
+  // across retries) is what already satisfies ADR-021's cross-retry stability; the raw request
+  // fingerprint is attempt-specific by necessity, since `identity.work_id` must differ per retry.
+  const fingerprint = fingerprintModelRequest(request);
   coordinator.recordDispatchFingerprint(dispatch.sessionId, dispatch.workId, fingerprint);
   return {
     plane: 'control',
