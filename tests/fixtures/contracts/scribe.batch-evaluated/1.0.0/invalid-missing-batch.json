@@ -6,5 +6,5 @@
   "producer": "fixture-log-extractor-local-http",
   "correlation_id": "fixture-scribe-session",
   "schema_version": "1.0.0",
-  "payload": {}
+  "payload": { "batch_attempt": 1 }
 }

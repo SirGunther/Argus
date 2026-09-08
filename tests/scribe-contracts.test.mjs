@@ -114,7 +114,7 @@ test('the batch identity invariant rejects duplicate segment ids and gapped/reor
 
 test('new_evidence_segments carrying the correct segment id set out of order is rejected, not silently accepted', async () => {
   const reordered = await loadMessageFixture('ai.work-request', '1.5.0', 'invalid-reordered-evidence.json');
-  assert.throws(() => validateScribeBatchModelRequest(reordered.payload.input.model_request), /order and sequence/);
+  assert.throws(() => validateScribeBatchModelRequest(reordered.payload.input.model_request), /order, revision, and sequence/);
 });
 
 test('a request whose identity.session_id, batch_request_id, or instruction_version conflicts with batch_identity fails closed', async () => {
@@ -319,6 +319,11 @@ test('scribe.batch-admitted rejects a smuggled model name, a missing background 
   assert.match(registry.validateEnvelope(forgedPriorItem).join('\n'), /item_id is not allowed/);
 });
 
+test('scribe.batch-admitted rejects evidence whose revision differs from the admitted identity', async () => {
+  const fixture = await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'invalid-evidence-revision.json');
+  assert.match(registry.validateEnvelope(fixture).join('\n'), /segment order, revision, and sequence/);
+});
+
 test('an admitted batch carries everything needed to build the governed 2.0.0 model request once the extraction boundary adds its own provider detail', async () => {
   const admitted = (await loadMessageFixture('scribe.batch-admitted', '1.0.0', 'valid.json')).payload;
   const workId = `logged-item-extraction:${admitted.batch_identity.session_id}:${admitted.batch_identity.request_id}`;
@@ -404,4 +409,9 @@ test('scribe.batch-evaluated rejects a missing batch, a forged item identity, an
   // one would be a divergence this repository's Ajv configuration cannot detect ($data is absent).
   const forgedSession = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'invalid-forged-session-id.json');
   assert.match(registry.validateEnvelope(forgedSession).join('\n'), /session_id is not allowed/);
+});
+
+test('scribe.batch-evaluated rejects a message batch_attempt that differs from the durable artifact attempt', async () => {
+  const fixture = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'invalid-batch-attempt-mismatch.json');
+  assert.match(registry.validateEnvelope(fixture).join('\n'), /batch_attempt must equal batch\.attempt/);
 });

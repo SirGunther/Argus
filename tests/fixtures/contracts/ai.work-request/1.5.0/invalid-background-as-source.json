@@ -31,7 +31,7 @@
           "instruction_version": "1.0.0"
         },
         "new_evidence_segments": [
-          { "segment_id": "segment-10", "sequence": 10, "start_time": "00:00:10.000", "end_time": "00:00:11.000", "text": "The new authoritative row." }
+          { "segment_id": "segment-10", "revision": 0, "sequence": 10, "start_time": "00:00:10.000", "end_time": "00:00:11.000", "text": "The new authoritative row." }
         ],
         "background_context": {
           "transcript_segments": [

@@ -41,6 +41,15 @@ export function createMessageIdentity({ producer, messageType, logicalKey, messa
   };
 }
 
+/** Stable UUID-v4-shaped identity for an output whose downstream rejection must correlate back. */
+export function deterministicMessageId(logicalKey) {
+  if (typeof logicalKey !== 'string' || !logicalKey) throw new MessageIntegrityError('INVALID_MESSAGE_ID_KEY', 'Deterministic message identity requires a logical key');
+  const hex = createHash('sha256').update(logicalKey).digest('hex').slice(0, 32).split('');
+  hex[12] = '4';
+  hex[16] = ['8', '9', 'a', 'b'][Number.parseInt(hex[16], 16) % 4];
+  return `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20).join('')}`;
+}
+
 export function fingerprintMessage(message) {
   const semantic = {
     plane: message.plane,

@@ -1,14 +1,19 @@
-# SCRIBE-01 contract handoff
+# Scribe contract and implementation handoff
 
-Governed shapes Wave 2 (SCRIBE-02 through SCRIBE-05) must consume. No runtime, service,
-graph, UI, or storage implementation was changed by this ticket; everything below is
-schema, catalog, changelog, fixture, and doc governance only.
+This document began as the SCRIBE-01 contract handoff. SCRIBE-04A added the provider-neutral
+transport and SCRIBE-04B reconciled the Wave 2 implementations against that transport. The
+original design record remains below, but the SCRIBE-04B section is authoritative where it
+explicitly supersedes an earlier implementation note. Production graph wiring remains SCRIBE-05.
 
 > **SCRIBE-04A addendum below.** Two additive transport messages now carry the
 > coordinator <-> extraction-boundary Scribe batch channel. Everything in the original
 > SCRIBE-01 body remains true and byte-identical; jump to
 > [SCRIBE-04A addendum](#scribe-04a-addendum--provider-neutral-batch-transport) for the
 > new message types SCRIBE-04, SCRIBE-02, and SCRIBE-05 must consume.
+
+> **SCRIBE-04B reconciliation complete.** The coordinator and extraction implementations now
+> consume these messages. Provider completion attempts are model-lane telemetry only; they are
+> never a coordinator retry counter. See the SCRIBE-04B runtime section below.
 
 ## Exact versions to consume
 
@@ -17,50 +22,45 @@ schema, catalog, changelog, fixture, and doc governance only.
 | `scribe.batch-policy` | catalog message (control plane) | `1.0.0` | `contracts/scribe-batch-policy.schema.json` |
 | `ai.work-request` | catalog message (control plane) | `1.5.0` (new `protocol_version: "2.0.0"` `modelRequest` variant; existing `1.0.0` variants unchanged) | `contracts/ai-work-request.schema.json` |
 | `ai.work-completed` | catalog message (control plane) | `1.5.0` (new `protocol_version: "2.0.0"` `modelResponse` variant; existing `1.0.0` variants unchanged) | `contracts/ai-work-completed.schema.json` |
+| `scribe.batch-admitted` | catalog message (domain plane) | `1.0.0` | `contracts/scribe-batch-admitted.schema.json` |
+| `scribe.batch-evaluated` | catalog message (domain plane) | `1.0.0` | `contracts/scribe-batch-evaluated-message.schema.json` |
 | `scribe_batch_identity` | catalog artifact | schema `1.0.0` (no `schema_version` field; shape is the version) | `contracts/scribe-batch-identity.schema.json` |
 | `scribe_batch_evaluated` | catalog artifact | schema `1.0.0` | `contracts/scribe-batch-evaluated.schema.json` |
 | `scribe_checkpoint` | catalog artifact | `schema_version: "1.0.0"` | `contracts/scribe-checkpoint.schema.json` |
 | `scribe_batch_journal_entry` | catalog artifact | schema `1.0.0` | `contracts/scribe-batch-journal-entry.schema.json` |
 
-Catalog `schema_version` is `1.13.0`. Pure-function validators for the batch protocol
+Catalog `schema_version` is `1.14.0`. Pure-function validators for the batch protocol
 live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0"`),
 `EXTRACTION_BATCH_OUTPUT_LIMITS`, `validateScribeBatchModelRequest`,
 `validateScribeBatchModelResponse`. These are additive exports; the existing 1.0.0-only
 `validateModelRequest`/`validateModelResponse` used by
 `services/log-extractor-local-http` and `services/serial-ai-model-lane` are untouched.
 
-## What Wave 2 still owns
+## Current ownership after SCRIBE-04B
 
-- **Wiring**: no producer/consumer graph wires exist yet for `scribe.batch-policy`,
-  the `2.0.0` model-request/response variants, or the checkpoint/journal artifacts.
-  SCRIBE-02/03 must add them.
+- **Wiring**: no production graph wires exist yet for the Scribe coordinator channel or its
+  checkpoint/journal sequencing. SCRIBE-05 owns those wires and lifecycle orchestration.
 - **Cross-message correlation**: `validateScribeBatchModelRequest` rejects a request
   whose `identity.session_id`/`identity.batch_request_id`/`instruction_version`
   conflicts with its own `batch_identity`, and requires `new_evidence_segments` to
   match `batch_identity.segments` exactly — same segment IDs, same order, same
-  `sequence` per position, not merely the same set. `validateScribeBatchModelResponse`
+  `revision` and `sequence` per position, not merely the same set. `validateScribeBatchModelResponse`
   rejects any item whose `source_segment_ids` cite a segment outside the response's own
   `batch_identity.segments` (fabricated provenance is now structurally impossible, not
-  just well-formed). What remains runtime work: recognizing when a *response*'s
-  `batch_identity.request_id` does not match the batch SCRIBE-02 currently has
-  outstanding (a stale or superseded attempt) — that requires the in-memory pending-work
-  state the contract validators don't have when validating one message in isolation.
-  `scribe_checkpoint.in_flight_batch.attempt` (see below) exists so SCRIBE-02 has
-  something durable to compare an incoming result's `attempt` against.
+  just well-formed). SCRIBE-04B implements the runtime comparison against the exact retained
+  request fingerprint, nested result work ID, full response identity, and coordinator
+  `batch_attempt`. A mismatch does not delete or replace retained work.
 - **Idle timer and 8,000-token accounting**: `scribe.batch-policy` carries the
   governed defaults (`rows_per_batch: 3`, `idle_timeout_ms: 15000`,
-  `max_total_context_tokens: 8000`) but does not implement a timer, a tokenizer, or
-  restart reconstruction. That remains `MOD-002`/`MOD-003` in
-  `PENDING-DECISIONS.md`, unresolved by this ticket.
+  `max_total_context_tokens: 8000`). The coordinator implements the single idle timer and
+  ordered recovery; extraction implements serialized request accounting and bounded rollover.
 - **Durable file I/O**: `scribe_checkpoint` (versioned snapshot, atomic
   replace-by-rename per ADR-015's existing pattern) and `scribe_batch_journal_entry`
-  (one NDJSON line per evaluated batch, append-only) are shapes only. SCRIBE-03 owns
-  reading/writing them and reconstructing `background_context` on restart. The
+  (one NDJSON line per evaluated batch, append-only) are implemented by SCRIBE-03. The
   checkpoint shape carries `in_flight_batch` (`batch_identity`, `attempt`,
   `dispatched_at`) precisely so a crash between dispatch and evaluation has a governed
-  place to recover the identical batch identity and attempt count for retry — SCRIBE-03
-  still owns writing it before dispatch and clearing it once `last_evaluated_batch`
-  is written, but the slot exists.
+  place to recover the identical batch identity and coordinator attempt. Artifact `attempt`
+  has the same coordinator meaning as transport `batch_attempt`, never provider attempt.
 - **Assigning authoritative item identity**: proposed items in
   `ai.work-completed`'s `items[]` and in `scribe_batch_evaluated.items[]` cannot carry
   `item_id`/`revision` (rejected by `additionalProperties: false`). The model never
@@ -69,9 +69,9 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
   single-item boundary; `logged-items/active-owner` then accepts or rejects each draft
   and its `logged-item.stored` result confirms authority (ADR-001, ADR-002). Only those
   owner-confirmed IDs may enter `scribe_batch_evaluated.acknowledgement.logged_item_ids`.
-  SCRIBE-02 must require their unique order and count to correspond one-for-one with
-  `items[]` before advancing its cursor, and SCRIBE-03 must persist that exact mapping
-  without reconstructing or implicitly repairing it.
+  Extraction now assembles those IDs by exact deterministic draft identity and evaluated-item
+  order. The coordinator requires the complete final acknowledgement before advancing, while
+  persistence preserves that mapping without reconstructing or implicitly repairing it.
 
 ## Key shape decisions
 
@@ -167,12 +167,13 @@ message type itself is plain `scribe.batch-evaluated`.
 ## `scribe.batch-admitted` — coordinator -> extraction boundary
 
 Emitted by the Scribe coordinator when its governed admission policy closes a batch. Payload,
-all five fields required, `additionalProperties: false`:
+all six fields required, `additionalProperties: false`:
 
 | Field | Meaning |
 | --- | --- |
+| `batch_attempt` | Positive coordinator batch attempt. It is immutable for an admitted batch and independent of provider retries. |
 | `batch_identity` | `$ref argus.scribe-batch-identity.v1` — the immutable SCRIBE-01 identity, unchanged. Carries `request_id`, `session_id`, the ordered contiguous `segments`, `first_sequence`/`last_sequence`, `admission_reason`, `policy_id`/`policy_version`/`instruction_version`. |
-| `new_evidence_segments` | The batch's new authoritative finalized rows (`segment_id`/`sequence`/`start_time`/`end_time`/`text`), same shape as `ai-work-request`'s `segment`. `minItems: 1`, `maxItems: 16`. Must match `batch_identity.segments` exactly — same ids, same order, same `sequence` per position. Only these rows may trigger new Logged Items. |
+| `new_evidence_segments` | The batch's new authoritative finalized rows (`segment_id`/`revision`/`sequence`/`start_time`/`end_time`/`text`). `minItems: 1`, `maxItems: 16`. Must match `batch_identity.segments` exactly: same ids, order, revisions, and sequences. Only these rows may trigger new Logged Items. |
 | `background_context` | `{ transcript_segments, prior_logged_items }`, same shape as `ai-work-request`'s `scribeBackgroundContext`. Bounded lookback/forward context plus previously emitted **non-authoritative** Logged Items for duplicate suppression (ADR-021). Both arrays may be empty. A `prior_logged_items` entry may **not** carry `item_id`/`revision`. |
 | `policy_profile` | The generation profile the batch was admitted under (mirrors `scribe.batch-policy.generation.policy_profile`). |
 | `instruction_version` | The Scribe instruction version the batch was admitted under (mirrors `batch_identity.instruction_version`). |
@@ -188,11 +189,14 @@ What the **extraction boundary** supplies for itself when composing the `2.0.0` 
   (`context.max_total_context_tokens`) plus the governed `EXTRACTION_BATCH_OUTPUT_LIMITS`
   ceilings in `contracts/model-protocol.mjs`.
 - **`identity`** (`work_id`/`session_id`/`batch_request_id`) — AI-lane scheduler identity it
-  owns, derivable from `batch_identity.session_id` + `batch_identity.request_id`. The
+  owns, derived from session + request + coordinator `batch_attempt`. The
   coordinator no longer mints a scheduler `work_id`.
-- **`recovery.max_attempts`** — its own governed retry budget; the admitted message carries no
-  attempt count. The **attempt number** still arrives on `ai.work-completed.attempt`, exactly
-  as SCRIBE-04 already reads it, and is what fills `scribe_batch_evaluated.attempt`.
+- **`recovery.max_attempts`** — the model lane's governed provider retry budget. Every provider
+  retry keeps the exact same `work_id`, model request, and request fingerprint.
+
+`ai.work-completed.attempt` is provider-attempt telemetry only. It never fills the durable
+artifact attempt. `scribe_batch_evaluated.attempt` and message `batch_attempt` both carry the
+coordinator attempt from `scribe.batch-admitted`.
 
 `policy_profile` and `instruction_version` are governance fields the coordinator legitimately
 stamps, **not** authority: the extraction boundary must keep cross-checking them against the
@@ -202,14 +206,16 @@ visibly on disagreement rather than prompting under a version the batch was not 
 `tests/fixtures/contracts/scribe.batch-admitted/1.0.0/` retains `valid.json` (three-row
 `batch-complete`), `valid-partial-idle-batch.json` (two-row `idle-timeout`, empty background),
 `invalid-model-field.json`, `invalid-missing-background-context.json`,
-`invalid-empty-new-evidence.json`, `invalid-forged-prior-item-id.json`.
+`invalid-empty-new-evidence.json`, `invalid-forged-prior-item-id.json`, and
+`invalid-evidence-revision.json`.
 
 ## `scribe.batch-evaluated` — extraction boundary -> coordinator
 
-Payload is a single required field, `additionalProperties: false`:
+Payload has two required fields, `additionalProperties: false`:
 
 | Field | Meaning |
 | --- | --- |
+| `batch_attempt` | Positive coordinator batch attempt copied from the admission. It must equal `batch.attempt`. |
 | `batch` | `$ref argus.scribe-batch-evaluated.v1` — the SCRIBE-01 `scribe_batch_evaluated` artifact, embedded verbatim and **not redefined**. |
 
 So all three settled outcomes now have a real carrier: **`empty-evaluated`** (zero items),
@@ -229,22 +235,65 @@ Provenance of the evaluation is the envelope's `producer`.
 `tests/fixtures/contracts/scribe.batch-evaluated/1.0.0/` retains `valid.json` (two items),
 `valid-one-item.json`, `valid-empty-evaluated.json`, `valid-failed.json` (timeout, retryable,
 unaccepted), `invalid-missing-batch.json`, `invalid-forged-item-id.json`,
-`invalid-empty-evaluated-with-item.json`, `invalid-forged-session-id.json`.
+`invalid-empty-evaluated-with-item.json`, `invalid-forged-session-id.json`, and
+`invalid-batch-attempt-mismatch.json`.
 
-## What SCRIBE-04A did **not** do — still owned downstream
+## What remains downstream after SCRIBE-04B
 
-- **No wiring.** No producer/consumer ports or graph wires exist for either message. The
-  Scribe coordinator must declare `scribe.batch-admitted` under its `domain.emits` and
-  `scribe.batch-evaluated` under its `domain.accepts`; `log-extractor-local-http` must declare
-  the mirror image. SCRIBE-05 adds the graph wires.
-- **No runtime change to SCRIBE-04.** Its `'ai.work-request'` handler (`dispatch-scribe-batch`)
-  must be re-pointed at `scribe.batch-admitted`, dropping the `proposal.identity.work_id` check
-  and the `protocol_version === "2.0.0"` self-emission guard, which the plane and message-type
-  split make unnecessary. Its settled-outcome path must emit `scribe.batch-evaluated` for
-  **every** outcome, not just route failures through `service.failure`.
-- **No cursor or acknowledgement behavior.** SCRIBE-02 still owns comparing an incoming
-  `batch.batch_identity.request_id`/`attempt` against the batch it currently has outstanding
-  (a stale or superseded attempt), and advancing the cursor only on a settled accepted outcome.
+- **Production graph wiring only.** The coordinator and extractor manifests now declare the
+  mirror ports, but SCRIBE-05 still owns graph wires, policy injection, and checkpoint/journal
+  orchestration.
+- **No provider-specific domain transport.** `ai.work-request` and `ai.work-completed` remain
+  solely between extraction and the serial model lane.
+- **No automatic outer retry.** A terminal failed evaluated message stalls the exact coordinator
+  batch with its cursor unchanged. A later recovery action may deliberately create a new
+  coordinator `batch_attempt`; ordinary provider retry never does.
 - **No existing shape changed.** `ai.work-request` and `ai.work-completed` stay at `1.5.0` with
   the `2.0.0` `modelRequest`/`modelResponse` variants exactly as SCRIBE-01 shipped them,
   `model` still required there because the model lane genuinely needs it.
+
+---
+
+# SCRIBE-04B reconciled runtime boundary
+
+SCRIBE-04B imported the coordinator, persistence, extraction, and transport candidates onto one
+fresh `origin/main` worktree, then reconciled their seams without adding production graph wires.
+The following rules are the current implementation authority:
+
+1. The coordinator owns eligibility, its acknowledged cursor, one immutable active batch, and
+   the coordinator `batch_attempt`. Its output is provider-neutral `scribe.batch-admitted`.
+2. Extraction consumes that admission plus its immutable per-session policy and local model
+   configuration. It constructs one bounded stateless `ai.work-request` and retains the exact
+   request, fingerprint, stable `queued_at`, and deterministic `work_id`.
+3. The serial model lane owns provider retries. Within one coordinator attempt, every provider
+   try uses the same work ID, request, prompt, and fingerprint. `ai.work-completed.attempt` is
+   observability only. OpenAI-compatible calls carry `max_tokens` from the governed request
+   `limits.max_output_tokens`.
+4. Extraction rejects a forged nested completion work ID, fingerprint, response identity, policy,
+   evidence revision, or sequence without deleting the retained batch. Invalid model output after
+   valid correlation becomes one terminal failed evaluation.
+5. Draft IDs and output message IDs are Argus-owned and deterministic. Extraction waits for the
+   active Logged Item owner's exact `logged-item.stored` confirmation for every expected draft.
+   Confirmations may arrive out of order, but final `logged_item_ids` remain in item order.
+6. Zero-item evaluation is acknowledged immediately. Any owner rejection/storage failure becomes
+   one failed evaluation. Extraction emits exactly one final `scribe.batch-evaluated` only after
+   the batch is terminal.
+7. The coordinator accepts only that final boundary with the exact identity and `batch_attempt`.
+   Success advances the cursor once; failure retains and stalls the exact batch with no automatic
+   outer retry.
+
+Bounded state is explicit: coordinator sessions, pending evidence, remembered fingerprints,
+background transcript/items, and Close waiters all have ceilings; extraction has bounded pending
+and settled replay retention plus bounded immutable policies. Session-storage journal append chains
+are serialized inside one `SessionStorage` owner instance and are removed when the last queued
+append settles, including failure.
+
+Three directly required shared-runtime exceptions support these guarantees:
+
+- `OrderedStreamGuard.seed` restores the next accepted transcript sequence after recovery.
+- asynchronous drain settlement lets `service.drained` wait for a forced batch's final outcome.
+- deterministic optional output message IDs let extraction correlate an owner rejection or storage
+  failure to the exact draft without weakening the common service protocol.
+
+SCRIBE-04B changes no production wiring, desktop host, provider-settings UI, Whisper/audio path,
+or installer artifact. SCRIBE-05 remains the sole owner of production graph integration.

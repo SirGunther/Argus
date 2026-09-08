@@ -56,7 +56,7 @@ Every ticket inherits these rules:
 - Admit exactly three new rows when available. Admit one or two after a 15,000 ms idle threshold. Close forces a remainder; Stop does not.
 - Preserve one Scribe batch in flight. Busy is a visible waiting state, not an error and not permission to start concurrent model work.
 - Advance the Scribe cursor only after a valid zero-item result or durable acknowledgement of every resulting Logged Item.
-- Preserve an identical batch ID, exact segment IDs/revisions, prompt/policy version, and request fingerprint across retry. Never fabricate, skip, or silently drop work.
+- Preserve an identical batch ID, exact segment IDs/revisions, prompt/policy version, work ID, and request fingerprint across provider retries within one coordinator `batch_attempt`. Never fabricate, skip, or silently drop work.
 - Model calls are stateless. Argus owns and bounds the reconstructed rolling context to an approximately 8,000-token total model budget.
 - Separate background context from new evidence. Background may disambiguate and prevent duplicates, but only new evidence may cause an item.
 - Every item retains exact new-evidence source provenance. Any background context used must be separately identifiable and cannot be represented as the triggering source.
@@ -70,19 +70,21 @@ Every ticket inherits these rules:
 ## Recommended delivery order
 
 ```text
-SCRIBE-01 ──┬──> SCRIBE-02 ┐
-            ├──> SCRIBE-03 ├──> SCRIBE-05 ──> SCRIBE-06
-            └──> SCRIBE-04 ┘
+SCRIBE-01 ──┬──> SCRIBE-02 ─┐
+            ├──> SCRIBE-03 ─┼──> SCRIBE-04B ──> SCRIBE-05 ──> SCRIBE-06
+            ├──> SCRIBE-04 ─┤
+            └──> SCRIBE-04A ┘
 ```
 
 | Wave | Tickets | Parallel? | Purpose |
 | --- | --- | --- | --- |
 | 1 | SCRIBE-01 | No | Establish the shared governed contracts and compatibility boundary once. |
-| 2 | SCRIBE-02, SCRIBE-03, SCRIBE-04 | Yes | Build coordinator, persistence, and model-output foundations in disjoint files. |
-| 3 | SCRIBE-05 | No | Join all foundations in the production graph and desktop lifecycle. |
+| 2A | SCRIBE-02, SCRIBE-03, SCRIBE-04, SCRIBE-04A | Previously parallel | Preserve the completed branch implementations as reconciliation inputs; do not merge them independently. |
+| 2B | SCRIBE-04B | No | Reconcile the four Wave 2 candidates into one internally consistent contract and implementation baseline. |
+| 3 | SCRIBE-05 | No | Join the reconciled foundation in the production graph and desktop lifecycle. |
 | 4 | SCRIBE-06 | No | Perform final regression, real-runtime acceptance, and canonical documentation closure. |
 
-This is **six tickets across four delivery waves**. The maximum safe dispatch is **three agents simultaneously in Wave 2**. The coordinating agent must merge and push SCRIBE-01 before dispatching Wave 2. It must merge all three Wave 2 branches before dispatching SCRIBE-05.
+This is now **eight ticket identifiers across four delivery waves**, including the corrective SCRIBE-04A contract seam and SCRIBE-04B reconciliation. SCRIBE-04B is the only ticket authorized to combine the four unmerged Wave 2 candidate branches. Do not merge SCRIBE-02, SCRIBE-03, SCRIBE-04, or SCRIBE-04A independently. Merge only the reviewed SCRIBE-04B result before dispatching SCRIBE-05.
 
 ## Agent dispatch and merge rules
 
@@ -159,20 +161,20 @@ Create the independently runnable Scribe coordinator that owns the cursor-driven
 
 - [ ] Add a service manifest with only the accepted/emitted domain and control contracts from SCRIBE-01, lifecycle ports, explicit state, no undeclared permissions, and no provider knowledge.
 - [ ] Put the pure eligibility decision in its own module inside the service boundary rather than in the desktop host or graph runtime.
-- [ ] Implement one event-driven pump woken by finalized evidence, the single idle deadline, work outcome/acknowledgement, recovery state, and Close.
+- [ ] Implement one event-driven pump woken by finalized evidence, the single idle deadline, final `scribe.batch-evaluated`, recovery state, and Close.
 - [ ] Make the eligibility rule return no work while a batch is active; select three rows immediately; select one or two only after 15,000 ms idle or Close.
 - [ ] Cancel/reset the one idle timer when a third row arrives and avoid polling loops, repeated scans, or multiple concurrent timers.
 - [ ] Preserve ordered, duplicate-safe finalized segment admission and stable batch identity.
-- [ ] Correlate every result against the exact in-flight `work_id`, request fingerprint, attempt, and complete batch identity; reject stale, superseded, reordered, or conflicting results without mutating the cursor.
+- [ ] Correlate every final evaluation against the exact in-flight complete batch identity and coordinator `batch_attempt`; the coordinator owns no model work ID or request fingerprint.
 - [ ] Keep the cursor unchanged until the complete governed acknowledgement arrives, including a valid zero-item acknowledgement.
 - [ ] Accept an `items-recorded` acknowledgement only when its unique, ordered `logged_item_ids` correspond one-for-one with the complete evaluated `items[]`; require an empty ID list for zero-item, failed, or rejected outcomes.
-- [ ] Retain identical pending/retry state after failure and reject conflicting recovery or acknowledgement content.
+- [ ] Retain the exact active batch in a visible stalled state after terminal failure, with no automatic outer retry, and reject conflicting recovery or acknowledgement content.
 - [ ] Immediately pump again after acknowledgement so accumulated three-row groups do not wait for the partial-batch threshold.
 - [ ] Drain deterministically: Stop preserves pending state; Close releases one final remainder and waits for its governed terminal outcome.
 
 ### Exit gate
 
-- [ ] Focused tests cover zero rows, one/two rows before and after idle, exactly three, six-plus accumulating while busy, timer reset, busy completion, zero/multiple acknowledgement, failure/retry, duplicate delivery, restart state, Stop, Close, and drain.
+- [ ] Focused tests cover zero rows, one/two rows before and after idle, exactly three, six-plus accumulating while busy, timer reset, busy completion, zero/multiple acknowledgement, terminal failure/stall without outer retry, duplicate delivery, restart state, Stop, Close, and drain.
 - [ ] Tests use an injected/fake clock only inside the test boundary; production behavior remains real and event driven.
 - [ ] Service contract, health, operation completion/rejection, syntax, and diff checks pass.
 - [ ] No existing production service or graph has been modified.
@@ -246,7 +248,7 @@ Implement the provider-neutral Scribe request and response behavior against LM S
 - [ ] Validate strict JSON-only zero-to-many output and reject commentary, malformed JSON, excessive items/text, forged identity/provenance, and unsupported kind metadata.
 - [ ] Require the response's complete batch identity to match the exact request before producing any draft; reject stale or provider-altered batch identity and provenance.
 - [ ] Derive stable Argus-owned draft item IDs deterministically from the validated batch and item position/content; the model never supplies authority fields, and the active owner remains responsible for accepting or rejecting each draft.
-- [ ] Emit one governed draft per validated item plus the complete evaluated-batch outcome required for zero/multiple acknowledgement.
+- [ ] Emit one governed draft per validated item, wait for exact authoritative stored confirmations, then emit one final evaluated-batch outcome; emit a valid zero-item outcome immediately.
 - [ ] Retain exact request fingerprints and context across retry and preserve the existing provider configuration, credential redaction, timeout, and explicit failure behavior.
 - [ ] Keep model work FIFO/concurrency-one through the existing scheduler and make no Ollama installation or launch a prerequisite.
 
@@ -263,9 +265,99 @@ Eligibility/timing, persistence, graph integration, provider-settings redesign, 
 
 ---
 
+## SCRIBE-04B — Wave 2 contract and implementation reconciliation
+
+**Depends on:** SCRIBE-01 merged into `origin/main` and the four branch candidates listed below available on `origin`
+**May run in parallel with:** Nothing
+**Suggested branch slug:** `scribe-wave2-reconciliation`
+**Authorized production ownership:** Scribe contracts and handoff documentation; `services/scribe-coordinator/`; Scribe persistence changes in `runtime/session-storage.mjs` and `runtime/session-lifecycle.mjs`; `services/log-extractor-local-http/`; the Scribe extraction path in `services/serial-ai-model-lane/`; directly required shared runtime helpers; and focused Scribe tests
+**Must not change:** Production/demo wiring, `runtime/desktop-application.mjs`, Electron/UI, provider settings UI, audio/Whisper/transcript behavior, unrelated services, or installer artifacts
+**Checklist in chat:** Mandatory. Display the complete ticket-derived checklist before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
+
+### Goal
+
+Reconcile the completed Wave 2 candidates into one coherent implementation. Preserve their working coordinator, persistence, prompting, budget, validation, and contract behavior; correct the disputed transport, retry, acknowledgement, and bounded-state seams once. This is a repair and integration ticket, not authorization to redesign Scribe or begin SCRIBE-05 production wiring.
+
+### Required starting branches and commits
+
+Create a fresh worktree and `agent/scribe-wave2-reconciliation` branch from the current `origin/main`. This ticket explicitly authorizes importing the following commits in the listed branch-local order. Do not merge or modify `main`, and do not assume a branch head alone contains its earlier commits.
+
+| Candidate | Branch | Commits from the SCRIBE-01 baseline, oldest first |
+| --- | --- | --- |
+| SCRIBE-02 coordinator | `origin/agent/scribe-coordinator` | `2902e24369b2ed1ca9f051a1f9c66492fde1f08a`, `fbc70626bfdf0f99eb8cfe51d8958d3f4855e1b8`, `ee7025bf6dacc93fafc4880ff6c3978a93e06dcd` |
+| SCRIBE-03 persistence | `origin/agent/scribe-session-persistence` | `06b048de7378e3be5eed19fbefc29748a7c32caf`, `1c1ae812c2aacf96ffd27297b4793b51803a23c9`, `d0499342bbd37e73d9f953a930807d1a9140a856` |
+| SCRIBE-04 extraction | `origin/agent/scribe-model-extraction` | `622b7a6def0db8fa22a4a632d0fe4004e67bda1a`, `5a29244098042556b783f4b1b8fa0569af5de2f6` |
+| SCRIBE-04A transport contracts | `origin/agent/scribe-batch-transport-contracts` | `6f3d0bafbeda535ca271746599da7964a443da0f` |
+
+Fetch and verify every full commit before importing it. Record the actual starting `origin/main` SHA. Cherry-pick the candidate histories into the reconciliation branch, resolving conflicts deliberately and retaining the behavior described below. If a listed commit is unavailable or no longer descends from the documented SCRIBE-01 baseline `30298b254d78498a8e355433709e8952aa706910`, stop and report the exact discrepancy rather than substituting another revision.
+
+### Authoritative reconciled exchange
+
+The following division of responsibility resolves the conflicting interpretations in the candidate branches:
+
+1. The coordinator owns finalized-row eligibility, the durable Scribe cursor, one active batch, immutable `batch_identity`, and a positive coordinator-level `batch_attempt`.
+2. The coordinator emits provider-neutral `scribe.batch-admitted`; it never constructs `ai.work-request`, selects a model, or knows a provider endpoint.
+3. The extraction boundary accepts `scribe.batch-admitted`, supplies model/provider configuration locally, constructs one stateless bounded `ai.work-request`, and retains its exact request and fingerprint until terminal settlement.
+4. The existing serial AI lane owns bounded automatic provider retries. Within one `batch_attempt`, its `work_id`, complete model request, and request fingerprint remain identical across provider retries.
+5. `batch_attempt` and provider-attempt count are different concepts. `scribe.batch-admitted` carries `batch_attempt`; `scribe.batch-evaluated` echoes it. `ai.work-completed.attempt` remains provider-lane evidence and must not silently redefine the coordinator's batch attempt.
+6. A terminal evaluated failure leaves the coordinator cursor unchanged and the exact batch retained in a visible stalled state. It does not start a second automatic outer retry loop. A future explicit governed recovery may increment `batch_attempt`; ordinary duplicate delivery or restart replay of an unsettled attempt must remain idempotent.
+7. For a successful non-empty model result, the extractor derives deterministic Argus-owned draft IDs in model item order, emits one `logged-item.draft` per item, and waits for the authoritative owner's matching `logged-item.stored` confirmations. Match confirmations by the exact expected deterministic item ID, not by count, source range, text, or arrival order.
+8. The extractor emits the final accepted `scribe.batch-evaluated` only after all expected items are stored, placing `logged_item_ids` in evaluated-item order. A valid zero-item evaluation may be emitted immediately as accepted. A model, validation, owner-rejection, timeout, or terminal storage failure emits a governed failed evaluation and never advances the cursor.
+9. The coordinator accepts only a `scribe.batch-evaluated` whose complete batch identity and `batch_attempt` match its exact in-flight state. The final message—not individual `logged-item.stored` traffic—is its acknowledgement boundary.
+10. SCRIBE-05 will later wire durable journal/checkpoint sequencing before cursor advancement. SCRIBE-04B must expose and test the required component behavior without adding production graph or desktop-host callbacks.
+
+### Build and correction checklist
+
+- [ ] Import all four candidate histories into the fresh reconciliation branch and record any resolved conflicts without silently dropping tests or behavior.
+- [ ] Update `scribe.batch-admitted` and `scribe.batch-evaluated` contracts, fixtures, catalog history, generated reference, and `contracts/scribe-contract-handoff.md` so `batch_attempt` has the single meaning defined above and no provider/model field crosses the coordinator boundary.
+- [ ] Update this work breakdown where older SCRIBE-02 retry/fingerprint wording conflicts with the reconciled exchange; do not leave two authoritative interpretations in canonical documentation.
+- [ ] Make the coordinator emit/accept only the provider-neutral Scribe messages, remove coordinator-side model-request construction and individual stored-item guesswork, and correlate final evaluations by complete batch identity plus `batch_attempt`.
+- [ ] Preserve the coordinator's verified three-row admission, 15-second one/two-row idle admission, single timer, busy accumulation, immediate post-settlement pump, ordered recovery, Stop behavior, and deterministic Close behavior.
+- [ ] Remove the coordinator's second automatic outer retry loop. A terminal evaluated failure must retain the cursor/batch and reject Close settlement visibly rather than report a successful drain.
+- [ ] Retain the additive monotonic `OrderedStreamGuard.seed()` and asynchronous drain-settlement behavior only if still required; explicitly document these shared-runtime changes as authorized SCRIBE-04B exceptions and keep focused regression coverage.
+- [ ] Preserve every verified SCRIBE-03 fail-closed invariant: ordered/contiguous batch identity, cursor-relative pending evidence, bounded background state, journal-before-checkpoint settlement, idempotent append, conflicting replay rejection, and Stop/Close recovery behavior.
+- [ ] Clean `SessionStorage.#scribeJournalChains` after the latest per-session append settles so the serialization map cannot grow permanently with completed sessions. Preserve same-instance per-session serialization and document the single storage-owner assumption.
+- [ ] Make the extractor accept `scribe.batch-admitted`, construct the local provider request itself, and emit `scribe.batch-evaluated` for accepted zero-item, accepted one/multiple-item, and failed outcomes.
+- [ ] Fix the known SCRIBE-04 defects: stable `queued_at` and work identity for idempotent redispatch; nested completion `work_id` validation; non-destructive retention on forged/mismatched completions; conflicting retained-policy rejection; explicit provider `max_tokens`; and no self-routing reuse of `ai.work-request` as an inbound Scribe batch carrier.
+- [ ] Preserve stateless prompting, actual serialized-request token accounting, oldest-background-first rollover, mandatory-evidence refusal, strict zero-to-many JSON validation, provenance checks, deterministic draft identity, credential redaction, timeout behavior, and serial concurrency one.
+- [ ] Aggregate owner confirmations by exact deterministic draft ID, tolerate confirmations arriving out of order, reject unknown/duplicate/conflicting confirmations, and emit final ordered `logged_item_ids` exactly once.
+- [ ] Remove obsolete tests that assert attempt-specific request fingerprints or best-effort source/text acknowledgement matching. Replace them with tests of the authoritative exchange above.
+- [ ] Keep every modified queue, map, retained request, policy collection, and per-session synchronization structure explicitly bounded or released after settlement.
+- [ ] Review the combined diff for unrelated changes and confirm no production wiring, desktop host, UI, audio/Whisper, provider settings, or installer file changed.
+
+### Required validation
+
+- [ ] Focused contract tests prove provider-neutral admission, `batch_attempt` semantics, exact evidence order/revision correlation, zero/one/multiple/failed evaluated messages, and invalid forged/mismatched identities.
+- [ ] Focused coordinator tests prove three-row and idle admission, concurrency one, duplicate/restart replay, no automatic outer retry, terminal stall, zero/multiple acknowledgement, post-ack pump, Stop, Close, and failed drain visibility.
+- [ ] Focused extraction tests prove one exact model request across provider retries, stable raw request fingerprint, local provider configuration, bounded serialized payload, `max_tokens`, strict response validation, deterministic draft IDs, owner-confirmation aggregation, and zero/failure completion.
+- [ ] Focused persistence tests prove the corrected identity/checkpoint/journal invariants, genuine concurrent same-instance appends, journal-chain cleanup, crash/restart, Stop, Close refusal, and bounded state.
+- [ ] One component-level integration test exercises: finalized rows -> admitted batch -> extractor -> serial model completion -> zero or deterministic drafts -> authoritative stored confirmations -> final evaluated message -> coordinator settlement, without production graph wiring or simulation in production code.
+- [ ] Run the complete repository test suite, contract governance, generated contract documentation check, package graph generation/verification, syntax checks for every changed JavaScript module, and `git diff --check`.
+- [ ] All checks pass from the combined reconciliation branch. A test must not redefine an architectural requirement merely to match implementation behavior.
+
+### Commit, push, and report
+
+Keep the imported commits intact where practical and add one clearly named reconciliation commit for the corrections. Push `agent/scribe-wave2-reconciliation`; never merge `main`. Report the starting `origin/main`, imported commit list, reconciliation commit, final branch HEAD, exact files changed by reconciliation, conflict resolutions, full checklist, test results, and any genuinely unresolved blocker. Main must remain untouched and the installer must not be rebuilt.
+
+After pushing and before reporting completion, run the required notification command with a 5–9 word message containing `Codex`, as required by `C:\dustin-thomason\agents\rules\agent-completion-notification.md`.
+
+### Exit gate
+
+- [ ] The four candidate histories are preserved on one clean branch and all disputed seams have one documented meaning.
+- [ ] No coordinator provider knowledge, duplicate retry owner, ambiguous acknowledgement matching, unbounded completed-session synchronization state, or self-routing message type remains.
+- [ ] Complete tests and governance gates pass without weakening the accepted Scribe behavior.
+- [ ] The final worktree is clean, the branch is pushed, main is untouched, and the completion notification was sent.
+- [ ] SCRIBE-05 can consume the reconciled contracts and component ports without redesigning SCRIBE-02, SCRIBE-03, or SCRIBE-04.
+
+### Out of scope
+
+Production graph/DesktopApplication wiring, UI status, real microphone or LM Studio acceptance, prompt-quality tuning, provider-settings redesign, Whisper/audio changes, Assistant/Actor behavior, installer rebuild, and unrelated refactoring.
+
+---
+
 ## SCRIBE-05 — Production wiring, lifecycle, and visible status integration
 
-**Depends on:** SCRIBE-02, SCRIBE-03, and SCRIBE-04 merged into `origin/main`
+**Depends on:** SCRIBE-04B merged into `origin/main`
 **May run in parallel with:** Nothing
 **Suggested branch slug:** `scribe-production-integration`
 **Exclusive production ownership:** `wiring/production-electron.json`, directly affected production/demo graph files, `runtime/desktop-application.mjs`, the production Scribe policy source/configuration, and focused cross-component integration tests
@@ -349,7 +441,7 @@ New product behavior, optimization beyond measured need, installer rebuild, pack
 
 ## Integration-wide definition of complete
 
-The Scribe integration is complete only when all six ticket exit gates pass and all of the following remain true:
+The Scribe integration is complete only when every applicable implementation, reconciliation, integration, and acceptance exit gate passes and all of the following remain true:
 
 - Finalized transcript history is the only durable evidence backlog; no duplicate transcript queue exists.
 - One durable cursor and one active batch describe Scribe progress for each session.
@@ -366,4 +458,4 @@ The Scribe integration is complete only when all six ticket exit gates pass and 
 
 ## Next dispatch
 
-Assign **SCRIBE-01 only** using `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md`. After its branch is reviewed, merged, and pushed to `origin/main`, assign **SCRIBE-02, SCRIBE-03, and SCRIBE-04 simultaneously**. Do not dispatch SCRIBE-05 until all three Wave 2 branches are reviewed and merged.
+Assign **SCRIBE-04B only** using `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md` plus the complete SCRIBE-04B ticket above. The ticket explicitly authorizes importing the four named unmerged candidate histories into its fresh branch; the normal prohibition and installer restrictions remain in force. Do not merge the candidate branches individually and do not dispatch SCRIBE-05 until the SCRIBE-04B branch has been independently reviewed, merged, and pushed to `origin/main`.

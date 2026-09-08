@@ -16,17 +16,21 @@
   "ports": {
     "domain": {
       "accepts": [
-        "transcript.context-window"
+        "transcript.context-window",
+        "scribe.batch-admitted",
+        "logged-item.stored"
       ],
       "emits": [
-        "logged-item.draft"
+        "logged-item.draft",
+        "scribe.batch-evaluated"
       ]
     },
     "control": {
       "accepts": [
         "scribe.batch-policy",
-        "ai.work-request",
         "ai.work-completed",
+        "operation.rejected",
+        "service.failure",
         "lifecycle.health-check",
         "lifecycle.drain"
       ],
@@ -39,6 +43,6 @@
       ]
     }
   },
-  "state": "bounded in-memory exact retry context for single-window and scribe-batch work, pending capacity 32 each; up to 8 retained scribe batch policies; model-name configuration only",
+  "state": "bounded in-memory exact retry context for single-window and scribe-batch work, pending and settled capacities 32 each; up to 8 immutable retained scribe batch policies; model-name configuration only",
   "side_effects": []
 }

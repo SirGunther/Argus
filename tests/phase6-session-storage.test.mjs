@@ -629,6 +629,7 @@ test('Scribe batch journal appends serialize per session, so concurrent identica
     const journal = await storage.readScribeBatchJournal(sessionId);
     assert.equal(journal.length, 1);
     assert.deepEqual(journal.map((entry) => entry.journal_sequence), [0]);
+    assert.equal(storage.memoryStats().scribe_journal_chain_entries, 0, 'completed per-session serialization chains must be released');
   });
 });
 
@@ -653,6 +654,7 @@ test('Scribe batch journal appends serialize per session, so concurrent distinct
     assert.equal(journal.length, 8);
     assert.deepEqual(journal.map((entry) => entry.journal_sequence), [0, 1, 2, 3, 4, 5, 6, 7]);
     assert.deepEqual(new Set(journal.map((entry) => entry.batch.batch_identity.request_id)).size, 8);
+    assert.equal(storage.memoryStats().scribe_journal_chain_entries, 0, 'completed per-session serialization chains must be released');
   });
 });
 

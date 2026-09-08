@@ -92,6 +92,7 @@ async function requestConfiguredModel(runtime, request) {
       model: config.model,
       stream: false,
       temperature: 0,
+      max_tokens: request.limits.max_output_tokens,
       messages: [{ role: 'system', content: modelInstruction(request) }, { role: 'user', content: JSON.stringify(request) }]
     } : request;
     const headers = { 'content-type': 'application/json' };

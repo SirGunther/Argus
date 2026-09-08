@@ -67,7 +67,7 @@ test('successful HTTP extraction creates one replay-safe draft with Argus-owned 
   });
 });
 
-test('deterministic extractors and HTTP adapter share the existing logical graph position', async () => {
+test('deterministic extractors and the additive Scribe HTTP adapter share the existing logical graph position', async () => {
   const { definition, graphFile } = await loadGraphDefinition(path.join(root, 'wiring/demo.logged-item-pipeline.json'));
   const model = structuredClone(definition);
   model.services.find((service) => service.id === 'log-extractor').manifest = '../services/log-extractor-local-http/service.json';
@@ -75,7 +75,11 @@ test('deterministic extractors and HTTP adapter share the existing logical graph
   const modelDomain = JSON.parse(await import('node:fs/promises').then(({ readFile }) => readFile(manifest('log-extractor-local-http'), 'utf8')));
   for (const fake of ['log-extractor-concise', 'log-extractor-passthrough']) {
     const fakeManifest = JSON.parse(await import('node:fs/promises').then(({ readFile }) => readFile(manifest(fake), 'utf8')));
-    assert.deepEqual(fakeManifest.ports.domain, modelDomain.ports.domain);
+    for (const messageType of fakeManifest.ports.domain.accepts) assert.ok(modelDomain.ports.domain.accepts.includes(messageType));
+    for (const messageType of fakeManifest.ports.domain.emits) assert.ok(modelDomain.ports.domain.emits.includes(messageType));
+    assert.ok(modelDomain.ports.domain.accepts.includes('scribe.batch-admitted'));
+    assert.ok(modelDomain.ports.domain.accepts.includes('logged-item.stored'));
+    assert.ok(modelDomain.ports.domain.emits.includes('scribe.batch-evaluated'));
     const replacement = structuredClone(definition);
     replacement.services.find((service) => service.id === 'log-extractor').manifest = `../services/${fake}/service.json`;
     await assert.doesNotReject(() => prepareGraph(replacement, graphFile));

@@ -70,6 +70,10 @@ export function resolveSessionRoot(environment = process.env) {
 
 export class SessionStorage {
   #root;
+  // Serialization is intentionally same-instance: one SessionStorage owner coordinates writes
+  // for its process. Durable journal validation still rejects cross-process conflicting content.
+  // Each session entry is removed when the newest queued append settles, so completed sessions
+  // cannot accumulate permanently in memory.
   #scribeJournalChains = new Map();
 
   constructor({ root = resolveSessionRoot(), environment, faultInjector } = {}) {
@@ -235,7 +239,15 @@ export class SessionStorage {
     const previousChain = this.#scribeJournalChains.get(sessionId) || Promise.resolve();
     const runPromise = previousChain.catch(() => {}).then(() => this.#appendScribeBatchJournalExclusive(sessionId, options));
     this.#scribeJournalChains.set(sessionId, runPromise);
-    return runPromise;
+    try {
+      return await runPromise;
+    } finally {
+      if (this.#scribeJournalChains.get(sessionId) === runPromise) this.#scribeJournalChains.delete(sessionId);
+    }
+  }
+
+  memoryStats() {
+    return { scribe_journal_chain_entries: this.#scribeJournalChains.size };
   }
 
   async #appendScribeBatchJournalExclusive(sessionId, { batch, writtenAt = new Date().toISOString() } = {}) {

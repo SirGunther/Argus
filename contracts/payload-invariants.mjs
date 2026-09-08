@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 export function validatePayloadInvariants(messageType, payload) {
   if (messageType === 'transcript.context-window') return validateContextWindow(payload);
+  if (messageType === 'scribe.batch-admitted') return validateScribeBatchAdmitted(payload);
+  if (messageType === 'scribe.batch-evaluated') return validateScribeBatchEvaluated(payload);
   if (messageType !== 'audio.chunk') return [];
   const errors = [];
   let bytes;
@@ -16,6 +18,35 @@ export function validatePayloadInvariants(messageType, payload) {
   if (bytes.byteLength !== payload.sample_count * 2) errors.push('$.payload.sample_count must equal decoded PCM16 byte length divided by two');
   const checksum = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   if (checksum !== payload.checksum) errors.push('$.payload.checksum does not match decoded audio bytes');
+  return errors;
+}
+
+function validateScribeBatchAdmitted(payload) {
+  const errors = [];
+  const identity = payload.batch_identity;
+  const evidence = payload.new_evidence_segments || [];
+  if (identity?.segments?.length !== evidence.length) errors.push('$.payload.new_evidence_segments must match batch_identity.segments count');
+  evidence.forEach((segment, index) => {
+    const expected = identity?.segments?.[index];
+    if (!expected || segment.segment_id !== expected.segment_id || segment.revision !== expected.revision || segment.sequence !== expected.sequence) {
+      errors.push('$.payload.new_evidence_segments must exactly match batch_identity segment order, revision, and sequence');
+    }
+  });
+  if (payload.instruction_version !== identity?.instruction_version) errors.push('$.payload.instruction_version must match batch_identity.instruction_version');
+  const evidenceIds = new Set(evidence.map((segment) => segment.segment_id));
+  if ((payload.background_context?.transcript_segments || []).some((segment) => evidenceIds.has(segment.segment_id))) errors.push('$.payload.background_context cannot represent new evidence as background');
+  return errors;
+}
+
+function validateScribeBatchEvaluated(payload) {
+  const errors = [];
+  const batch = payload.batch;
+  if (payload.batch_attempt !== batch?.attempt) errors.push('$.payload.batch_attempt must equal batch.attempt');
+  if (batch?.outcome === 'items-recorded' && batch.acknowledgement?.accepted === true && batch.acknowledgement.logged_item_ids.length !== batch.items.length) {
+    errors.push('$.payload.batch.acknowledgement.logged_item_ids must correspond one-for-one with items');
+  }
+  const sourceIds = new Set((batch?.batch_identity?.segments || []).map((segment) => segment.segment_id));
+  if ((batch?.items || []).some((item) => item.source_segment_ids.some((id) => !sourceIds.has(id)))) errors.push('$.payload.batch.items cannot cite evidence outside batch_identity');
   return errors;
 }
 

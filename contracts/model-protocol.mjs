@@ -118,12 +118,13 @@ function validateSourceRange(source) {
   for (const key of Object.keys(source)) if (typeof source[key] !== 'string' || !source[key]) throw protocolError('INVALID_MODEL_REQUEST', `source range ${key} is required`);
 }
 
-function validateSegments(segments, related, requiredRelation) {
+function validateSegments(segments, related, requiredRelation, includeRevision = false) {
   if (!Array.isArray(segments)) throw protocolError('INVALID_MODEL_REQUEST', 'model transcript context must be an array');
   for (const segment of segments) {
-    const keys = related ? ['segment_id', 'sequence', 'start_time', 'end_time', 'text', 'relation'] : ['segment_id', 'sequence', 'start_time', 'end_time', 'text'];
+    const keys = related ? ['segment_id', 'sequence', 'start_time', 'end_time', 'text', 'relation'] : ['segment_id', ...(includeRevision ? ['revision'] : []), 'sequence', 'start_time', 'end_time', 'text'];
     requireExactKeys(segment, keys);
     if (typeof segment.segment_id !== 'string' || !segment.segment_id || !Number.isInteger(segment.sequence) || segment.sequence < 0 || typeof segment.start_time !== 'string' || typeof segment.end_time !== 'string' || typeof segment.text !== 'string' || !segment.text) throw protocolError('INVALID_MODEL_REQUEST', 'model transcript segment is invalid');
+    if (includeRevision && (!Number.isInteger(segment.revision) || segment.revision < 0)) throw protocolError('INVALID_MODEL_REQUEST', 'scribe new evidence segment revision must be a non-negative integer');
     if (requiredRelation && segment.relation !== requiredRelation) throw protocolError('INVALID_MODEL_REQUEST', `model context segment must be ${requiredRelation}`);
     if (related && !['lookback', 'forward'].includes(segment.relation)) throw protocolError('INVALID_MODEL_REQUEST', 'model context relation is invalid');
   }
@@ -169,14 +170,14 @@ export function validateScribeBatchModelRequest(request) {
     throw protocolError('INVALID_MODEL_REQUEST', 'scribe request instruction_version must match the batch identity instruction_version');
   }
 
-  validateSegments(request.new_evidence_segments, false);
+  validateSegments(request.new_evidence_segments, false, undefined, true);
   if (request.new_evidence_segments.length !== batchIdentity.segments.length) {
     throw protocolError('INVALID_MODEL_REQUEST', 'scribe new evidence segments must exactly match the batch identity segment order and count');
   }
   request.new_evidence_segments.forEach((segment, index) => {
     const expected = batchIdentity.segments[index];
-    if (segment.segment_id !== expected.segment_id || segment.sequence !== expected.sequence) {
-      throw protocolError('INVALID_MODEL_REQUEST', 'scribe new evidence segments must exactly match the batch identity segment order and sequence');
+    if (segment.segment_id !== expected.segment_id || segment.revision !== expected.revision || segment.sequence !== expected.sequence) {
+      throw protocolError('INVALID_MODEL_REQUEST', 'scribe new evidence segments must exactly match the batch identity segment order, revision, and sequence');
     }
   });
   const newEvidenceIds = batchIdentity.segmentIds;

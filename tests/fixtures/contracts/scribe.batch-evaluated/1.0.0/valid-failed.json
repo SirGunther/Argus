@@ -7,6 +7,7 @@
   "correlation_id": "fixture-scribe-session",
   "schema_version": "1.0.0",
   "payload": {
+    "batch_attempt": 2,
     "batch": {
       "batch_identity": {
         "request_id": "batch-4-failed",

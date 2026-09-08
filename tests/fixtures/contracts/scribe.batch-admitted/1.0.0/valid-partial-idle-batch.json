@@ -21,9 +21,11 @@
       "policy_version": "1.0.0",
       "instruction_version": "1.0.0"
     },
+    "batch_attempt": 1,
     "new_evidence_segments": [
       {
         "segment_id": "segment-13",
+        "revision": 0,
         "sequence": 13,
         "start_time": "00:00:13.000",
         "end_time": "00:00:14.000",
@@ -31,6 +33,7 @@
       },
       {
         "segment_id": "segment-14",
+        "revision": 1,
         "sequence": 14,
         "start_time": "00:00:14.000",
         "end_time": "00:00:15.000",

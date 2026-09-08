@@ -1,9 +1,10 @@
 {
   "$id": "argus.scribe-batch-admitted.v1",
   "type": "object",
-  "required": ["batch_identity", "new_evidence_segments", "background_context", "policy_profile", "instruction_version"],
+  "required": ["batch_identity", "batch_attempt", "new_evidence_segments", "background_context", "policy_profile", "instruction_version"],
   "properties": {
     "batch_identity": { "$ref": "argus.scribe-batch-identity.v1" },
+    "batch_attempt": { "type": "integer", "minimum": 1 },
     "new_evidence_segments": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/segment" } },
     "background_context": { "$ref": "#/$defs/scribeBackgroundContext" },
     "policy_profile": { "type": "string", "minLength": 1 },
@@ -13,9 +14,10 @@
   "$defs": {
     "segment": {
       "type": "object",
-      "required": ["segment_id", "sequence", "start_time", "end_time", "text"],
+      "required": ["segment_id", "revision", "sequence", "start_time", "end_time", "text"],
       "properties": {
         "segment_id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 0 },
         "sequence": { "type": "integer", "minimum": 0 },
         "start_time": { "type": "string", "minLength": 1 },
         "end_time": { "type": "string", "minLength": 1 },

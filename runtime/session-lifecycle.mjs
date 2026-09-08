@@ -304,7 +304,8 @@ export class SessionLifecycle {
     return {
       transcript_cache_entries: this.transcriptCache.size,
       logged_item_cache_entries: this.loggedItemCache.size,
-      max_cache_entries: this.activeCacheLimit
+      max_cache_entries: this.activeCacheLimit,
+      ...this.storage.memoryStats()
     };
   }
 

@@ -7,6 +7,7 @@ import { SCRIBE_BATCH_INSTRUCTION_VERSIONS, scribeBatchInstruction } from '../co
 import {
   buildScribeBatchRequest,
   createScribeBatchRetention,
+  draftOutput,
   evaluateScribeBatchResponse,
   failedScribeBatchEvaluation,
   fingerprintScribeBatchRequest,
@@ -16,7 +17,8 @@ import {
 } from '../services/log-extractor-local-http/scribe-batch-boundary.mjs';
 import { loadContractRegistry } from '../runtime/contract-registry.mjs';
 import { createEnvelope } from '../runtime/orchestrator.mjs';
-import { runService } from './helpers/process-harness.mjs';
+import { deterministicMessageId } from '../runtime/message-identity.mjs';
+import { runService, runServiceBatches } from './helpers/process-harness.mjs';
 import { startScribeBatchModelEndpoint } from './helpers/scribe-batch-model-endpoint.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -187,7 +189,7 @@ test('a batch identity that disagrees with the accepted policy is refused before
       batchIdentityOverrides: { instruction_version: '1.0.1' },
       policy: { ...scribePolicy(), generation: { policy_profile: 'neutral-contextual-log', instruction_version: '1.0.1' } }
     })),
-    /scribe instruction version 1\.0\.1 is not governed/
+    /instruction_version does not match the accepted policy and batch identity/
   );
 });
 
@@ -230,7 +232,7 @@ test('LM Studio zero, one, and multiple item results each produce the matching d
 
     const settled = completions.map((completion, index) => scribeBatchCompletionOutputs({
       request: requests[index], response: completion.payload.result.response,
-      attempt: completion.payload.attempt, evaluatedAt: completion.payload.completed_at
+      batchAttempt: 1, evaluatedAt: completion.payload.completed_at
     }));
 
     // Zero: a valid empty evaluation emits no draft at all and still settles as a complete outcome.
@@ -301,14 +303,14 @@ test('a stale or provider-altered batch identity cannot produce a draft', () => 
   const items = [{ text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: ['segment-10'] }];
   const stale = { ...batchResponse(request, items), batch_identity: { ...request.batch_identity, request_id: 'batch-superseded' } };
   assert.throws(
-    () => evaluateScribeBatchResponse({ request, response: stale, attempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' }),
+    () => evaluateScribeBatchResponse({ request, response: stale, batchAttempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' }),
     (error) => {
       assert.equal(error.cause.code, 'SCRIBE_BATCH_IDENTITY_CONFLICT');
       return true;
     }
   );
   const reordered = { ...batchResponse(request, items), batch_identity: { ...request.batch_identity, admission_reason: 'idle-timeout' } };
-  assert.throws(() => evaluateScribeBatchResponse({ request, response: reordered, attempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' }), /does not match the dispatched batch identity/);
+  assert.throws(() => evaluateScribeBatchResponse({ request, response: reordered, batchAttempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' }), /does not match the dispatched batch identity/);
 });
 
 test('commentary, malformed JSON, excess items, oversized text, forged identity, unsupported kind, and forged provenance are all visible failures with no draft', async () => {
@@ -357,7 +359,7 @@ test('a response describing a different batch passes isolated validation but can
     const completion = result.outputs.find((message) => message.message_type === 'ai.work-completed');
     assert.equal(completion.payload.result.status, 'succeeded');
     assert.throws(
-      () => evaluateScribeBatchResponse({ request, response: completion.payload.result.response, attempt: completion.payload.attempt, evaluatedAt: completion.payload.completed_at }),
+      () => evaluateScribeBatchResponse({ request, response: completion.payload.result.response, batchAttempt: 1, evaluatedAt: completion.payload.completed_at }),
       (error) => {
         assert.equal(error.cause.code, 'SCRIBE_BATCH_IDENTITY_CONFLICT');
         return true;
@@ -383,7 +385,7 @@ test('a model endpoint timeout is a visible retryable failure and settles as a f
     assert.equal(completion.payload.result.error.retryable, true);
 
     const evaluated = failedScribeBatchEvaluation({
-      batchIdentity: request.batch_identity, attempt: completion.payload.attempt,
+      batchIdentity: request.batch_identity, batchAttempt: 1,
       evaluatedAt: completion.payload.completed_at, error: completion.payload.result.error
     });
     assert.equal(evaluated.outcome, 'failed');
@@ -398,7 +400,7 @@ test('a model endpoint timeout is a visible retryable failure and settles as a f
   }
 });
 
-test('a retried Scribe batch attempt reuses the byte-identical request, prompt, and fingerprint', async () => {
+test('a provider retry reuses the byte-identical work ID, request, prompt, and fingerprint', async () => {
   const endpoint = await startScribeBatchModelEndpoint({
     reply: (_request, number) => number === 1 ? { status: 503, raw: 'temporary model failure' } : { items: [{ text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: ['segment-10'] }] }
   });
@@ -409,6 +411,7 @@ test('a retried Scribe batch attempt reuses the byte-identical request, prompt, 
     assert.equal(completion.payload.result.status, 'succeeded');
     assert.equal(completion.payload.attempt, 2);
     assert.equal(endpoint.calls.length, 2);
+    assert.equal(endpoint.calls[0].modelRequest.identity.work_id, endpoint.calls[1].modelRequest.identity.work_id);
     assert.deepEqual(endpoint.calls[0].modelRequest, endpoint.calls[1].modelRequest);
     assert.equal(endpoint.calls[0].systemPrompt, endpoint.calls[1].systemPrompt);
     assert.equal(endpoint.calls[0].envelope.messages[1].content, endpoint.calls[1].envelope.messages[1].content);
@@ -426,17 +429,17 @@ test('draft identity is Argus-owned, deterministic from the validated batch and 
     { text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: ['segment-10'] },
     { text: 'Confirm the reviewer.', kind: 'open-question', source_segment_ids: ['segment-11'] }
   ];
-  const first = evaluateScribeBatchResponse({ request, response: batchResponse(request, items), attempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' });
-  const replayed = evaluateScribeBatchResponse({ request, response: batchResponse(request, items), attempt: 2, evaluatedAt: '2026-09-07T17:05:00.000Z' });
+  const first = evaluateScribeBatchResponse({ request, response: batchResponse(request, items), batchAttempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' });
+  const replayed = evaluateScribeBatchResponse({ request, response: batchResponse(request, items), batchAttempt: 1, evaluatedAt: '2026-09-07T17:05:00.000Z' });
   assert.deepEqual(replayed.drafts.map((draft) => draft.item_id), first.drafts.map((draft) => draft.item_id));
 
   // Position matters, so two identical texts in one batch stay distinct.
   const duplicated = [items[0], { ...items[0] }];
-  const duplicates = evaluateScribeBatchResponse({ request, response: batchResponse(request, duplicated), attempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' });
+  const duplicates = evaluateScribeBatchResponse({ request, response: batchResponse(request, duplicated), batchAttempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' });
   assert.notEqual(duplicates.drafts[0].item_id, duplicates.drafts[1].item_id);
 
   // Content matters, so an edited item is a different draft.
-  const edited = evaluateScribeBatchResponse({ request, response: batchResponse(request, [{ ...items[0], text: 'Ship the draft Monday.' }, items[1]]), attempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' });
+  const edited = evaluateScribeBatchResponse({ request, response: batchResponse(request, [{ ...items[0], text: 'Ship the draft Monday.' }, items[1]]), batchAttempt: 1, evaluatedAt: '2026-09-07T17:00:01.000Z' });
   assert.notEqual(edited.drafts[0].item_id, first.drafts[0].item_id);
   assert.equal(edited.drafts[1].item_id, first.drafts[1].item_id);
 
@@ -469,8 +472,6 @@ test('retained Scribe batch dispatch bounds its capacity and produces the govern
   );
   // The exact request stays retained for correlation until the work is released.
   assert.deepEqual(retention.get(workId('batch-a')).request, dispatched.request);
-  retention.release(workId('batch-a'));
-  assert.equal(retention.has(workId('batch-a')), false);
   retention.clear();
   assert.equal(retention.size, 0);
 });
@@ -486,7 +487,11 @@ test('reusing a Scribe batch work identity for different content is a conflict, 
   const changedEvidence = newEvidence().map((segment, index) => index === 0 ? { ...segment, text: 'We agreed to ship the draft on Monday instead.' } : segment);
   assert.throws(
     () => retention.dispatch({
-      batch: { batch_identity: batchIdentity('batch-reused'), new_evidence_segments: changedEvidence, background_context: backgroundContext() },
+      batch: {
+        batch_identity: batchIdentity('batch-reused'), batch_attempt: 1,
+        new_evidence_segments: changedEvidence, background_context: backgroundContext(),
+        policy_profile: 'neutral-contextual-log', instruction_version: '1.0.0'
+      },
       policy: scribePolicy(), workId: reusedWorkId, modelName: MODEL, queuedAt: '2026-09-07T17:10:00.000Z'
     }),
     (error) => {
@@ -506,10 +511,55 @@ test('reusing a Scribe batch work identity for different content is a conflict, 
   const replayed = retention.dispatch({ ...dispatchInput({ requestId: 'batch-reused' }), workId: reusedWorkId, modelName: MODEL, queuedAt: '2026-09-07T17:20:00.000Z' });
   assert.equal(replayed.requestFingerprint, first.requestFingerprint);
   assert.deepEqual(replayed.request, first.request);
+  assert.deepEqual(replayed.workRequest, first.workRequest);
   assert.equal(retention.size, 1);
 });
 
-test('the extractor service dispatches a bounded batch and turns zero, one, and multiple item completions into drafts', async () => {
+test('owner confirmations match exact deterministic IDs, tolerate order, and reject unknown, duplicate, or conflicting content', () => {
+  const retention = createScribeBatchRetention({ capacity: 4 });
+  const dispatched = retention.dispatch({ ...dispatchInput({ requestId: 'batch-owner-acks' }), queuedAt: '2026-09-07T17:00:00.000Z' });
+  const result = evaluateScribeBatchResponse({
+    request: dispatched.request,
+    response: batchResponse(dispatched.request, [
+      { text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: ['segment-10'] },
+      { text: 'Confirm the reviewer.', kind: 'open-question', source_segment_ids: ['segment-11'] }
+    ]),
+    batchAttempt: 1,
+    evaluatedAt: '2026-09-07T17:00:01.000Z'
+  });
+  const drafts = result.drafts.map((payload) => draftOutput(payload));
+  retention.beginOwnerAcknowledgement(dispatched.request.identity.work_id, { drafts, evaluated: result.evaluated });
+
+  const firstStored = storedEnvelope({ payload: drafts[0].payload }).payload;
+  const secondStored = storedEnvelope({ payload: drafts[1].payload }).payload;
+  const unknown = { ...firstStored, item_id: 'unknown-deterministic-id', revision_id: 'unknown-deterministic-id:r0' };
+  assert.throws(() => retention.confirmStoredItem(unknown, { acknowledgedAt: '2026-09-07T17:00:02.000Z' }), (error) => error.cause.code === 'SCRIBE_OWNER_CONFIRMATION_UNKNOWN');
+  assert.throws(() => retention.confirmStoredItem({ ...firstStored, text: 'Conflicting owner content.' }, { acknowledgedAt: '2026-09-07T17:00:02.000Z' }), (error) => error.cause.code === 'SCRIBE_OWNER_CONFIRMATION_CONFLICT');
+
+  assert.equal(retention.confirmStoredItem(secondStored, { acknowledgedAt: '2026-09-07T17:00:02.000Z' }).settled, false);
+  assert.throws(() => retention.confirmStoredItem(secondStored, { acknowledgedAt: '2026-09-07T17:00:02.000Z' }), (error) => error.cause.code === 'SCRIBE_OWNER_CONFIRMATION_DUPLICATE');
+  const final = retention.confirmStoredItem(firstStored, { acknowledgedAt: '2026-09-07T17:00:03.000Z' });
+  assert.equal(final.settled, true);
+  assert.deepEqual(final.evaluated.acknowledgement.logged_item_ids, drafts.map((draft) => draft.payload.item_id));
+
+  const failedRetention = createScribeBatchRetention({ capacity: 4 });
+  const failedDispatch = failedRetention.dispatch({ ...dispatchInput({ requestId: 'batch-owner-rejected' }), queuedAt: '2026-09-07T17:00:00.000Z' });
+  const failedResult = evaluateScribeBatchResponse({
+    request: failedDispatch.request,
+    response: batchResponse(failedDispatch.request, [{ text: 'Owner may reject this.', source_segment_ids: ['segment-12'] }]),
+    batchAttempt: 1,
+    evaluatedAt: '2026-09-07T17:00:01.000Z'
+  });
+  const failedDrafts = failedResult.drafts.map((payload) => draftOutput(payload));
+  failedRetention.beginOwnerAcknowledgement(failedDispatch.request.identity.work_id, { drafts: failedDrafts, evaluated: failedResult.evaluated });
+  assert.deepEqual(failedRetention.failOwnerMessage('00000000-0000-4000-8000-000000000000', {}, { evaluatedAt: '2026-09-07T17:00:02.000Z' }), { matched: false });
+  const rejected = failedRetention.failOwnerMessage(failedDrafts[0].messageId, { code: 'OWNER_REJECTED', category: 'conflict', message: 'Owner rejected draft.', retryable: false }, { evaluatedAt: '2026-09-07T17:00:02.000Z' });
+  assert.equal(rejected.evaluated.outcome, 'failed');
+  assert.deepEqual(rejected.evaluated.items, failedResult.items);
+  assert.equal(rejected.evaluated.acknowledgement.accepted, false);
+});
+
+test('the extractor emits a final evaluated boundary only after exact owner confirmations', async () => {
   for (const [label, items, expectedDrafts] of [
     ['zero', [], 0],
     ['one', [{ text: 'Confirm the reviewer.', kind: 'open-question', source_segment_ids: ['segment-11'] }], 1],
@@ -519,29 +569,46 @@ test('the extractor service dispatches a bounded batch and turns zero, one, and 
       { text: 'Remind the team about the Friday deadline.', kind: 'reminder', source_segment_ids: ['segment-11', 'segment-12'] }
     ], 3]
   ]) {
-    const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-service' }));
-    // policy: 1 completion; work-request: 1 emitted request + 1 completion; result: drafts + 1 completion.
-    const result = await runService(extractorManifest, [
-      policyEnvelope(),
-      batchProposalEnvelope(request),
-      batchCompletionEnvelope(request, { response: batchResponse(request, items) })
-    ], 4 + expectedDrafts, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
+    const input = dispatchInput({ requestId: `batch-service-${label}` });
+    const batches = [
+      { inputs: [policyEnvelope(), batchAdmittedEnvelope(input.batch)], expectedOutputCount: 3 },
+      {
+        inputs: (outputs) => {
+          const request = outputs.find((message) => message.message_type === 'ai.work-request').payload.input.model_request;
+          return [batchCompletionEnvelope(request, { response: batchResponse(request, items) })];
+        },
+        expectedOutputCount: expectedDrafts ? expectedDrafts + 1 : 2
+      }
+    ];
+    if (expectedDrafts) {
+      batches.push({
+        inputs: (outputs) => outputs.filter((message) => message.message_type === 'logged-item.draft').reverse().map(storedEnvelope),
+        expectedOutputCount: expectedDrafts + 1
+      });
+    }
+    const result = await runServiceBatches(extractorManifest, batches, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
 
-    // The service, not a test helper, produced the bounded request it forwarded to the lane.
     const forwarded = result.outputs.find((message) => message.message_type === 'ai.work-request');
     assert.ok(forwarded, label);
     assert.equal(forwarded.schema_version, '1.5.0', label);
-    assert.deepEqual(forwarded.payload.input.model_request, request, label);
     assert.deepEqual(registry.validateEnvelope(forwarded), [], label);
+    assert.equal(forwarded.payload.work_id, workId(`batch-service-${label}`));
 
     const drafts = result.outputs.filter((message) => message.message_type === 'logged-item.draft');
     assert.equal(drafts.length, expectedDrafts, label);
-    assert.equal(result.outputs.some((message) => message.message_type === 'service.failure'), false, label);
     for (const draft of drafts) {
       assert.deepEqual(registry.validateEnvelope(draft), [], label);
-      assert.equal(draft.payload.generator.input_window_id, 'batch-service', label);
+      assert.equal(draft.payload.generator.input_window_id, `batch-service-${label}`, label);
       assert.equal(draft.payload.revision, 0, label);
+      const identityKey = `log-extractor-local-http:logged-item.draft:${draft.payload.item_id}:r0`;
+      assert.equal(draft.message_id, deterministicMessageId(identityKey), label);
     }
+    const evaluatedMessages = result.outputs.filter((message) => message.message_type === 'scribe.batch-evaluated');
+    assert.equal(evaluatedMessages.length, 1, label);
+    assert.deepEqual(registry.validateEnvelope(evaluatedMessages[0]), [], label);
+    assert.equal(evaluatedMessages[0].payload.batch_attempt, 1);
+    assert.equal(evaluatedMessages[0].payload.batch.acknowledgement.accepted, true);
+    assert.deepEqual(evaluatedMessages[0].payload.batch.acknowledgement.logged_item_ids, drafts.map((draft) => draft.payload.item_id));
     if (expectedDrafts === 3) {
       assert.deepEqual(drafts.map((draft) => draft.payload.text), items.map((item) => item.text));
       assert.equal(new Set(drafts.map((draft) => draft.payload.item_id)).size, 3);
@@ -549,27 +616,29 @@ test('the extractor service dispatches a bounded batch and turns zero, one, and 
   }
 });
 
-test('a failed Scribe batch completion emits one visible failure carrying the complete failed evaluated outcome', async () => {
-  const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-service-failed' }));
-  const result = await runService(extractorManifest, [
-    policyEnvelope(),
-    batchProposalEnvelope(request),
-    batchCompletionEnvelope(request, { status: 'failed', error: { code: 'MODEL_ENDPOINT_TIMEOUT', category: 'timeout', message: 'model endpoint did not respond within 2000 ms', retryable: true } })
-  ], 5, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
+test('an exhausted provider completion emits one terminal failed evaluated message', async () => {
+  const input = dispatchInput({ requestId: 'batch-service-failed' });
+  const result = await runServiceBatches(extractorManifest, [
+    { inputs: [policyEnvelope(), batchAdmittedEnvelope(input.batch)], expectedOutputCount: 3 },
+    {
+      inputs: (outputs) => {
+        const request = outputs.find((message) => message.message_type === 'ai.work-request').payload.input.model_request;
+        return [batchCompletionEnvelope(request, { status: 'failed', error: { code: 'MODEL_ENDPOINT_TIMEOUT', category: 'timeout', message: 'model endpoint did not respond within 2000 ms', retryable: true } })];
+      },
+      expectedOutputCount: 2
+    }
+  ], 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
 
   assert.equal(result.outputs.some((message) => message.message_type === 'logged-item.draft'), false);
-  const failure = result.outputs.find((message) => message.message_type === 'service.failure');
-  assert.equal(failure.payload.error.code, 'MODEL_ENDPOINT_TIMEOUT');
-  assert.equal(failure.payload.error.category, 'timeout');
-  assert.equal(failure.payload.error.retryable, true);
-  assert.equal(failure.payload.error.details.retained_exact_context, true);
-  assert.equal(failure.payload.error.details.batch_request_id, 'batch-service-failed');
-  const evaluated = failure.payload.error.details.evaluated_batch;
+  const message = result.outputs.find((output) => output.message_type === 'scribe.batch-evaluated');
+  const evaluated = message.payload.batch;
   assert.equal(evaluated.outcome, 'failed');
+  assert.equal(evaluated.attempt, 1);
   assert.deepEqual(evaluated.items, []);
   assert.equal(evaluated.acknowledgement.accepted, false);
+  assert.equal(evaluated.error.retryable, false);
   assert.deepEqual(registry.validateArtifact('scribe_batch_evaluated', evaluated), []);
-  assert.deepEqual(registry.validateEnvelope(failure), []);
+  assert.deepEqual(registry.validateEnvelope(message), []);
 });
 
 test('a batch completion for work the extractor never dispatched is a named correlation conflict, not a single-window extraction error', async () => {
@@ -587,39 +656,45 @@ test('a batch completion for work the extractor never dispatched is a named corr
 });
 
 test('a Scribe batch dispatch without a governed policy fails closed and forwards nothing', async () => {
-  const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-no-policy' }));
-  const result = await runService(extractorManifest, [batchProposalEnvelope(request)], 1, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
+  const input = dispatchInput({ requestId: 'batch-no-policy' });
+  const result = await runService(extractorManifest, [batchAdmittedEnvelope(input.batch)], 1, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
   const failure = result.outputs.find((message) => message.message_type === 'service.failure');
   assert.equal(failure.payload.error.code, 'SCRIBE_BATCH_POLICY_MISSING');
   assert.equal(failure.payload.error.category, 'unavailable');
   assert.equal(result.outputs.some((message) => message.message_type === 'ai.work-request'), false);
 });
 
-test('the extractor reuses a batch work identity conflict rather than overwriting a live dispatch, and ignores single-window work it produces', async () => {
-  const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-service-reused' }));
-  const changed = buildScribeBatchRequest({
-    ...dispatchInput({ requestId: 'batch-service-reused' }),
-    batch: {
-      batch_identity: batchIdentity('batch-service-reused'),
-      new_evidence_segments: newEvidence().map((segment, index) => index === 0 ? { ...segment, text: 'We agreed to ship the draft on Monday instead.' } : segment),
-      background_context: backgroundContext()
+test('a forged nested work ID is rejected non-destructively and the exact completion still settles', async () => {
+  const input = dispatchInput({ requestId: 'batch-forged-completion' });
+  const result = await runServiceBatches(extractorManifest, [
+    { inputs: [policyEnvelope(), batchAdmittedEnvelope(input.batch)], expectedOutputCount: 3 },
+    {
+      inputs: (outputs) => {
+        const request = outputs.find((message) => message.message_type === 'ai.work-request').payload.input.model_request;
+        return [batchCompletionEnvelope(request, { response: batchResponse(request, []), nestedWorkId: 'forged-nested-work', idempotencyKey: 'forged-nested-completion' })];
+      },
+      expectedOutputCount: 1
+    },
+    {
+      inputs: (outputs) => {
+        const request = outputs.find((message) => message.message_type === 'ai.work-request').payload.input.model_request;
+        return [batchCompletionEnvelope(request, { response: batchResponse(request, []) })];
+      },
+      expectedOutputCount: 2
     }
-  }).request;
-
-  // policy: 1; first proposal: 2; conflicting proposal: 1 failure; 1.0.0 proposal: 1 completion.
-  const result = await runService(extractorManifest, [
-    policyEnvelope(),
-    batchProposalEnvelope(request),
-    batchProposalEnvelope(changed, { idempotencyKey: 'scribe-proposal-conflict' }),
-    legacyWorkRequestEnvelope()
-  ], 5, 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
-
-  const forwarded = result.outputs.filter((message) => message.message_type === 'ai.work-request');
-  assert.equal(forwarded.length, 1, 'only the first dispatch is forwarded');
+  ], 8000, { env: { ARGUS_MODEL_NAME: MODEL } });
   const failure = result.outputs.find((message) => message.message_type === 'service.failure');
-  assert.equal(failure.payload.error.code, 'SCRIBE_BATCH_WORK_ID_CONFLICT');
-  // The 1.0.0 request this service produces is ignored on the accept side, not reinterpreted.
-  assert.equal(result.outputs.filter((message) => message.message_type === 'operation.completed').length, 3);
+  assert.equal(failure.payload.error.code, 'SCRIBE_BATCH_RESULT_WORK_ID_CONFLICT');
+  assert.ok(result.outputs.find((message) => message.message_type === 'scribe.batch-evaluated'));
+});
+
+test('accepted policy state is immutable for a session', async () => {
+  const changed = structuredClone(scribePolicy());
+  changed.generation.policy_profile = 'changed-profile';
+  const result = await runService(extractorManifest, [policyEnvelope(), policyEnvelope(changed)], 2);
+  assert.equal(result.outputs[0].message_type, 'operation.completed');
+  assert.equal(result.outputs[1].message_type, 'service.failure');
+  assert.equal(result.outputs[1].payload.error.code, 'SCRIBE_BATCH_POLICY_CONFLICT');
 });
 
 test('Scribe batch extraction needs no Ollama installation and leaves the 1.0.0 single-text protocol untouched', async () => {
@@ -636,6 +711,7 @@ test('Scribe batch extraction needs no Ollama installation and leaves the 1.0.0 
     assert.equal(Object.hasOwn(endpoint.calls[0].envelope, 'prompt'), false);
     assert.equal(endpoint.calls[0].envelope.stream, false);
     assert.equal(endpoint.calls[0].envelope.temperature, 0);
+    assert.equal(endpoint.calls[0].envelope.max_tokens, request.limits.max_output_tokens);
     assert.equal(endpoint.calls[0].authorization, undefined);
     assert.doesNotMatch(JSON.stringify(result.outputs), /api[_-]?key|credential/i);
     // The Scribe instruction governs only the batch protocol; it never restates the 1.0.0
@@ -651,9 +727,9 @@ test('Scribe batch extraction needs no Ollama installation and leaves the 1.0.0 
 
 function newEvidence() {
   return [
-    { segment_id: 'segment-10', sequence: 10, start_time: '00:00:10.000', end_time: '00:00:11.000', text: 'We agreed to ship the draft Friday.' },
-    { segment_id: 'segment-11', sequence: 11, start_time: '00:00:11.000', end_time: '00:00:12.000', text: 'Someone still needs to confirm the reviewer.' },
-    { segment_id: 'segment-12', sequence: 12, start_time: '00:00:12.000', end_time: '00:00:13.000', text: 'Remind the team about the Friday deadline.' }
+    { segment_id: 'segment-10', revision: 0, sequence: 10, start_time: '00:00:10.000', end_time: '00:00:11.000', text: 'We agreed to ship the draft Friday.' },
+    { segment_id: 'segment-11', revision: 0, sequence: 11, start_time: '00:00:11.000', end_time: '00:00:12.000', text: 'Someone still needs to confirm the reviewer.' },
+    { segment_id: 'segment-12', revision: 0, sequence: 12, start_time: '00:00:12.000', end_time: '00:00:13.000', text: 'Remind the team about the Friday deadline.' }
   ];
 }
 
@@ -699,14 +775,21 @@ function scribePolicy(totalContextTokens = 8000) {
 
 function dispatchInput({ requestId = 'batch-1', totalContextTokens, policy, batchIdentityOverrides, background } = {}) {
   return {
-    batch: { batch_identity: batchIdentity(requestId, batchIdentityOverrides), new_evidence_segments: newEvidence(), background_context: background ?? backgroundContext() },
+    batch: {
+      batch_identity: batchIdentity(requestId, batchIdentityOverrides),
+      batch_attempt: 1,
+      new_evidence_segments: newEvidence(),
+      background_context: background ?? backgroundContext(),
+      policy_profile: 'neutral-contextual-log',
+      instruction_version: '1.0.0'
+    },
     policy: policy ?? scribePolicy(totalContextTokens),
     workId: workId(requestId),
     modelName: MODEL
   };
 }
 
-function workId(requestId) { return `logged-item-extraction:${session}:${requestId}`; }
+function workId(requestId) { return `logged-item-extraction:${session}:${requestId}:batch-attempt-1`; }
 
 /** The real serialized total one dispatch consumes at the governed default budget. */
 function measuredTotalTokens(input) {
@@ -754,30 +837,33 @@ function structuralBackground(count) {
 function policyEnvelope(policy = scribePolicy()) {
   return createEnvelope({
     plane: 'control', messageType: 'scribe.batch-policy', producer: 'fixture-scribe-coordinator', correlationId: session,
-    schemaVersion: '1.0.0', idempotencyKey: `scribe-policy:${policy.policy_id}:${policy.policy_version}`, payload: policy
+    schemaVersion: '1.0.0', idempotencyKey: `scribe-policy:${policy.policy_id}:${policy.policy_version}:${policy.generation.policy_profile}`, payload: policy
   });
 }
 
-/** The coordinator's bounded-batch proposal, carried on the governed 1.5.0 work-request shape. */
-function batchProposalEnvelope(request, { idempotencyKey, maxAttempts = 2 } = {}) {
+function batchAdmittedEnvelope(batch) {
   return createEnvelope({
-    plane: 'control', messageType: 'ai.work-request', producer: 'fixture-scribe-coordinator', correlationId: session,
-    schemaVersion: '1.5.0', idempotencyKey: idempotencyKey ?? `scribe-proposal:${request.batch_identity.request_id}`, payload: {
-      work_id: request.identity.work_id, workload: 'logged-item-extraction', session_id: session,
-      sequence: request.batch_identity.last_sequence, queued_at: '2026-09-07T17:00:00.000Z',
-      input: { model_request: request }, recovery: { max_attempts: maxAttempts }
-    }
+    plane: 'domain', messageType: 'scribe.batch-admitted', producer: 'fixture-scribe-coordinator', correlationId: session,
+    schemaVersion: '1.0.0', idempotencyKey: `scribe-admitted:${batch.batch_identity.request_id}:a${batch.batch_attempt}`, payload: batch
   });
 }
 
-function batchCompletionEnvelope(request, { response, status = 'succeeded', error } = {}) {
+function storedEnvelope(draft) {
+  const { created_at, ...payload } = structuredClone(draft.payload);
+  return createEnvelope({
+    plane: 'domain', messageType: 'logged-item.stored', producer: 'fixture-active-logged-item-owner', correlationId: session,
+    schemaVersion: '1.0.0', idempotencyKey: `stored:${payload.item_id}`, payload: { ...payload, stored_at: created_at }
+  });
+}
+
+function batchCompletionEnvelope(request, { response, status = 'succeeded', error, nestedWorkId, idempotencyKey } = {}) {
   return createEnvelope({
     plane: 'control', messageType: 'ai.work-completed', producer: 'fixture-model-lane', correlationId: session,
-    schemaVersion: '1.5.0', idempotencyKey: `scribe-completion:${request.batch_identity.request_id}`, payload: {
+    schemaVersion: '1.5.0', idempotencyKey: idempotencyKey || `scribe-completion:${request.batch_identity.request_id}`, payload: {
       work_id: request.identity.work_id, workload: 'logged-item-extraction', session_id: session,
       sequence: request.batch_identity.last_sequence, attempt: 1, completed_at: '2026-09-07T17:00:01.000Z',
       result: {
-        status, work_id: request.identity.work_id, request_fingerprint: fingerprintScribeBatchRequest(request),
+        status, work_id: nestedWorkId || request.identity.work_id, request_fingerprint: fingerprintScribeBatchRequest(request),
         ...(status === 'failed' ? { error } : { response })
       }
     }

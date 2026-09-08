@@ -42,6 +42,7 @@
         "new_evidence_segments": [
           {
             "segment_id": "segment-20",
+            "revision": 0,
             "sequence": 20,
             "start_time": "00:00:20.000",
             "end_time": "00:00:21.000",
@@ -49,6 +50,7 @@
           },
           {
             "segment_id": "segment-21",
+            "revision": 1,
             "sequence": 21,
             "start_time": "00:00:21.000",
             "end_time": "00:00:22.000",
@@ -79,5 +81,5 @@
     }
   },
   "message_id": "ca6a03cc-3ea2-40d1-a5bb-175932bd1627",
-  "content_fingerprint": "sha256:0949d895064c993785f3de2805e10d3502d2bbaf2d66c882b000391fcf2341bd"
+  "content_fingerprint": "sha256:840fbb1eb70fb3d62f858725f93029b61dd891f7e535a7296dd69b491f912502"
 }

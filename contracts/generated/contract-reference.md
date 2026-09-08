@@ -466,6 +466,7 @@
 | Field | Required | Type | Constraint |
 | --- | --- | --- | --- |
 | `batch_identity` | yes | any | — |
+| `batch_attempt` | yes | integer | minimum 1 |
 | `new_evidence_segments` | yes | array<value> | min items 1 |
 | `background_context` | yes | any | — |
 | `policy_profile` | yes | string | min length 1 |
@@ -482,6 +483,7 @@
 
 | Field | Required | Type | Constraint |
 | --- | --- | --- | --- |
+| `batch_attempt` | yes | integer | minimum 1 |
 | `batch` | yes | any | — |
 
 ## `ai.provider-configure`

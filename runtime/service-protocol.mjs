@@ -57,7 +57,7 @@ export function runLineService({ service, operations, onDrain, onReady }) {
           ...output,
           identityKey: output.identityKey || `${producer}:${output.messageType}:drain:${message.idempotency_key || message.message_id}:${index}`
         }));
-        for (const output of outputs) emit(producer, output.plane || 'domain', output.messageType, message.correlation_id, output.payload, message.message_id, output.identityKey, output.schemaVersion);
+        for (const output of outputs) emit(producer, output.plane || 'domain', output.messageType, message.correlation_id, output.payload, message.message_id, output.identityKey, output.schemaVersion, output.messageId);
         const emitDrained = () => emit(producer, 'control', 'service.drained', message.correlation_id, {
           service,
           pending_operations: 0
@@ -89,7 +89,7 @@ export function runLineService({ service, operations, onDrain, onReady }) {
       const inputKey = message.idempotency_key || message.message_id;
       const known = completed.get(inputKey);
       if (identity.duplicate && known && operation.onDuplicate !== 'handle') {
-        for (const output of known.outputs) emit(producer, output.plane || 'domain', output.messageType, message.correlation_id, output.payload, known.inputMessageId, output.identityKey, output.schemaVersion);
+        for (const output of known.outputs) emit(producer, output.plane || 'domain', output.messageType, message.correlation_id, output.payload, known.inputMessageId, output.identityKey, output.schemaVersion, output.messageId);
         emitCompletion(producer, operation.name, message, true);
         trace(service, operation.name, 'duplicate-replayed', message, { output_count: known.outputs.length });
         return;
@@ -100,7 +100,7 @@ export function runLineService({ service, operations, onDrain, onReady }) {
           ...output,
           identityKey: output.identityKey || `${producer}:${output.messageType}:background:${message.idempotency_key || message.message_id}`
         };
-        emit(producer, normalized.plane || 'domain', normalized.messageType, message.correlation_id, normalized.payload, message.message_id, normalized.identityKey, normalized.schemaVersion);
+        emit(producer, normalized.plane || 'domain', normalized.messageType, message.correlation_id, normalized.payload, message.message_id, normalized.identityKey, normalized.schemaVersion, normalized.messageId);
       };
       const outputs = (await operation.handle(message, { emit: background }) || []).map((output, index) => ({
         ...output,
@@ -112,7 +112,7 @@ export function runLineService({ service, operations, onDrain, onReady }) {
       }
       const outputCausationId = known?.inputMessageId || message.message_id;
       for (const output of outputs) {
-        emit(producer, output.plane || 'domain', output.messageType, message.correlation_id, output.payload, outputCausationId, output.identityKey, output.schemaVersion);
+        emit(producer, output.plane || 'domain', output.messageType, message.correlation_id, output.payload, outputCausationId, output.identityKey, output.schemaVersion, output.messageId);
       }
       if (!known) completed.set(inputKey, {
         outputs: operation.retainOutputs === false ? [] : outputs,
@@ -157,8 +157,8 @@ export function runLineService({ service, operations, onDrain, onReady }) {
   }
 }
 
-function emit(service, plane, messageType, correlationId, payload, causationId, identityKey, schemaVersion = '1.2.0') {
-  const identity = createMessageIdentity({ producer: service, messageType, logicalKey: identityKey });
+function emit(service, plane, messageType, correlationId, payload, causationId, identityKey, schemaVersion = '1.2.0', messageId) {
+  const identity = createMessageIdentity({ producer: service, messageType, logicalKey: identityKey, ...(messageId ? { messageId } : {}) });
   const envelope = {
     ...identity,
     plane,

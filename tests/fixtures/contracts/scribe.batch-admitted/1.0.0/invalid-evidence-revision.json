@@ -1,5 +1,5 @@
 {
-  "message_id": "fixture-scribe-batch-admitted-missing-background",
+  "message_id": "fixture-scribe-batch-admitted-wrong-revision",
   "plane": "domain",
   "message_type": "scribe.batch-admitted",
   "timestamp": "2026-09-07T17:00:00.000Z",
@@ -8,29 +8,26 @@
   "schema_version": "1.0.0",
   "payload": {
     "batch_identity": {
-      "request_id": "batch-1",
+      "request_id": "batch-wrong-revision",
       "session_id": "fixture-scribe-session",
-      "segments": [
-        { "segment_id": "segment-10", "revision": 0, "sequence": 10 }
-      ],
+      "segments": [{ "segment_id": "segment-10", "revision": 1, "sequence": 10 }],
       "first_sequence": 10,
       "last_sequence": 10,
-      "admission_reason": "batch-complete",
+      "admission_reason": "idle-timeout",
       "policy_id": "fixture-default",
       "policy_version": "1.0.0",
       "instruction_version": "1.0.0"
     },
     "batch_attempt": 1,
-    "new_evidence_segments": [
-      {
-        "segment_id": "segment-10",
-        "revision": 0,
-        "sequence": 10,
-        "start_time": "00:00:10.000",
-        "end_time": "00:00:11.000",
-        "text": "We agreed to ship the draft Friday."
-      }
-    ],
+    "new_evidence_segments": [{
+      "segment_id": "segment-10",
+      "revision": 0,
+      "sequence": 10,
+      "start_time": "00:00:10.000",
+      "end_time": "00:00:11.000",
+      "text": "Revision zero is not the admitted revision."
+    }],
+    "background_context": { "transcript_segments": [], "prior_logged_items": [] },
     "policy_profile": "neutral-contextual-log",
     "instruction_version": "1.0.0"
   }

@@ -20,6 +20,7 @@
       "policy_version": "1.0.0",
       "instruction_version": "1.0.0"
     },
+    "batch_attempt": 1,
     "new_evidence_segments": [],
     "background_context": {
       "transcript_segments": [],

@@ -47,6 +47,7 @@
         "new_evidence_segments": [
           {
             "segment_id": "segment-10",
+            "revision": 0,
             "sequence": 10,
             "start_time": "00:00:10.000",
             "end_time": "00:00:11.000",
@@ -54,6 +55,7 @@
           },
           {
             "segment_id": "segment-11",
+            "revision": 0,
             "sequence": 11,
             "start_time": "00:00:11.000",
             "end_time": "00:00:12.000",
@@ -61,6 +63,7 @@
           },
           {
             "segment_id": "segment-12",
+            "revision": 0,
             "sequence": 12,
             "start_time": "00:00:12.000",
             "end_time": "00:00:13.000",
@@ -108,5 +111,5 @@
     }
   },
   "message_id": "068e5c33-e469-41a9-9e7d-e597985ed8b5",
-  "content_fingerprint": "sha256:070e00e39b64aa9d0a0dcdae156f1352721dc95e1a13b188f037cdffc10bf884"
+  "content_fingerprint": "sha256:3446727ff2e9c1a8c24fee486d2a44f4df1502997c9b346ed9a007b614b90c76"
 }

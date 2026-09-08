@@ -7,6 +7,7 @@
   "correlation_id": "fixture-scribe-session",
   "schema_version": "1.0.0",
   "payload": {
+    "batch_attempt": 1,
     "batch": {
       "batch_identity": {
         "request_id": "batch-2-idle",

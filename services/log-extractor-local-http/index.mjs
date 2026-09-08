@@ -2,17 +2,20 @@ import { fingerprintValue } from '../../runtime/message-identity.mjs';
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
 import { buildExtractionRequest, EXTRACTION_OUTPUT_LIMITS, fingerprintRequest, readModelName, stableItemId } from './model-boundary.mjs';
 import { SCRIBE_BATCH_PROTOCOL_VERSION, validateModelResponse } from '../../contracts/model-protocol.mjs';
-import { createScribeBatchRetention, failedScribeBatchEvaluation, scribeBatchCompletionOutputs } from './scribe-batch-boundary.mjs';
+import {
+  createScribeBatchRetention,
+  draftOutput,
+  evaluateScribeBatchResponse,
+  failedScribeBatchEvaluation
+} from './scribe-batch-boundary.mjs';
 
 const SERVICE = 'log-extractor-local-http';
 const instance = process.env.ARGUS_SERVICE_INSTANCE_ID || SERVICE;
 const MAX_PENDING_REQUESTS = 32;
 const MAX_RETAINED_POLICIES = 8;
+const MODEL_MAX_ATTEMPTS = 2;
 const FAILURE_CATEGORIES = new Set(['validation', 'conflict', 'dependency', 'timeout', 'unavailable', 'internal']);
 const pending = new Map();
-// Batch work is retained separately from single-window work: the two protocols correlate their
-// completions against different retained shapes, so the dispatch that produced the work - not the
-// shape of whatever response comes back - must decide how a completion is evaluated.
 const scribeBatches = createScribeBatchRetention({ capacity: MAX_PENDING_REQUESTS, instance });
 const scribePolicies = new Map();
 
@@ -32,70 +35,55 @@ runLineService({ service: SERVICE, operations: {
     } catch (error) { throw boundaryError(error); }
   } },
   'scribe.batch-policy': { name: 'retain-scribe-batch-policy', handle(message) {
-    // The coordinator owns the policy; this service only retains it. The total token budget and
-    // the instruction version are inputs to bounded request construction and must come from the
-    // governed policy rather than from a local default.
     const policy = structuredClone(message.payload);
-    if (!policy?.session_id || !policy.context || !policy.generation) {
-      throw new ServiceOperationError('scribe.batch-policy must carry a session, a context budget, and generation settings', { code: 'INVALID_SCRIBE_BATCH_POLICY', category: 'validation' });
+    if (!policy?.session_id || !policy.context || !policy.generation) throw new ServiceOperationError('scribe.batch-policy must carry a session, a context budget, and generation settings', { code: 'INVALID_SCRIBE_BATCH_POLICY', category: 'validation' });
+    const retained = scribePolicies.get(policy.session_id);
+    if (retained) {
+      if (fingerprintValue(retained) === fingerprintValue(policy)) return [];
+      throw new ServiceOperationError(`conflicting Scribe policy is already retained for session ${policy.session_id}`, { code: 'SCRIBE_BATCH_POLICY_CONFLICT', category: 'conflict', details: { session_id: policy.session_id, policy_id: retained.policy_id } });
     }
-    if (!scribePolicies.has(policy.session_id) && scribePolicies.size >= MAX_RETAINED_POLICIES) {
-      throw new ServiceOperationError(`retained scribe policy capacity reached: ${MAX_RETAINED_POLICIES}`, { code: 'SCRIBE_POLICY_CAPACITY_FULL', category: 'unavailable', retryable: true, details: { capacity: MAX_RETAINED_POLICIES } });
-    }
+    if (scribePolicies.size >= MAX_RETAINED_POLICIES) throw new ServiceOperationError(`retained scribe policy capacity reached: ${MAX_RETAINED_POLICIES}`, { code: 'SCRIBE_POLICY_CAPACITY_FULL', category: 'unavailable', retryable: true, details: { capacity: MAX_RETAINED_POLICIES } });
     scribePolicies.set(policy.session_id, policy);
     return [];
   }, traceDetail: (message) => ({ policy_id: message.payload?.policy_id, policy_version: message.payload?.policy_version }) },
-  'ai.work-request': { name: 'dispatch-scribe-batch', handle(message) {
-    const work = message.payload;
-    const proposal = work?.input?.model_request;
-    // This service is the producer of 1.0.0 single-window work, not its consumer. It consumes only
-    // the batch-shaped proposal the Scribe coordinator routes here for bounded construction, so
-    // anything else arriving on this wire is ignored rather than reinterpreted.
-    if (proposal?.protocol_version !== SCRIBE_BATCH_PROTOCOL_VERSION) return [];
+  'scribe.batch-admitted': { name: 'dispatch-scribe-batch', handle(message) {
+    const admission = structuredClone(message.payload);
+    const sessionId = admission?.batch_identity?.session_id;
+    const policy = scribePolicies.get(sessionId);
+    if (!policy) throw new ServiceOperationError(`no governed scribe batch policy is active for session ${sessionId}`, { code: 'SCRIBE_BATCH_POLICY_MISSING', category: 'unavailable', retryable: true, details: { session_id: sessionId } });
     try {
-      if (proposal.identity?.work_id !== work.work_id) {
-        throw new ServiceOperationError('scribe batch request identity does not match the scheduler work identity', { code: 'MODEL_WORK_ID_CONFLICT', category: 'conflict', details: { work_id: work.work_id } });
-      }
-      const sessionId = proposal.batch_identity?.session_id;
-      const policy = scribePolicies.get(sessionId);
-      if (!policy) {
-        throw new ServiceOperationError(`no governed scribe batch policy is active for session ${sessionId}`, { code: 'SCRIBE_BATCH_POLICY_MISSING', category: 'unavailable', retryable: true, details: { session_id: sessionId } });
-      }
-      // The model name comes from this service's own configuration, never from the proposal: the
-      // coordinator holds no provider knowledge and must not be able to name the model.
       const dispatched = scribeBatches.dispatch({
-        batch: {
-          batch_identity: proposal.batch_identity,
-          new_evidence_segments: proposal.new_evidence_segments,
-          background_context: proposal.background_context
-        },
+        batch: admission,
         policy,
-        workId: work.work_id,
         modelName: readModelName(),
         queuedAt: message.timestamp,
-        maxAttempts: Number.isInteger(work?.recovery?.max_attempts) ? work.recovery.max_attempts : 2
+        maxAttempts: MODEL_MAX_ATTEMPTS
       });
-      return [dispatched.workRequest];
-    } catch (error) { throw boundaryError(error, { work_id: work?.work_id, batch_request_id: proposal.batch_identity?.request_id }); }
-  }, traceDetail: (message) => ({ batch_request_id: message.payload?.input?.model_request?.batch_identity?.request_id, scheduler_work_id: message.payload?.work_id }) },
+      return dispatched.terminalEvaluation ? [scribeEvaluatedOutput(dispatched.terminalEvaluation)] : [dispatched.workRequest];
+    } catch (error) {
+      throw boundaryError(error, { batch_request_id: admission?.batch_identity?.request_id, batch_attempt: admission?.batch_attempt });
+    }
+  }, traceDetail: (message) => ({ batch_request_id: message.payload?.batch_identity?.request_id, batch_attempt: message.payload?.batch_attempt }) },
   'ai.work-completed': { name: 'accept-local-http-extraction', handle(message) {
     const completion = message.payload;
     if (completion.workload !== 'logged-item-extraction') return [];
-    if (scribeBatches.has(completion.work_id)) return acceptScribeBatchCompletion(completion);
+    const activeScribeBatch = scribeBatches.get(completion.work_id);
+    const settledScribeBatch = scribeBatches.getSettled(completion.work_id);
+    if (activeScribeBatch || settledScribeBatch) {
+      assertScribeCompletionCorrelation(completion, activeScribeBatch || settledScribeBatch);
+      return settledScribeBatch
+        ? [scribeEvaluatedOutput(settledScribeBatch.terminalEvaluation)]
+        : acceptScribeBatchCompletion(completion);
+    }
     const state = pending.get(completion.work_id);
     if (!state) {
-      // A batch result for work this service never dispatched is a correlation conflict, not a
-      // malformed single-window result. Reporting it as the latter is what made an unretained
-      // 2.0.0 completion look like an extraction defect instead of a routing one.
-      if (completion.result?.response?.protocol_version === SCRIBE_BATCH_PROTOCOL_VERSION) {
-        throw new ServiceOperationError(`No retained scribe batch context for work ${completion.work_id}`, { code: 'SCRIBE_BATCH_NOT_RETAINED', category: 'conflict', details: { work_id: completion.work_id, batch_request_id: completion.result.response.batch_identity?.request_id } });
+      if (completion.work_id?.includes(':batch-attempt-') || completion.result?.response?.protocol_version === SCRIBE_BATCH_PROTOCOL_VERSION) {
+        throw new ServiceOperationError(`No retained scribe batch context for work ${completion.work_id}`, { code: 'SCRIBE_BATCH_NOT_RETAINED', category: 'conflict', details: { work_id: completion.work_id, batch_request_id: completion.result?.response?.batch_identity?.request_id } });
       }
       throw new Error(`No retained extraction context for work ${completion.work_id}`);
     }
-    if (completion.result?.request_fingerprint !== state.requestFingerprint) {
-      pending.delete(completion.work_id);
-      throw new Error(`Conflicting model result for work ${completion.work_id}`);
-    }
+    if (completion.result?.work_id !== completion.work_id) throw new Error(`Conflicting nested model result work_id for work ${completion.work_id}`);
+    if (completion.result?.request_fingerprint !== state.requestFingerprint) throw new Error(`Conflicting model result for work ${completion.work_id}`);
     try {
       if (completion.result.status === 'failed') {
         pending.delete(completion.work_id);
@@ -114,39 +102,118 @@ runLineService({ service: SERVICE, operations: {
       pending.delete(completion.work_id);
       throw boundaryError(error, { work_id: completion.work_id, context_window_id: state.window.window_id, request_fingerprint: state.requestFingerprint, retained_exact_context: true });
     }
+  } },
+  'logged-item.stored': { name: 'confirm-scribe-draft-storage', handle(message) {
+    try {
+      const result = scribeBatches.confirmStoredItem(message.payload, { acknowledgedAt: message.timestamp });
+      if (!result.matched || !result.settled) return [];
+      return [scribeEvaluatedOutput(result.evaluated)];
+    } catch (error) { throw boundaryError(error, { item_id: message.payload?.item_id, batch_request_id: message.payload?.generator?.input_window_id }); }
+  } },
+  'operation.rejected': { name: 'reject-scribe-draft-storage', handle(message) {
+    if (message.payload?.operation !== 'accept-extracted-draft') return [];
+    const reason = message.payload.reason || {};
+    const result = scribeBatches.failOwnerMessage(message.payload.input_message_id, {
+      code: reason.code || 'LOGGED_ITEM_OWNER_REJECTED', category: 'conflict', message: reason.message || 'Logged Item owner rejected the Scribe draft', retryable: false
+    }, { evaluatedAt: message.timestamp });
+    if (!result.matched) throw new ServiceOperationError('Logged Item owner rejection did not match a retained Scribe draft', { code: 'SCRIBE_OWNER_CONFIRMATION_UNKNOWN', category: 'conflict', details: { input_message_id: message.payload.input_message_id } });
+    return [scribeEvaluatedOutput(result.evaluated)];
+  } },
+  'service.failure': { name: 'fail-scribe-draft-storage', handle(message) {
+    if (message.payload?.operation !== 'accept-extracted-draft') return [];
+    const error = message.payload.error || {};
+    const result = scribeBatches.failOwnerMessage(message.payload.input_message_id, {
+      code: error.code || 'LOGGED_ITEM_STORAGE_FAILED', category: FAILURE_CATEGORIES.has(error.category) ? error.category : 'dependency', message: error.message || 'Logged Item storage failed', retryable: Boolean(error.retryable)
+    }, { evaluatedAt: message.timestamp });
+    if (!result.matched) throw new ServiceOperationError('Logged Item storage failure did not match a retained Scribe draft', { code: 'SCRIBE_OWNER_CONFIRMATION_UNKNOWN', category: 'conflict', details: { input_message_id: message.payload.input_message_id } });
+    return [scribeEvaluatedOutput(result.evaluated)];
   } }
 }, onDrain() { pending.clear(); scribeBatches.clear(); scribePolicies.clear(); return []; } });
 
-/**
- * Turn one settled Scribe batch into zero-to-many governed drafts, or into one visible failure.
- *
- * A valid empty evaluation legitimately emits no draft. The complete evaluated-batch outcome is
- * produced here, but only the failed outcome currently has a governed carrier (`service.failure`
- * details); the settled-outcome carrier back to the coordinator is not a contract SCRIBE-01
- * established, so SCRIBE-02 must declare it and SCRIBE-05 must wire it.
- */
 function acceptScribeBatchCompletion(completion) {
   const state = scribeBatches.get(completion.work_id);
-  const details = { work_id: completion.work_id, batch_request_id: state.request.batch_identity.request_id, request_fingerprint: state.requestFingerprint, retained_exact_context: true };
-  if (completion.result?.request_fingerprint !== state.requestFingerprint) {
-    scribeBatches.release(completion.work_id);
-    throw new ServiceOperationError(`Conflicting model result for scribe batch ${completion.work_id}`, { code: 'SCRIBE_BATCH_RESULT_CONFLICT', category: 'conflict', details });
-  }
-  const attempt = Number.isInteger(completion.attempt) && completion.attempt >= 1 ? completion.attempt : 1;
   const evaluatedAt = completion.completed_at;
+  const details = {
+    work_id: completion.work_id,
+    batch_request_id: state.request.batch_identity.request_id,
+    batch_attempt: state.batchAttempt,
+    request_fingerprint: state.requestFingerprint,
+    retained_exact_context: true
+  };
+  assertScribeCompletionCorrelation(completion, state);
+  const completionFingerprint = fingerprintValue(completion.result);
+  if (state.phase === 'owner-acknowledgement') {
+    if (state.completionFingerprint !== completionFingerprint) {
+      throw new ServiceOperationError(`Conflicting repeated model result for scribe batch ${completion.work_id}`, { code: 'SCRIBE_BATCH_RESULT_CONFLICT', category: 'conflict', details });
+    }
+    return state.drafts.map((draft) => structuredClone(draft));
+  }
   try {
     if (completion.result.status === 'failed') {
-      const evaluated = failedScribeBatchEvaluation({ batchIdentity: state.request.batch_identity, attempt, evaluatedAt, error: completion.result.error });
-      scribeBatches.release(completion.work_id);
-      return [scribeFailureOutput(completion, completion.result.error, { ...details, evaluated_batch: evaluated })];
+      const evaluated = failedScribeBatchEvaluation({
+        batchIdentity: state.request.batch_identity,
+        batchAttempt: state.batchAttempt,
+        evaluatedAt,
+        error: { ...completion.result.error, retryable: false }
+      });
+      scribeBatches.settleEvaluation(completion.work_id, evaluated);
+      return [scribeEvaluatedOutput(evaluated)];
     }
-    const { outputs } = scribeBatchCompletionOutputs({ request: state.request, response: completion.result.response, attempt, evaluatedAt, instance });
-    scribeBatches.release(completion.work_id);
-    return outputs;
+    let result;
+    try {
+      result = evaluateScribeBatchResponse({ request: state.request, response: completion.result.response, batchAttempt: state.batchAttempt, evaluatedAt });
+    } catch (error) {
+      if (error.cause?.code === 'SCRIBE_BATCH_IDENTITY_CONFLICT') throw error;
+      const evaluated = failedScribeBatchEvaluation({
+        batchIdentity: state.request.batch_identity,
+        batchAttempt: state.batchAttempt,
+        evaluatedAt,
+        error: { code: error.cause?.code || 'INVALID_MODEL_OUTPUT', category: FAILURE_CATEGORIES.has(error.cause?.category) ? error.cause.category : 'validation', message: error.message, retryable: false }
+      });
+      scribeBatches.settleEvaluation(completion.work_id, evaluated);
+      return [scribeEvaluatedOutput(evaluated)];
+    }
+    if (result.drafts.length === 0) {
+      result.evaluated.acknowledgement = {
+        ...result.evaluated.acknowledgement,
+        accepted: true,
+        acknowledged_at: evaluatedAt,
+        logged_item_ids: []
+      };
+      scribeBatches.settleEvaluation(completion.work_id, result.evaluated);
+      return [scribeEvaluatedOutput(result.evaluated)];
+    }
+    state.completionFingerprint = completionFingerprint;
+    return scribeBatches.beginOwnerAcknowledgement(completion.work_id, {
+      drafts: result.drafts.map((payload) => draftOutput(payload, instance)),
+      evaluated: result.evaluated
+    });
   } catch (error) {
-    scribeBatches.release(completion.work_id);
     throw boundaryError(error, details);
   }
+}
+
+function assertScribeCompletionCorrelation(completion, state) {
+  const details = { work_id: completion.work_id, batch_request_id: state.request.batch_identity.request_id, request_fingerprint: state.requestFingerprint, retained_exact_context: true };
+  if (completion.session_id !== state.request.identity.session_id || completion.sequence !== state.request.batch_identity.last_sequence) {
+    throw new ServiceOperationError(`Model completion routing does not match scribe batch ${completion.work_id}`, { code: 'SCRIBE_BATCH_RESULT_ROUTING_CONFLICT', category: 'conflict', details });
+  }
+  if (completion.result?.work_id !== completion.work_id) {
+    throw new ServiceOperationError(`Nested model result work_id does not match scribe batch ${completion.work_id}`, { code: 'SCRIBE_BATCH_RESULT_WORK_ID_CONFLICT', category: 'conflict', details });
+  }
+  if (completion.result?.request_fingerprint !== state.requestFingerprint) {
+    throw new ServiceOperationError(`Conflicting model result for scribe batch ${completion.work_id}`, { code: 'SCRIBE_BATCH_RESULT_CONFLICT', category: 'conflict', details });
+  }
+}
+
+function scribeEvaluatedOutput(evaluated) {
+  return {
+    plane: 'domain',
+    messageType: 'scribe.batch-evaluated',
+    schemaVersion: '1.0.0',
+    identityKey: `${instance}:scribe.batch-evaluated:${evaluated.batch_identity.request_id}:a${evaluated.attempt}`,
+    payload: { batch_attempt: evaluated.attempt, batch: structuredClone(evaluated) }
+  };
 }
 
 function exactSource(window) {
@@ -158,10 +225,8 @@ function exactSource(window) {
 
 function boundaryError(error, details) {
   if (error instanceof ServiceOperationError) return error;
-  // Preserve a cause category the service.failure contract actually accepts; anything else (or a
-  // missing category) reports as validation rather than emitting an out-of-enum failure payload.
   const category = FAILURE_CATEGORIES.has(error.cause?.category) ? error.cause.category : 'validation';
-  return new ServiceOperationError(error.message, { code: error.cause?.code || 'INVALID_MODEL_OUTPUT', category, retryable: true, details });
+  return new ServiceOperationError(error.message, { code: error.cause?.code || 'INVALID_MODEL_OUTPUT', category, retryable: true, details: { ...error.cause?.details, ...details } });
 }
 
 function failureOutput(completion, state, error) {
@@ -172,13 +237,5 @@ function failureOutput(completion, state, error) {
       work_id: completion.work_id, context_window_id: state.window.window_id, request_fingerprint: state.requestFingerprint,
       retained_exact_context: true
     } }
-  } };
-}
-
-function scribeFailureOutput(completion, error, details) {
-  const safe = error || { code: 'MODEL_REQUEST_FAILED', category: 'dependency', message: 'model request failed', retryable: true };
-  return { plane: 'control', messageType: 'service.failure', schemaVersion: '1.2.0', identityKey: `${instance}:service.failure:${completion.work_id}`, payload: {
-    service: instance, operation: 'accept-local-http-extraction', outcome: 'failure',
-    error: { code: safe.code, category: safe.category, message: safe.message, retryable: safe.retryable, details }
   } };
 }
