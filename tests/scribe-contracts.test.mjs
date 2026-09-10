@@ -258,7 +258,12 @@ const SCRIBE_TRANSPORT_MESSAGE_TYPES = ['scribe.batch-admitted', 'scribe.batch-e
 
 test('catalog registers the Scribe batch transport messages additively without disturbing the SCRIBE-01 entries', () => {
   const catalog = registry.catalog;
-  assert.equal(catalog.schema_version, '1.15.0');
+  // The invariant is that these entries stay additive, not that the catalog stops moving: later
+  // tickets keep taking backward-compatible minor bumps. Pin the catalog to the same major and
+  // to at least the minor these transport messages landed in, then assert each entry exactly.
+  const [major, minor] = catalog.schema_version.split('.').map(Number);
+  assert.equal(major, 1, 'a catalog major bump would break these registered Scribe entries');
+  assert.ok(minor >= 15, `catalog minor ${minor} moved below the Scribe transport registration`);
   for (const messageType of SCRIBE_TRANSPORT_MESSAGE_TYPES) {
     const definition = catalog.messages[messageType];
     assert.ok(definition, `${messageType} must be registered`);

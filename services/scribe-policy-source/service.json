@@ -1,0 +1,34 @@
+{
+  "service_name": "scribe-policy-source",
+  "version": "1.0.0",
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "index.mjs"
+  },
+  "permissions": {},
+  "ports": {
+    "domain": {
+      "accepts": [],
+      "emits": []
+    },
+    "control": {
+      "accepts": [
+        "lifecycle.start",
+        "session.recorded",
+        "session.resumed",
+        "lifecycle.health-check",
+        "lifecycle.drain"
+      ],
+      "emits": [
+        "scribe.batch-policy",
+        "service.failure",
+        "service.health",
+        "service.drained",
+        "operation.completed",
+        "operation.rejected"
+      ]
+    }
+  },
+  "state": "one retained governed Scribe batch policy template projected from explicit run configuration",
+  "side_effects": []
+}

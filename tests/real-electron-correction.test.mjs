@@ -43,6 +43,7 @@ test('New Session emits an authoritative recording projection for its new identi
   application.graph = {
     dispatchFrom: async () => {},
     recoverDeliveryForNewSession: async (boundary) => { recovery = boundary; return 1; },
+    waitForIdle: async () => {},
     closed: false
   };
   const createdAt = new Date().toISOString();
@@ -62,7 +63,7 @@ test('New Session emits an authoritative recording projection for its new identi
   assert.equal(result.status, 'accepted');
   assert.equal(result.session_id, application.sessionId);
   assert.deepEqual(recovery, { currentSessionId: 'closed-session', nextSessionId: application.sessionId });
-  assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0, audio_processing: { state: 'listening', queue_depth: 0, capture_state: 'idle', transcription_state: 'idle' } } });
+  assert.deepEqual(projections.at(-1), { message_type: 'ui.session-status', payload: { session_id: application.sessionId, state: 'recording', elapsed_seconds: 0, created_at: createdAt, duration_seconds: 0, transcript_count: 0, logged_item_count: 0, audio_processing: { state: 'listening', queue_depth: 0, capture_state: 'idle', transcription_state: 'idle' }, scribe_processing: { state: 'caught-up', pending_rows: 0, cursor_sequence: -1 } } });
 });
 
 test('sequence 67 to 128 gap remains guarded and becomes a visible finalization failure', async () => {

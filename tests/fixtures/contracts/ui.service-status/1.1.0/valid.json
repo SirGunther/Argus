@@ -1,0 +1,16 @@
+{
+  "message_id": "fixture-ui-service-status-v2",
+  "plane": "control",
+  "message_type": "ui.service-status",
+  "timestamp": "2026-09-10T00:00:00.000Z",
+  "producer": "fixture-ui-projection",
+  "correlation_id": "fixture-session",
+  "schema_version": "1.1.0",
+  "payload": {
+    "capability": "scribe",
+    "status": "available",
+    "message": "Scribe is processing 3 finalized rows through the serial model lane.",
+    "retryable": false,
+    "updated_at": "2026-09-10T00:00:00.000Z"
+  }
+}

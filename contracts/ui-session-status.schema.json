@@ -21,6 +21,18 @@
         "detail": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
+    },
+    "scribe_processing": {
+      "type": "object",
+      "required": ["state", "pending_rows"],
+      "properties": {
+        "state": { "enum": ["caught-up", "pending", "queued", "processing", "delayed", "unavailable", "failed"] },
+        "pending_rows": { "type": "integer", "minimum": 0 },
+        "cursor_sequence": { "type": "integer", "minimum": -1 },
+        "batch_request_id": { "type": "string", "minLength": 1 },
+        "detail": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

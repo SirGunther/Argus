@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.15.0`
+- Catalog version: `1.16.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -74,10 +74,10 @@
 | `session.folder-located` | control | `1.2.0` | `runtime/session-folder-locator` | 16 KiB |
 | `ui.command` | control | `1.0.0` | `ui/bridge` | 32 KiB |
 | `ui.command-result` | control | `1.0.0` | `ui/bridge` | 16 KiB |
-| `ui.session-status` | domain | `1.2.0` | `ui/projection` | 16 KiB |
+| `ui.session-status` | domain | `1.3.0` | `ui/projection` | 16 KiB |
 | `ui.transcript-row` | domain | `1.1.0` | `ui/projection` | 32 KiB |
 | `ui.logged-item-row` | domain | `1.0.0` | `ui/projection` | 32 KiB |
-| `ui.service-status` | control | `1.0.0` | `ui/projection` | 16 KiB |
+| `ui.service-status` | control | `1.1.0` | `ui/projection` | 16 KiB |
 
 ## `audio.chunk`
 
@@ -1163,7 +1163,7 @@
 ## `ui.session-status`
 
 - Plane: `domain`
-- Version: `1.2.0`
+- Version: `1.3.0`
 - Owner: `ui/projection`
 - Schema: [`ui-session-status.schema.json`](../ui-session-status.schema.json)
 - History: [`history/ui.session-status.md`](../history/ui.session-status.md)
@@ -1179,6 +1179,7 @@
 | `transcript_count` | yes | integer | minimum 0 |
 | `logged_item_count` | yes | integer | minimum 0 |
 | `audio_processing` | no | object | requires `state`, `queue_depth` |
+| `scribe_processing` | no | object | requires `state`, `pending_rows` |
 
 ## `ui.transcript-row`
 
@@ -1227,7 +1228,7 @@
 ## `ui.service-status`
 
 - Plane: `control`
-- Version: `1.0.0`
+- Version: `1.1.0`
 - Owner: `ui/projection`
 - Schema: [`ui-service-status.schema.json`](../ui-service-status.schema.json)
 - History: [`history/ui.service-status.md`](../history/ui.service-status.md)
@@ -1235,7 +1236,7 @@
 
 | Field | Required | Type | Constraint |
 | --- | --- | --- | --- |
-| `capability` | yes | any | `microphone`, `stt`, `model`, `orchestration`, `transcript`, `logged-item-pipeline`, `storage-session`, `clipboard`, `folder-opening`, `classification` |
+| `capability` | yes | any | `microphone`, `stt`, `model`, `orchestration`, `transcript`, `logged-item-pipeline`, `scribe`, `storage-session`, `clipboard`, `folder-opening`, `classification` |
 | `status` | yes | any | `available`, `degraded`, `unavailable` |
 | `message` | yes | string | min length 1 |
 | `retryable` | yes | boolean | — |

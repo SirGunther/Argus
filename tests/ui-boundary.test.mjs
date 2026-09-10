@@ -26,16 +26,33 @@ test('session status keeps legacy fields and exposes independent capture/transcr
   const message = boundary.projection('ui.session-status', {
     session_id: 'ui-audio-session', state: 'recording', elapsed_seconds: 2, created_at: '2026-08-30T00:00:00.000Z',
     duration_seconds: 2, transcript_count: 0, logged_item_count: 0,
-    audio_processing: { state: 'transcribing', queue_depth: 1, capture_state: 'listening', transcription_state: 'transcribing' }
+    audio_processing: { state: 'transcribing', queue_depth: 1, capture_state: 'listening', transcription_state: 'transcribing' },
+    scribe_processing: { state: 'processing', pending_rows: 1, cursor_sequence: 2, batch_request_id: 'ui-audio-session:3-5:electron-scribe-default:1.0.0' }
   }, 'ui-audio-session');
-  assert.equal(message.schema_version, '1.2.0');
+  assert.equal(message.schema_version, '1.3.0');
   assert.deepEqual(boundary.registry.validateEnvelope(message), []);
   assert.equal(message.payload.audio_processing.capture_state, 'listening');
   assert.equal(message.payload.audio_processing.transcription_state, 'transcribing');
+  assert.equal(message.payload.scribe_processing.state, 'processing');
+  assert.equal(message.payload.scribe_processing.pending_rows, 1);
   const legacy = structuredClone(message);
   legacy.schema_version = '1.0.0';
   delete legacy.payload.audio_processing;
+  delete legacy.payload.scribe_processing;
   assert.deepEqual(boundary.registry.validateEnvelope(legacy), []);
+});
+
+test('session status bounds every Scribe state and rejects an unknown one', async () => {
+  const boundary = await createUiContractBoundary(root);
+  const project = (scribeProcessing) => boundary.projection('ui.session-status', {
+    session_id: 'ui-scribe-session', state: 'recording', elapsed_seconds: 1, created_at: '2026-09-10T00:00:00.000Z',
+    duration_seconds: 1, transcript_count: 0, logged_item_count: 0, scribe_processing: scribeProcessing
+  }, 'ui-scribe-session');
+  for (const state of ['caught-up', 'pending', 'queued', 'processing', 'delayed', 'unavailable', 'failed']) {
+    assert.deepEqual(boundary.registry.validateEnvelope(project({ state, pending_rows: 0 })), [], state);
+  }
+  assert.throws(() => project({ state: 'summarizing', pending_rows: 0 }));
+  assert.throws(() => project({ state: 'processing' }));
 });
 
 test('UI command validation is closed over supported commands and rejects arbitrary paths', async () => {

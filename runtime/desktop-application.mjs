@@ -21,13 +21,27 @@ import {
 } from './model-provider-settings.mjs';
 
 const ALLOWED_ENVIRONMENT = ['ARGUS_SESSION_ROOT', 'ARGUS_MODEL_ENDPOINT', 'ARGUS_MODEL_NAME', 'ARGUS_MODEL_TIMEOUT_MS', 'ARGUS_MODEL_PROTOCOL', 'ARGUS_WHISPER_BINARY', 'ARGUS_WHISPER_MODEL', 'ARGUS_WHISPER_TIMEOUT_MS', 'ARGUS_WHISPER_DELAYED_MS', 'ARGUS_WHISPER_PREVIEW_CADENCE_MS', 'ARGUS_DIAGNOSTICS'];
-const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'storage-session', 'clipboard', 'folder-opening'];
+const CAPABILITIES = ['microphone', 'stt', 'model', 'orchestration', 'transcript', 'logged-item-pipeline', 'scribe', 'storage-session', 'clipboard', 'folder-opening'];
 const MAX_AUDIO_QUEUE_ITEMS = 256;
 const MAX_AUDIO_UTTERANCES = 16;
 const DELAYED_AUDIO_UTTERANCES = 4;
 const MAX_UTTERANCE_CHUNKS = 120;
 const MAX_AUDIO_WINDOW_DURATION_MS = 10000;
 const PIPELINE_STALL_THRESHOLD_MS = 30000;
+// How long one admitted Scribe batch may stay in flight before its state reads as delayed
+// rather than processing. This is the model round trip a user is willing to see as "working"
+// before the UI should say it is late; it is deliberately independent of the audio pipeline
+// stall threshold, which measures Whisper progress on a different path.
+const SCRIBE_DELAYED_BATCH_MS = 30000;
+const SCRIBE_STATE_LABELS = Object.freeze({
+  'caught-up': 'Caught up',
+  pending: 'Pending rows',
+  queued: 'Queued',
+  processing: 'Processing',
+  delayed: 'Delayed',
+  unavailable: 'Unavailable',
+  failed: 'Failed'
+});
 
 export class DesktopApplication {
   constructor({ root, graphFile, sessionRoot, environment = process.env, providerSettingsStore, credentialStore, diagnosticsEnabled = false, diagnosticsOutput, diagnosticClock, diagnosticStallThresholdMs = PIPELINE_STALL_THRESHOLD_MS } = {}) {
@@ -84,6 +98,11 @@ export class DesktopApplication {
     this.audioProcessingNotice = undefined;
     this.audioWorkerGeneration = 0;
     this.audioWorkerInvocation = undefined;
+    this.scribeCursorSequence = -1;
+    this.scribeEvidenceSequence = -1;
+    this.scribeInFlight = undefined;
+    this.scribeFailure = undefined;
+    this.scribeProcessingLast = undefined;
     this.pipelinePreviewProgress = new Map();
     this.pipelineStallTimers = new Map();
     this.diagnosticStallThresholdMs = Math.max(1, Number(diagnosticStallThresholdMs) || PIPELINE_STALL_THRESHOLD_MS);
@@ -506,6 +525,10 @@ export class DesktopApplication {
       requested_at: new Date().toISOString()
     }, payload.command_id);
     const recoveredDelivery = await this.graph.recoverDeliveryForNewSession?.({ currentSessionId: payload.session_id, nextSessionId: sessionId });
+    // The Scribe coordinator rejects finalized evidence until its recovery handshake completes,
+    // so the new session's policy publication and recovery must settle before capture can begin.
+    await this.graph.waitForIdle();
+    this.resetScribeState();
     await this.loadLatestSession(sessionId);
     this.transcript = [];
     this.loggedItems = [];
@@ -784,6 +807,136 @@ export class DesktopApplication {
     };
   }
 
+  // Scribe state is derived only from the governed traffic the host already observes:
+  // finalized transcript rows, admitted batches, and final evaluations. The coordinator's own
+  // cursor and admission state stay inside its service boundary.
+  observeScribeEvidence(sequence) {
+    if (sequence <= this.scribeEvidenceSequence) return;
+    this.scribeEvidenceSequence = sequence;
+    this.updateScribeProcessing();
+  }
+
+  observeScribeBatch(messageType, payload) {
+    if (messageType === 'scribe.batch-admitted') {
+      const identity = payload.batch_identity || {};
+      if (identity.session_id !== this.sessionId) return;
+      this.scribeInFlight = {
+        request_id: identity.request_id,
+        last_sequence: identity.last_sequence,
+        row_count: payload.new_evidence_segments?.length || identity.segments?.length || 0,
+        admitted_at_ms: Date.now()
+      };
+      this.scribeFailure = undefined;
+      this.diagnostics.log('scribe.batch-admitted', {
+        session_id: identity.session_id,
+        correlation_id: identity.session_id,
+        batch_request_id: identity.request_id,
+        batch_attempt: payload.batch_attempt,
+        admission_reason: identity.admission_reason,
+        first_sequence: identity.first_sequence,
+        last_sequence: identity.last_sequence,
+        row_count: this.scribeInFlight.row_count
+      });
+      this.updateScribeProcessing();
+      return;
+    }
+    const batch = payload.batch || {};
+    const identity = batch.batch_identity || {};
+    if (identity.session_id !== this.sessionId) return;
+    const accepted = batch.outcome !== 'failed' && batch.acknowledgement?.accepted === true;
+    if (this.scribeInFlight?.request_id === identity.request_id) this.scribeInFlight = undefined;
+    if (accepted) {
+      // The extraction boundary emits this before the coordinator's durable cursor advances, so
+      // the projected cursor is the last acknowledged batch, not yet the persisted checkpoint.
+      if (Number.isInteger(identity.last_sequence) && identity.last_sequence > this.scribeCursorSequence) {
+        this.scribeCursorSequence = identity.last_sequence;
+      }
+      this.scribeFailure = undefined;
+    } else {
+      this.scribeFailure = {
+        code: batch.error?.code || 'SCRIBE_BATCH_FAILED',
+        message: batch.error?.message || 'A Scribe batch failed and is retained without an automatic retry.',
+        batch_request_id: identity.request_id
+      };
+    }
+    this.diagnostics.log('scribe.batch-evaluated', {
+      session_id: identity.session_id,
+      correlation_id: identity.session_id,
+      batch_request_id: identity.request_id,
+      batch_attempt: payload.batch_attempt,
+      outcome: batch.outcome,
+      item_count: batch.items?.length || 0,
+      logged_item_ids: batch.acknowledgement?.logged_item_ids || [],
+      error_code: batch.error?.code
+    });
+    this.updateScribeProcessing();
+  }
+
+  observeScribeServiceFailure(payload) {
+    this.scribeFailure = {
+      code: payload.error?.code || 'SCRIBE_SERVICE_FAILED',
+      message: payload.error?.message || 'The Scribe pipeline reported a failure.',
+      ...(payload.error?.details?.batch_request_id ? { batch_request_id: payload.error.details.batch_request_id } : {})
+    };
+    this.updateScribeProcessing();
+  }
+
+  resetScribeState() {
+    this.scribeCursorSequence = -1;
+    this.scribeEvidenceSequence = -1;
+    this.scribeInFlight = undefined;
+    this.scribeFailure = undefined;
+    this.scribeProcessingLast = undefined;
+  }
+
+  updateScribeProcessing() {
+    const next = this.scribeProcessingSnapshot();
+    const changed = JSON.stringify(this.scribeProcessingLast) !== JSON.stringify(next);
+    this.scribeProcessingLast = next;
+    if (!changed) return;
+    this.setCapability('scribe', scribeCapabilityStatus(next.state), scribeCapabilityMessage(next), next.state === 'failed' || next.state === 'unavailable');
+    if (this.started) this.emit('ui.session-status', this.sessionProjection());
+  }
+
+  scribeProcessingSnapshot() {
+    const inFlight = this.scribeInFlight;
+    const acknowledgedThrough = Math.max(this.scribeCursorSequence, Number.isInteger(inFlight?.last_sequence) ? inFlight.last_sequence : -1);
+    const pendingRows = Math.max(0, this.scribeEvidenceSequence - acknowledgedThrough);
+    const pipelineUnavailable = this.capabilityState.get('logged-item-pipeline')?.status === 'unavailable';
+    const rowsPerBatch = this.scribeRowsPerBatch();
+    let state;
+    let detail;
+    if (this.scribeFailure) {
+      state = 'failed';
+      detail = this.scribeFailure.message;
+    } else if (inFlight) {
+      state = Date.now() - inFlight.admitted_at_ms >= SCRIBE_DELAYED_BATCH_MS ? 'delayed' : 'processing';
+      detail = `${inFlight.row_count} finalized row${inFlight.row_count === 1 ? '' : 's'} are with the serial model lane`;
+    } else if (pipelineUnavailable) {
+      state = 'unavailable';
+      detail = this.capabilityState.get('logged-item-pipeline')?.message;
+    } else if (!pendingRows) {
+      state = 'caught-up';
+    } else if (rowsPerBatch && pendingRows >= rowsPerBatch) {
+      state = 'queued';
+    } else {
+      state = 'pending';
+      detail = 'Waiting for a full batch or the governed idle threshold';
+    }
+    return {
+      state,
+      pending_rows: pendingRows,
+      cursor_sequence: Math.max(-1, this.scribeCursorSequence),
+      ...(inFlight?.request_id ? { batch_request_id: inFlight.request_id } : this.scribeFailure?.batch_request_id ? { batch_request_id: this.scribeFailure.batch_request_id } : {}),
+      ...(detail ? { detail } : {})
+    };
+  }
+
+  scribeRowsPerBatch() {
+    const configured = this.graph?.prepared?.definition?.run?.configuration?.scribe_policy?.admission?.rows_per_batch;
+    return Number.isInteger(configured) && configured > 0 ? configured : undefined;
+  }
+
   audioQueueDiagnostics({ extended = false } = {}) {
     const active = this.audioActiveFlush || this.audioPreparingUtterance;
     const base = {
@@ -946,6 +1099,7 @@ export class DesktopApplication {
       if (metadata) sessions.push(metadata);
     }
     const metadata = selected ? sessions.find((item) => item.session_id === selected) : sessions.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
+    const switchedSession = metadata && metadata.session_id !== this.sessionId;
     if (metadata) this.sessionId = metadata.session_id;
     this.metadata = metadata;
     if (metadata) {
@@ -953,11 +1107,35 @@ export class DesktopApplication {
       this.transcript = active.transcriptSegments.map((item) => this.transcriptRow(item, undefined, metadata.state));
       this.transcriptProjectedRevisions = new Set(active.transcriptSegments.map((item) => `${metadata.session_id}:${transcriptRevisionId(item)}`));
       this.loggedItems = active.loggedItems.map((item) => this.loggedItemRow(item));
+      await this.loadScribeProgress(metadata.session_id, { reset: switchedSession, transcriptSegments: active.transcriptSegments });
     } else {
       this.transcriptProjectedRevisions.clear();
       this.transcript = [];
       this.loggedItems = [];
     }
+  }
+
+  // After a restart the projected Scribe progress comes from the same durable checkpoint the
+  // coordinator recovers from, so a crash-recovered session reports its real acknowledged
+  // cursor and outstanding rows instead of looking caught up.
+  async loadScribeProgress(sessionId, { reset = false, transcriptSegments = [] } = {}) {
+    if (reset) this.resetScribeState();
+    const checkpoint = await this.storage.readScribeCheckpoint(sessionId).catch(() => undefined);
+    const acknowledged = checkpoint?.admitted_through?.last_sequence;
+    if (Number.isInteger(acknowledged) && acknowledged > this.scribeCursorSequence) this.scribeCursorSequence = acknowledged;
+    const inFlight = checkpoint?.in_flight_batch;
+    if (inFlight && !this.scribeInFlight) {
+      const identity = inFlight.batch_identity || {};
+      this.scribeInFlight = {
+        request_id: identity.request_id,
+        last_sequence: identity.last_sequence,
+        row_count: identity.segments?.length || 0,
+        admitted_at_ms: Date.parse(inFlight.dispatched_at) || Date.now()
+      };
+    }
+    const highestFinalized = transcriptSegments.reduce((highest, segment) => (Number.isInteger(segment.sequence) && segment.sequence > highest ? segment.sequence : highest), -1);
+    if (highestFinalized > this.scribeEvidenceSequence) this.scribeEvidenceSequence = highestFinalized;
+    this.updateScribeProcessing();
   }
 
   async recoverUncleanRecordings() {
@@ -998,7 +1176,7 @@ export class DesktopApplication {
     const elapsedMs = calculateRecordingDurationMs(metadata, Date.now());
     const duration = Math.max(0, Math.floor(elapsedMs / 1000));
     const elapsed = duration;
-    return { session_id: this.sessionId, state, elapsed_seconds: elapsed, created_at: createdAt, duration_seconds: duration, transcript_count: this.transcript.length, logged_item_count: this.loggedItems.length, audio_processing: this.audioProcessingSnapshot() };
+    return { session_id: this.sessionId, state, elapsed_seconds: elapsed, created_at: createdAt, duration_seconds: duration, transcript_count: this.transcript.length, logged_item_count: this.loggedItems.length, audio_processing: this.audioProcessingSnapshot(), scribe_processing: this.scribeProcessingSnapshot() };
   }
 
   handleGraphMessage(message) {
@@ -1047,7 +1225,14 @@ export class DesktopApplication {
       this.diagnostics.log('transcript.utterance-boundary-received', { session_id: payload.session_id, utterance_id: payload.utterance_id, boundary_id: payload.boundary_id, first_word_sequence: payload.first_word_sequence, last_word_sequence: payload.last_word_sequence, reason: payload.reason });
       return;
     }
+    if (message.message_type === 'scribe.batch-admitted' || message.message_type === 'scribe.batch-evaluated') {
+      this.observeScribeBatch(message.message_type, payload);
+      return;
+    }
     if (message.message_type === 'transcript.segment' || message.message_type === 'transcript.segment-stored') {
+      if (message.message_type === 'transcript.segment' && Number.isInteger(payload.sequence) && payload.session_id === this.sessionId) {
+        this.observeScribeEvidence(payload.sequence);
+      }
       const revisionId = transcriptRevisionId(payload);
       const revision = Number.isInteger(payload.revision) ? payload.revision : 0;
       const acknowledgementKey = `${payload.session_id}:${revisionId}`;
@@ -1104,6 +1289,12 @@ export class DesktopApplication {
     if (message.message_type === 'service.failure') {
       const service = message.payload.service || '';
       this.diagnostics.log('service.failure', { session_id: message.correlation_id, correlation_id: message.correlation_id, service, operation: message.payload.operation, input_message_id: message.payload.input_message_id, error_code: message.payload.error?.code, retryable: message.payload.error?.retryable, error: message.payload.error?.message });
+      // A stalled Scribe batch must not be read as a transcript finalization or audio problem:
+      // Whisper, transcript ownership, and Logged Item editing all keep working while it stalls.
+      if (isScribeService(service)) {
+        this.observeScribeServiceFailure(message.payload);
+        return;
+      }
       this.clearPipelineStallDetection();
       if (isFinalizationService(service) || message.payload.error?.code === 'SEQUENCE_GAP' || message.payload.error?.code === 'DELIVERY_BACKLOG_FULL') {
         this.failFinalization({
@@ -1153,6 +1344,7 @@ export class DesktopApplication {
     if (status.type === 'service-failure') {
       if (status.service === 'speech-to-text') this.setCapability('stt', 'unavailable', status.message, true);
       if (status.service === 'model-lane') this.setCapability('model', 'unavailable', status.message, true);
+      if (isScribeService(status.service)) this.observeScribeServiceFailure({ error: { code: status.code, message: status.message } });
       if (isFinalizationService(status.service) || status.code === 'SEQUENCE_GAP' || status.code === 'DELIVERY_BACKLOG_FULL') {
         this.failFinalization({ code: status.code, message: status.message, retryable: false, expected: status.expected, received: status.received, service: status.service });
       }
@@ -1215,6 +1407,22 @@ export class DesktopApplication {
 function ownerFor(command) { if (command === 'transcript.edit') return 'transcript/active-state'; if (command === 'logged-item.edit') return 'logged-items/active-owner'; if (command === 'copy' || command === 'copy-session-path') return 'platform/clipboard'; if (command === 'open-folder') return 'platform/folder'; if (command?.startsWith('session.')) return 'runtime/session-lifecycle'; return 'ui/command'; }
 
 function isFinalizationService(service) { return service === 'active-transcript' || service === 'active-transcript-owner'; }
+
+// Matches both the manifest service_name a failure payload carries and the graph instance id a
+// delivery failure reports, because the production graph names these instances differently.
+const SCRIBE_SERVICES = new Set(['scribe-coordinator', 'scribe-policy-source', 'scribe-policy', 'log-extractor-local-http', 'log-extractor']);
+function isScribeService(service) { return SCRIBE_SERVICES.has(service); }
+
+function scribeCapabilityStatus(state) {
+  if (state === 'failed' || state === 'unavailable') return 'unavailable';
+  return state === 'delayed' ? 'degraded' : 'available';
+}
+
+function scribeCapabilityMessage(snapshot) {
+  const label = SCRIBE_STATE_LABELS[snapshot.state] || snapshot.state;
+  const pending = snapshot.pending_rows ? ` · ${snapshot.pending_rows} finalized row${snapshot.pending_rows === 1 ? '' : 's'} pending` : '';
+  return `Scribe: ${label}${pending}${snapshot.detail ? ` · ${snapshot.detail}` : ''}.`;
+}
 
 function freezeAudioChunk(chunk) {
   return Object.freeze({ ...chunk, format: Object.freeze({ ...(chunk.format || {}) }) });
