@@ -392,7 +392,20 @@ Production graph/DesktopApplication wiring, UI status, real microphone or LM Stu
 
 Replace the production window-selector-only extraction path with the complete Scribe coordinator flow and connect its durable state, existing scheduler, model adapter, owners, lifecycle, and truthful status.
 
-### Build checklist
+### Model-tiered execution checklist
+
+The three stages below are sequential and constitute the ticket's single authoritative checklist. At the end of Stages 1 and 2, send the required notification and pause. Do not continue until the user resumes the ticket after changing the model configuration.
+
+#### Stage 1 — Lower-cost model, low reasoning/effort: bounded preparation
+
+- [ ] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-04B merge.
+- [ ] Read `contracts/scribe-contract-handoff.md`, this ticket, and only the directly affected production graph, manifests, desktop lifecycle/status path, and focused tests.
+- [ ] Map the exact existing production path and every required Scribe input/output wire before editing; identify any prerequisite defect in a core SCRIBE-04B component instead of silently broadening ownership.
+- [ ] Run the focused baseline graph, lifecycle, contract, and Scribe integration checks needed to distinguish a new regression from an inherited failure.
+- [ ] Display this complete ticket-derived checklist in chat with Stage 1 progress recorded.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05 preparation is complete, then pause for the high-reasoning stage.
+
+#### Stage 2 — Stronger model, high reasoning/effort: production integration
 
 - [ ] Add the Scribe coordinator manifest to the production graph and wire every input/output explicitly; do not add hidden host callbacks or sibling imports.
 - [ ] Route authoritative finalized transcript rows to Scribe while preserving their existing projection and permanent-history paths.
@@ -408,6 +421,19 @@ Replace the production window-selector-only extraction path with the complete Sc
 - [ ] Ensure multiple items arrive exactly once through the active owner and append-only history with source navigation intact.
 - [ ] Assemble the accepted batch acknowledgement only from actual `logged-item.stored` confirmations, preserving the evaluated item order and exact one-to-one `logged_item_ids` mapping before allowing cursor advancement or persistence.
 - [ ] Remove or bypass the obsolete production-only selection path without deleting reusable Phase 4 replacement proofs or unrelated demos.
+- [ ] Add focused integrated coverage for delayed 3 + 3 + 1 processing and all three required crash-recovery boundaries; tests must exercise real component contracts rather than bypassing persistence or ownership seams.
+- [ ] Review the implementation diff for architecture, ordering, acknowledgement, recovery, and scope correctness.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05 implementation is ready for verification, then pause for the lower-tier verification stage.
+
+#### Stage 3 — Lower-cost model, low reasoning/effort: verification and delivery
+
+- [ ] Run the focused integration/recovery suites and the complete repository test suite.
+- [ ] Run production graph validation, package generation/integrity verification, contract governance/docs, syntax checks, and `git diff --check`.
+- [ ] Launch the real source Electron application against the configured provider without simulating the microphone, model, queue, or Logged Item path; record any physical-device acceptance that remains with the user.
+- [ ] Confirm AI Provider settings still select and test LM Studio without requiring Ollama.
+- [ ] Confirm the final diff stays within this ticket's authorized files and does not rebuild the installer.
+- [ ] Update every checklist item truthfully, leaving no required item checked if its evidence is missing.
+- [ ] Commit and push the isolated branch, verify the worktree is clean and remote-aligned, send the required completion notification, and report the exact SHA, files, checks, and remaining user acceptance. Do not merge `main`.
 
 ### Exit gate
 
@@ -436,18 +462,42 @@ Prompt/schema redesign, broad UI redesign, new settings tabs, Whisper changes, A
 
 Verify the complete real Scribe path, close the implementation documentation, and leave a precise user-validation checklist. This is the only ticket authorized to mark the Scribe work breakdown complete.
 
-### Build checklist
+### Model-tiered execution checklist
 
-- [ ] Review all five merged ticket commits against this integration-wide definition of complete and report any scope or contract drift before editing.
-- [ ] Run the complete Argus test suite, contract governance, generated contract documentation check, production graph validation, package graph generation/verification, syntax checks, and diff checks once from the joined baseline.
+The three stages below are sequential and constitute the ticket's single authoritative checklist. At the end of Stages 1 and 2, send the required notification and pause. Do not continue until the user resumes the ticket after changing the model configuration.
+
+#### Stage 1 — Lower-cost model, low reasoning/effort: evidence preparation
+
+- [ ] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05 merge.
+- [ ] Review the merged Scribe ticket history against the integration-wide definition of complete, using commit summaries and directly affected files rather than rereading unrelated project history.
+- [ ] Run the complete Argus suite, contract governance, generated contract documentation check, production graph validation, package graph generation/verification, syntax checks, and diff checks once from the joined baseline.
+- [ ] Create the focused Scribe validation artifact skeleton with an explicit user action and expected result for every acceptance scenario; do not mark evidence as passed yet.
+- [ ] Report any baseline failure, contract drift, production-file ownership need, or unavailable real dependency before editing.
+- [ ] Display this complete ticket-derived checklist in chat with Stage 1 progress recorded.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-06 preparation is complete, then pause for the high-reasoning acceptance stage.
+
+#### Stage 2 — Stronger model, high reasoning/effort: real acceptance and judgment
+
 - [ ] Launch the real source Electron application with LM Studio selected; do not simulate microphone, model, queue, or Logged Item behavior.
-- [ ] Record exact user actions and expected results for three-row admission, partial idle admission, busy catch-up, zero output, multiple output, retry/failure visibility, Stop/Resume, Close, and restart recovery.
+- [ ] Evaluate three-row admission, partial idle admission, busy catch-up, zero output, multiple output, retry/failure visibility, Stop/Resume, Close, and restart recovery through the real production path.
+- [ ] Record the exact user action, expected result, and observed evidence for every scenario; distinguish automated, agent-observed, and user/physical-device evidence.
 - [ ] Confirm long-running transcription remains responsive while Scribe is delayed and that Scribe cannot block or mutate Whisper/transcript behavior.
 - [ ] Confirm background context influences interpretation without independently recreating old Logged Items and that every new item navigates to its triggering source rows.
 - [ ] Confirm secrets, transcript text, model context, and audio are absent from ordinary diagnostics beyond existing governed/redacted behavior.
-- [ ] Update `Architecture/DesignDecisions.md`, `Architecture/OperationalAgentRoles.md`, `PENDING-DECISIONS.md`, `TODO.md`, `README.md`, and a focused Scribe evidence artifact with actual implemented versions and remaining evidence only.
-- [ ] Mark `MOD-003` and `MOD-004` resolved only if their exact context and response behavior is implemented and evidenced; otherwise leave a precise unresolved trigger.
-- [ ] Do not rebuild the installer. Record installer acceptance as separate only if explicitly requested later.
+- [ ] Determine whether any failure is a product defect, environment limitation, model-quality result, or missing user acceptance; do not redefine accepted behavior to make a test pass.
+- [ ] If a production defect is confirmed, document the exact root cause and required ownership revision, send the required notification, and pause for coordinator approval before changing production code.
+- [ ] Decide from evidence whether `MOD-003` and `MOD-004` are resolved or require a precise remaining trigger.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-06 acceptance analysis is complete, then pause for the lower-tier closure stage.
+
+#### Stage 3 — Lower-cost model, low reasoning/effort: documentation and closure
+
+- [ ] Apply only the evidence-backed documentation decisions from Stage 2 to `Architecture/DesignDecisions.md`, `Architecture/OperationalAgentRoles.md`, `PENDING-DECISIONS.md`, `TODO.md`, `README.md`, and the focused Scribe validation artifact.
+- [ ] Mark `MOD-003` and `MOD-004` resolved only when Stage 2 supplied their required evidence; otherwise retain the precise unresolved trigger.
+- [ ] Rerun every automated gate affected by any approved correction or documentation update and confirm the merged production baseline remains green.
+- [ ] Verify the validation artifact contains actionable user actions and expected results and clearly identifies all pending physical-microphone, model-quality, or user acceptance.
+- [ ] Confirm the final diff contains no unrelated production changes and that the installer was not rebuilt.
+- [ ] Update every checklist item truthfully, leaving no required item checked if its evidence is missing.
+- [ ] Commit and push the isolated branch, verify the worktree is clean and remote-aligned, send the required completion notification, and report the exact SHA, files, checks, and remaining acceptance. Do not merge `main`.
 
 ### Exit gate
 
@@ -482,4 +532,4 @@ The Scribe integration is complete only when every applicable implementation, re
 
 ## Next dispatch
 
-Assign **SCRIBE-04B only** using `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md` plus the complete SCRIBE-04B ticket above. The ticket explicitly authorizes importing the four named unmerged candidate histories into its fresh branch; the normal prohibition and installer restrictions remain in force. Do not merge the candidate branches individually and do not dispatch SCRIBE-05 until the SCRIBE-04B branch has been independently reviewed, merged, and pushed to `origin/main`.
+Assign **SCRIBE-05 Stage 1 only** using `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md` plus the complete SCRIBE-05 ticket above. Start from the current `origin/main`, complete the lower-cost preparation checklist, send the required notification, and pause. Resume the same ticket and branch for Stage 2 only after the user switches to the stronger high-reasoning configuration.
