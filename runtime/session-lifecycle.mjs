@@ -4,6 +4,7 @@ export const SESSION_METADATA_VERSION = '1.0.0';
 const ACTIVE_CACHE_LIMIT = 32;
 const TRANSCRIPT_HISTORY_PAYLOAD_LIMIT_BYTES = 65536;
 const SCRIBE_RECOVERY_BACKGROUND_SEGMENTS_MAX = 48;
+const SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX = 64;
 
 export function calculateRecordingDurationMs(metadata, nowMs = Date.now()) {
   let total = 0;
@@ -305,8 +306,10 @@ export class SessionLifecycle {
     if (!policyId || !policyVersion) throw invalid('Scribe recovery requires policyId and policyVersion');
     const metadata = await this.#loadMetadata(sessionId);
     if (metadata.state === 'closed') throw conflict('SESSION_CLOSED', `Session ${sessionId} is sealed`);
-    const checkpoint = await this.storage.readScribeCheckpoint(sessionId);
+    let checkpoint = await this.storage.readScribeCheckpoint(sessionId);
+    const journal = await this.storage.readScribeBatchJournal(sessionId);
     if (!checkpoint) {
+      if (journal.length) throw conflict('SCRIBE_RECOVERY_JOURNAL_CONFLICT', `Session ${sessionId} has a Scribe journal but no checkpoint to identify its terminal outcomes`);
       return {
         session_id: sessionId, policy_id: policyId, policy_version: policyVersion, recovered_at: recoveredAt,
         checkpoint: null, pending_segments: [], in_flight_segments: [], background_transcript_segments: []
@@ -322,6 +325,7 @@ export class SessionLifecycle {
       if (byId.has(segment.segment_id)) throw integrity('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', `Active transcript repeats segment ${segment.segment_id}`);
       byId.set(segment.segment_id, segment);
     }
+    checkpoint = await this.#reconcileJournaledScribeOutcome(sessionId, checkpoint, journal, byId);
     const pendingSegments = checkpoint.pending_partial.segments.map((reference) => hydrateScribeSegment(sessionId, reference, byId, 'pending'));
     const inFlightReferences = checkpoint.in_flight_batch?.batch_identity.segments || [];
     const inFlightSegments = inFlightReferences.map((reference) => hydrateScribeSegment(sessionId, reference, byId, 'in-flight'));
@@ -342,6 +346,81 @@ export class SessionLifecycle {
       in_flight_segments: inFlightSegments,
       background_transcript_segments: backgroundTranscriptSegments
     };
+  }
+
+  async #reconcileJournaledScribeOutcome(sessionId, checkpoint, journal, activeSegmentsById) {
+    if (checkpoint.last_evaluated_batch) {
+      this.#findExactScribeJournalEntry(sessionId, journal, checkpoint.last_evaluated_batch, 'checkpoint.last_evaluated_batch');
+    } else if (!checkpoint.in_flight_batch && journal.length) {
+      throw conflict('SCRIBE_RECOVERY_JOURNAL_CONFLICT', `Session ${sessionId} has journaled Scribe outcomes without a checkpoint terminal identity`);
+    }
+
+    const inFlight = checkpoint.in_flight_batch;
+    if (!inFlight) return checkpoint;
+
+    const requestId = inFlight.batch_identity.request_id;
+    const identityFingerprint = fingerprintValue(inFlight.batch_identity);
+    const candidates = journal.filter((entry) => entry.batch.batch_identity.request_id === requestId);
+    for (const entry of candidates) {
+      if (fingerprintValue(entry.batch.batch_identity) !== identityFingerprint) {
+        throw conflict('SCRIBE_RECOVERY_BATCH_IDENTITY_CONFLICT', `Session ${sessionId} journaled request ${requestId} with a different batch identity`);
+      }
+    }
+    if (candidates.some((entry) => entry.batch.attempt > inFlight.attempt)) {
+      throw conflict('SCRIBE_RECOVERY_BATCH_ATTEMPT_CONFLICT', `Session ${sessionId} journaled a later attempt for stale in-flight request ${requestId}`);
+    }
+    const terminal = candidates.find((entry) => entry.batch.attempt === inFlight.attempt);
+    if (!terminal) return checkpoint;
+    if (fingerprintValue(terminal.batch.batch_identity) !== identityFingerprint || terminal.batch.attempt !== inFlight.attempt) {
+      throw conflict('SCRIBE_RECOVERY_BATCH_IDENTITY_CONFLICT', `Session ${sessionId} journaled request ${requestId} does not match its stale in-flight identity`);
+    }
+    if (terminal.batch.outcome === 'failed' || terminal.batch.acknowledgement.accepted !== true) {
+      throw conflict('SCRIBE_RECOVERY_TERMINAL_OUTCOME_CONFLICT', `Session ${sessionId} has a non-accepted terminal outcome for in-flight Scribe request ${requestId}; recovery will not advance it implicitly`);
+    }
+
+    const finalSegment = inFlight.batch_identity.segments.at(-1);
+    if (finalSegment.sequence <= checkpoint.admitted_through.last_sequence) {
+      throw conflict('SCRIBE_RECOVERY_CURSOR_CONFLICT', `Session ${sessionId} stale in-flight request ${requestId} is not ahead of its acknowledged cursor`);
+    }
+    if (checkpoint.pending_partial.segments.some((reference) => reference.sequence <= finalSegment.sequence)) {
+      throw conflict('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', `Session ${sessionId} pending Scribe evidence overlaps journaled request ${requestId}`);
+    }
+    if (inFlight.batch_identity.segments[0].sequence !== checkpoint.admitted_through.last_sequence + 1) {
+      throw conflict('SCRIBE_RECOVERY_CURSOR_CONFLICT', `Session ${sessionId} journaled request ${requestId} is not contiguous with its acknowledged cursor`);
+    }
+    for (const reference of inFlight.batch_identity.segments) hydrateScribeSegment(sessionId, reference, activeSegmentsById, 'journaled in-flight');
+
+    const savedAt = terminal.batch.acknowledgement.acknowledged_at || terminal.batch.evaluated_at || terminal.written_at;
+    const reconciled = {
+      schema_version: checkpoint.schema_version,
+      session_id: checkpoint.session_id,
+      saved_at: savedAt,
+      admitted_through: {
+        last_segment_id: finalSegment.segment_id,
+        last_sequence: finalSegment.sequence,
+        last_revision: finalSegment.revision
+      },
+      pending_partial: structuredClone(checkpoint.pending_partial),
+      background_context: {
+        prior_logged_items: [...checkpoint.background_context.prior_logged_items, ...terminal.batch.items]
+          .slice(-SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX)
+      },
+      policy_id: checkpoint.policy_id,
+      policy_version: checkpoint.policy_version,
+      last_evaluated_batch: structuredClone(terminal.batch)
+    };
+    assertGovernedScribeCheckpointShape(sessionId, reconciled);
+    await this.acceptScribeCheckpoint(sessionId, reconciled, { savedAt });
+    return this.storage.readScribeCheckpoint(sessionId);
+  }
+
+  #findExactScribeJournalEntry(sessionId, journal, batch, label) {
+    const key = `${batch.batch_identity.request_id}:${batch.attempt}`;
+    const matches = journal.filter((entry) => `${entry.batch.batch_identity.request_id}:${entry.batch.attempt}` === key);
+    if (matches.length !== 1 || fingerprintValue(matches[0].batch) !== fingerprintValue(batch)) {
+      throw conflict('SCRIBE_RECOVERY_JOURNAL_CONFLICT', `Session ${sessionId} ${label} does not exactly match its append-only Scribe journal entry`);
+    }
+    return matches[0];
   }
 
   async persistScribeCheckpointTransition(sessionId, payload) {

@@ -294,7 +294,10 @@ The following rules are the current implementation authority:
    `batch-admitted` checkpoint transition. A successful evaluation similarly emits
    `scribe.checkpoint-persist`; the lifecycle owner appends the evaluated-batch journal entry first,
    atomically replaces the checkpoint second, and only its exact acknowledgement lets the
-   coordinator advance its cursor and publish settlement.
+   coordinator advance its cursor and publish settlement. Recovery reconciles an exact terminal
+   journal entry against a stale in-flight checkpoint after an interrupted replacement, rebuilds
+   the cursor/checkpoint idempotently, and fails closed on identity conflicts; it never re-invokes
+   the model for an outcome already in the journal.
 10. Close preserves active and forced one/two-row remainder work. The extractor retains policy,
     request, and owner-acknowledgement state through drain, emits terminal evaluation before
     `service.drained`, and reports a deadline failure instead of clearing unfinished work. A failed

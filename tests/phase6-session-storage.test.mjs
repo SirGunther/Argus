@@ -8,6 +8,7 @@ import { createEnvelope } from '../runtime/orchestrator.mjs';
 import { SessionLifecycle, SessionLifecycleError } from '../runtime/session-lifecycle.mjs';
 import { FINALIZATION_PHASES, SessionStorage } from '../runtime/session-storage.mjs';
 import { loadContractRegistry } from '../runtime/contract-registry.mjs';
+import { createScribeCoordinator } from '../services/scribe-coordinator/coordinator.mjs';
 import { runService } from './helpers/process-harness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -848,6 +849,92 @@ test('governed Scribe evaluation persistence appends the journal before advancin
     assert.deepEqual(persisted.checkpoint, evaluation);
     assert.deepEqual((await lifecycle.getScribeBatchJournal(sessionId)).map((entry) => entry.batch), [batch]);
     assert.equal((await lifecycle.getScribeCheckpoint(sessionId)).admitted_through.last_sequence, 0);
+  });
+});
+
+test('Scribe recovery reconciles an evaluation journaled before a simulated checkpoint crash exactly once', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-interrupted-evaluation-recovery';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    await lifecycle.acceptTranscriptRevision(sessionId, segment(sessionId, 0, 'Interrupted evaluation row.'));
+
+    const identity = scribeBatchIdentity(sessionId, 'batch-interrupted-evaluation');
+    const admission = scribeCheckpoint(sessionId, {
+      saved_at: '2026-08-19T00:11:00.000Z',
+      in_flight_batch: { batch_identity: identity, attempt: 1, dispatched_at: '2026-08-19T00:11:00.000Z' }
+    });
+    await lifecycle.acceptScribeCheckpoint(sessionId, admission);
+
+    const batch = scribeBatchEvaluated(sessionId, 'batch-interrupted-evaluation', { outcome: 'empty-evaluated', evaluatedAt: '2026-08-19T00:12:00.000Z' });
+    const evaluationCheckpoint = scribeCheckpoint(sessionId, {
+      saved_at: '2026-08-19T00:12:00.000Z',
+      admitted_through: { last_segment_id: `${sessionId}-segment-0`, last_sequence: 0, last_revision: 0 },
+      last_evaluated_batch: batch
+    });
+    const writeCheckpoint = storage.writeScribeCheckpoint.bind(storage);
+    storage.writeScribeCheckpoint = async (...args) => { throw new Error('simulated crash between journal append and checkpoint replacement'); };
+    await assert.rejects(
+      () => lifecycle.persistScribeCheckpointTransition(sessionId, {
+        session_id: sessionId, transition: 'batch-evaluated', checkpoint: evaluationCheckpoint, batch
+      }),
+      /simulated crash between journal append and checkpoint replacement/
+    );
+    storage.writeScribeCheckpoint = writeCheckpoint;
+    assert.equal((await lifecycle.getScribeBatchJournal(sessionId)).length, 1);
+    assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).in_flight_batch, admission.in_flight_batch);
+
+    const restarted = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    const recovered = await restarted.getScribeRecoveryState(sessionId, {
+      policyId: 'default-scribe-policy', policyVersion: '1.0.0', recoveredAt: '2026-08-19T00:13:00.000Z'
+    });
+    assert.equal(recovered.checkpoint.admitted_through.last_sequence, 0);
+    assert.equal(recovered.checkpoint.in_flight_batch, undefined);
+    assert.deepEqual(recovered.checkpoint.last_evaluated_batch, batch);
+    assert.deepEqual(recovered.in_flight_segments, []);
+
+    const repeated = await restarted.getScribeRecoveryState(sessionId, {
+      policyId: 'default-scribe-policy', policyVersion: '1.0.0', recoveredAt: '2026-08-19T00:14:00.000Z'
+    });
+    assert.deepEqual(repeated.checkpoint, recovered.checkpoint);
+    assert.equal((await restarted.getScribeBatchJournal(sessionId)).length, 1, 'recovery must not append or replay the completed outcome');
+
+    const coordinator = createScribeCoordinator({ requireRecovery: true, requirePersistence: true });
+    assert.deepEqual(coordinator.configurePolicy({
+      policy_id: 'default-scribe-policy', policy_version: '1.0.0', session_id: sessionId,
+      admission: { rows_per_batch: 3, idle_timeout_ms: 15000 },
+      context: { max_total_context_tokens: 8000 },
+      generation: { policy_profile: 'scribe-default', instruction_version: '1.0.0' }
+    }).map((output) => output.type), ['recovery-request']);
+    const restoreOutputs = coordinator.acceptRecoveryRestored({
+      session_id: sessionId, policy_id: 'default-scribe-policy', policy_version: '1.0.0',
+      checkpoint: recovered.checkpoint,
+      pending_segments: recovered.pending_segments,
+      in_flight_segments: recovered.in_flight_segments,
+      background_transcript_segments: recovered.background_transcript_segments
+    });
+    assert.equal(restoreOutputs.some((output) => output.type === 'batch-admitted'), false, 'a journal-reconciled terminal batch must not be dispatched to the model again');
+  });
+});
+
+test('Scribe recovery fails closed on a journaled terminal identity conflict', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-recovery-journal-conflict';
+    const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    await lifecycle.record(command('record-1', sessionId));
+    const identity = scribeBatchIdentity(sessionId, 'batch-journal-conflict');
+    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, {
+      in_flight_batch: { batch_identity: identity, attempt: 1, dispatched_at: '2026-08-19T00:15:00.000Z' }
+    }));
+    const conflicting = scribeBatchEvaluated(sessionId, 'batch-journal-conflict', { outcome: 'empty-evaluated' });
+    conflicting.batch_identity.instruction_version = 'conflicting-instruction';
+    await lifecycle.recordScribeBatchOutcome(sessionId, conflicting);
+
+    await assert.rejects(
+      () => lifecycle.getScribeRecoveryState(sessionId, { policyId: 'default-scribe-policy', policyVersion: '1.0.0' }),
+      (error) => error.code === 'SCRIBE_RECOVERY_BATCH_IDENTITY_CONFLICT'
+    );
   });
 });
 
