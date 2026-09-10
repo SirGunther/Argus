@@ -102,6 +102,22 @@ For every ticket:
 
 If a ticket discovers that another ticket must own a file, it must stop and report the collision. It must not broaden its scope or edit the shared file preemptively.
 
+## Model-tiered ticket orchestration rule
+
+When writing or executing a ticket, partition the workflow by reasoning requirement rather than assigning one model tier to the entire ticket.
+
+Use lower-cost models for bounded, procedural, and validation-oriented work. Use stronger models for complex implementation, ambiguity, architectural judgment, difficult debugging, and other reasoning-intensive work.
+
+At each model boundary:
+
+1. Send the configured push notification.
+2. Pause.
+3. Resume from this ticket when the user continues the session after changing models.
+
+This ticket is the source of truth. No separate handoff artifact or agent-to-agent communication is required.
+
+**Pattern:** lower-tier work -> pause -> high-reasoning work -> pause -> lower-tier work.
+
 ---
 
 ## SCRIBE-01 — Governed contract and policy foundation
@@ -119,24 +135,24 @@ Establish the versioned public boundary that SCRIBE-02 through SCRIBE-05 will im
 
 ### Build checklist
 
-- [ ] Define one governed Scribe policy shape with defaults of three rows, 15,000 ms idle, and an approximately 8,000-token total context budget, while keeping architectural invariants outside user-adjustable configuration.
-- [ ] Represent a stable Scribe batch identity with session ID, ordered finalized segment IDs/revisions, first/last sequence, admission reason, policy/instruction version, and immutable request identity.
-- [ ] Separate new authoritative evidence from bounded background Scribe context in the model-request contract.
-- [ ] Define a logged-item extraction response containing an `items` array that validly represents zero, one, or multiple bounded items.
-- [ ] Give each proposed item bounded text, optional non-authoritative kind metadata, and exact new-evidence source identifiers; reject provider-forged authoritative item IDs or revisions.
-- [ ] Define one explicit evaluated-batch outcome capable of representing zero items, the complete expected item set, failure/retry metadata, and final acknowledgement.
-- [ ] Define the versioned Scribe checkpoint and append-only batch-journal artifact shapes required by SCRIBE-03.
-- [ ] Preserve compatibility where semantics remain compatible; perform explicit version changes where the old single-text response cannot safely represent the new shape.
-- [ ] Update contract catalog versions, payload ceilings, changelogs, fixtures, invariant validation, and generated documentation.
-- [ ] Record prompt/instruction profile identity without embedding provider-specific LM Studio behavior in a domain contract.
+- [x] Define one governed Scribe policy shape with defaults of three rows, 15,000 ms idle, and an approximately 8,000-token total context budget, while keeping architectural invariants outside user-adjustable configuration.
+- [x] Represent a stable Scribe batch identity with session ID, ordered finalized segment IDs/revisions, first/last sequence, admission reason, policy/instruction version, and immutable request identity.
+- [x] Separate new authoritative evidence from bounded background Scribe context in the model-request contract.
+- [x] Define a logged-item extraction response containing an `items` array that validly represents zero, one, or multiple bounded items.
+- [x] Give each proposed item bounded text, optional non-authoritative kind metadata, and exact new-evidence source identifiers; reject provider-forged authoritative item IDs or revisions.
+- [x] Define one explicit evaluated-batch outcome capable of representing zero items, the complete expected item set, failure/retry metadata, and final acknowledgement.
+- [x] Define the versioned Scribe checkpoint and append-only batch-journal artifact shapes required by SCRIBE-03.
+- [x] Preserve compatibility where semantics remain compatible; perform explicit version changes where the old single-text response cannot safely represent the new shape.
+- [x] Update contract catalog versions, payload ceilings, changelogs, fixtures, invariant validation, and generated documentation.
+- [x] Record prompt/instruction profile identity without embedding provider-specific LM Studio behavior in a domain contract.
 
 ### Exit gate
 
-- [ ] Valid fixtures cover three-row and partial batches, zero/one/multiple items, background-versus-source separation, checkpoint state, and evaluated outcomes.
-- [ ] Invalid fixtures cover oversized/unbounded output, duplicate segment IDs, reordered/gapped evidence, forged item authority, background represented as source, and malformed acknowledgement sets.
-- [ ] Compatibility replay, contract governance, generated documentation, syntax, and diff checks pass.
-- [ ] A concise contract handoff lists the exact message/artifact versions Wave 2 must consume.
-- [ ] No runtime, service, graph, UI, or storage implementation changed.
+- [x] Valid fixtures cover three-row and partial batches, zero/one/multiple items, background-versus-source separation, checkpoint state, and evaluated outcomes.
+- [x] Invalid fixtures cover oversized/unbounded output, duplicate segment IDs, reordered/gapped evidence, forged item authority, background represented as source, and malformed acknowledgement sets.
+- [x] Compatibility replay, contract governance, generated documentation, syntax, and diff checks pass.
+- [x] A concise contract handoff lists the exact message/artifact versions Wave 2 must consume.
+- [x] No runtime, service, graph, UI, or storage implementation changed.
 
 ### Out of scope
 
@@ -159,25 +175,25 @@ Create the independently runnable Scribe coordinator that owns the cursor-driven
 
 ### Build checklist
 
-- [ ] Add a service manifest with only the accepted/emitted domain and control contracts from SCRIBE-01, lifecycle ports, explicit state, no undeclared permissions, and no provider knowledge.
-- [ ] Put the pure eligibility decision in its own module inside the service boundary rather than in the desktop host or graph runtime.
-- [ ] Implement one event-driven pump woken by finalized evidence, the single idle deadline, final `scribe.batch-evaluated`, recovery state, and Close.
-- [ ] Make the eligibility rule return no work while a batch is active; select three rows immediately; select one or two only after 15,000 ms idle or Close.
-- [ ] Cancel/reset the one idle timer when a third row arrives and avoid polling loops, repeated scans, or multiple concurrent timers.
-- [ ] Preserve ordered, duplicate-safe finalized segment admission and stable batch identity.
-- [ ] Correlate every final evaluation against the exact in-flight complete batch identity and coordinator `batch_attempt`; the coordinator owns no model work ID or request fingerprint.
-- [ ] Keep the cursor unchanged until the complete governed acknowledgement arrives, including a valid zero-item acknowledgement.
-- [ ] Accept an `items-recorded` acknowledgement only when its unique, ordered `logged_item_ids` correspond one-for-one with the complete evaluated `items[]`; require an empty ID list for zero-item, failed, or rejected outcomes.
-- [ ] Retain the exact active batch in a visible stalled state after terminal failure, with no automatic outer retry, and reject conflicting recovery or acknowledgement content.
-- [ ] Immediately pump again after acknowledgement so accumulated three-row groups do not wait for the partial-batch threshold.
-- [ ] Drain deterministically: Stop preserves pending state; Close releases one final remainder and waits for its governed terminal outcome.
+- [x] Add a service manifest with only the accepted/emitted domain and control contracts from SCRIBE-01, lifecycle ports, explicit state, no undeclared permissions, and no provider knowledge.
+- [x] Put the pure eligibility decision in its own module inside the service boundary rather than in the desktop host or graph runtime.
+- [x] Implement one event-driven pump woken by finalized evidence, the single idle deadline, final `scribe.batch-evaluated`, recovery state, and Close.
+- [x] Make the eligibility rule return no work while a batch is active; select three rows immediately; select one or two only after 15,000 ms idle or Close.
+- [x] Cancel/reset the one idle timer when a third row arrives and avoid polling loops, repeated scans, or multiple concurrent timers.
+- [x] Preserve ordered, duplicate-safe finalized segment admission and stable batch identity.
+- [x] Correlate every final evaluation against the exact in-flight complete batch identity and coordinator `batch_attempt`; the coordinator owns no model work ID or request fingerprint.
+- [x] Keep the cursor unchanged until the complete governed acknowledgement arrives, including a valid zero-item acknowledgement.
+- [x] Accept an `items-recorded` acknowledgement only when its unique, ordered `logged_item_ids` correspond one-for-one with the complete evaluated `items[]`; require an empty ID list for zero-item, failed, or rejected outcomes.
+- [x] Retain the exact active batch in a visible stalled state after terminal failure, with no automatic outer retry, and reject conflicting recovery or acknowledgement content.
+- [x] Immediately pump again after acknowledgement so accumulated three-row groups do not wait for the partial-batch threshold.
+- [x] Drain deterministically: Stop preserves pending state; Close releases one final remainder and waits for its governed terminal outcome.
 
 ### Exit gate
 
-- [ ] Focused tests cover zero rows, one/two rows before and after idle, exactly three, six-plus accumulating while busy, timer reset, busy completion, zero/multiple acknowledgement, terminal failure/stall without outer retry, duplicate delivery, restart state, Stop, Close, and drain.
-- [ ] Tests use an injected/fake clock only inside the test boundary; production behavior remains real and event driven.
-- [ ] Service contract, health, operation completion/rejection, syntax, and diff checks pass.
-- [ ] No existing production service or graph has been modified.
+- [x] Focused tests cover zero rows, one/two rows before and after idle, exactly three, six-plus accumulating while busy, timer reset, busy completion, zero/multiple acknowledgement, terminal failure/stall without outer retry, duplicate delivery, restart state, Stop, Close, and drain.
+- [x] Tests use an injected/fake clock only inside the test boundary; production behavior remains real and event driven.
+- [x] Service contract, health, operation completion/rejection, syntax, and diff checks pass.
+- [x] No existing production service or graph has been modified.
 
 ### Out of scope
 
@@ -200,23 +216,23 @@ Extend the existing session-storage authority with a compact active Scribe check
 
 ### Build checklist
 
-- [ ] Add root-contained session paths for an atomic active Scribe checkpoint and append-only permanent Scribe batch journal.
-- [ ] Persist only governed Scribe state: acknowledged cursor, exact pending/in-flight batch references, idle/retry metadata, policy/instruction identity, outcome, and resulting Logged Item IDs.
-- [ ] Preserve the evaluated-item-to-`logged_item_ids` positional mapping exactly and reject count, order, identity, fingerprint, or replay conflicts rather than repairing them implicitly.
-- [ ] Keep transcript text in authoritative transcript storage; do not duplicate an unbounded transcript or model conversation in the journal.
-- [ ] Make checkpoint writes atomic and journal appends idempotent by stable batch/outcome identity.
-- [ ] Detect conflicting fingerprints, malformed state, another session's data, path escape, symlink substitution, partial writes, and invalid acknowledgement/cursor advancement.
-- [ ] Include Scribe state in session creation, recovery backups, close integrity checks, and deterministic startup recovery.
-- [ ] Preserve a valid pending batch across crash/restart and make completed batches replay-safe without duplicating Logged Item history.
-- [ ] Keep Stop resumable and make Close refuse to seal an unacknowledged Scribe gap rather than silently skipping it.
-- [ ] Bound active state and journal records; do not persist credentials, audio, unrestricted transcript text, or provider diagnostics.
+- [x] Add root-contained session paths for an atomic active Scribe checkpoint and append-only permanent Scribe batch journal.
+- [x] Persist only governed Scribe state: acknowledged cursor, exact pending/in-flight batch references, idle/retry metadata, policy/instruction identity, outcome, and resulting Logged Item IDs.
+- [x] Preserve the evaluated-item-to-`logged_item_ids` positional mapping exactly and reject count, order, identity, fingerprint, or replay conflicts rather than repairing them implicitly.
+- [x] Keep transcript text in authoritative transcript storage; do not duplicate an unbounded transcript or model conversation in the journal.
+- [x] Make checkpoint writes atomic and journal appends idempotent by stable batch/outcome identity.
+- [x] Detect conflicting fingerprints, malformed state, another session's data, path escape, symlink substitution, partial writes, and invalid acknowledgement/cursor advancement.
+- [x] Include Scribe state in session creation, recovery backups, close integrity checks, and deterministic startup recovery.
+- [x] Preserve a valid pending batch across crash/restart and make completed batches replay-safe without duplicating Logged Item history.
+- [x] Keep Stop resumable and make Close refuse to seal an unacknowledged Scribe gap rather than silently skipping it.
+- [x] Bound active state and journal records; do not persist credentials, audio, unrestricted transcript text, or provider diagnostics.
 
 ### Exit gate
 
-- [ ] Focused tests cover initial state, atomic replacement, append/idempotent replay, conflict, corrupt files, path containment, pending recovery, zero-item outcome, multiple-item acknowledgement, Stop/Resume, Close gap refusal, backup, and repeated recovery.
-- [ ] Existing transcript and Logged Item storage/recovery tests remain green.
-- [ ] Syntax, storage schema validation, diff, and directly relevant contract checks pass.
-- [ ] No coordinator, model, graph, or UI file has changed.
+- [x] Focused tests cover initial state, atomic replacement, append/idempotent replay, conflict, corrupt files, path containment, pending recovery, zero-item outcome, multiple-item acknowledgement, Stop/Resume, Close gap refusal, backup, and repeated recovery.
+- [x] Existing transcript and Logged Item storage/recovery tests remain green.
+- [x] Syntax, storage schema validation, diff, and directly relevant contract checks pass.
+- [x] No coordinator, model, graph, or UI file has changed.
 
 ### Out of scope
 
@@ -239,25 +255,25 @@ Implement the provider-neutral Scribe request and response behavior against LM S
 
 ### Build checklist
 
-- [ ] Replace the generic single-text extraction instruction with a versioned Scribe instruction derived from `Architecture/OperationalAgentRoles.md`.
-- [ ] Construct every call statelessly from new evidence plus bounded prior Scribe context; do not assume LM Studio retains earlier requests.
-- [ ] Mark background and new evidence distinctly and explicitly instruct the model that only new evidence may create Logged Items.
-- [ ] Instruct the model to suppress already-recorded information, allow a valid empty array, allow multiple discrete items, and avoid routine per-batch summaries.
-- [ ] Enforce the approximately 8,000-token total budget by counting/reserving instruction, schema, new evidence, background context, and bounded output; never truncate new evidence silently.
-- [ ] Remove oldest complete background turns/items first when bounded context must roll; fail explicitly if required instruction, schema, new evidence, and output reserve cannot fit.
-- [ ] Validate strict JSON-only zero-to-many output and reject commentary, malformed JSON, excessive items/text, forged identity/provenance, and unsupported kind metadata.
-- [ ] Require the response's complete batch identity to match the exact request before producing any draft; reject stale or provider-altered batch identity and provenance.
-- [ ] Derive stable Argus-owned draft item IDs deterministically from the validated batch and item position/content; the model never supplies authority fields, and the active owner remains responsible for accepting or rejecting each draft.
-- [ ] Emit one governed draft per validated item, wait for exact authoritative stored confirmations, then emit one final evaluated-batch outcome; emit a valid zero-item outcome immediately.
-- [ ] Retain exact request fingerprints and context across retry and preserve the existing provider configuration, credential redaction, timeout, and explicit failure behavior.
-- [ ] Keep model work FIFO/concurrency-one through the existing scheduler and make no Ollama installation or launch a prerequisite.
+- [x] Replace the generic single-text extraction instruction with a versioned Scribe instruction derived from `Architecture/OperationalAgentRoles.md`.
+- [x] Construct every call statelessly from new evidence plus bounded prior Scribe context; do not assume LM Studio retains earlier requests.
+- [x] Mark background and new evidence distinctly and explicitly instruct the model that only new evidence may create Logged Items.
+- [x] Instruct the model to suppress already-recorded information, allow a valid empty array, allow multiple discrete items, and avoid routine per-batch summaries.
+- [x] Enforce the approximately 8,000-token total budget by counting/reserving instruction, schema, new evidence, background context, and bounded output; never truncate new evidence silently.
+- [x] Remove oldest complete background turns/items first when bounded context must roll; fail explicitly if required instruction, schema, new evidence, and output reserve cannot fit.
+- [x] Validate strict JSON-only zero-to-many output and reject commentary, malformed JSON, excessive items/text, forged identity/provenance, and unsupported kind metadata.
+- [x] Require the response's complete batch identity to match the exact request before producing any draft; reject stale or provider-altered batch identity and provenance.
+- [x] Derive stable Argus-owned draft item IDs deterministically from the validated batch and item position/content; the model never supplies authority fields, and the active owner remains responsible for accepting or rejecting each draft.
+- [x] Emit one governed draft per validated item, wait for exact authoritative stored confirmations, then emit one final evaluated-batch outcome; emit a valid zero-item outcome immediately.
+- [x] Retain exact request fingerprints and context across retry and preserve the existing provider configuration, credential redaction, timeout, and explicit failure behavior.
+- [x] Keep model work FIFO/concurrency-one through the existing scheduler and make no Ollama installation or launch a prerequisite.
 
 ### Exit gate
 
-- [ ] Focused tests cover LM Studio/OpenAI-compatible zero, one, and multiple outputs; duplicate suppression context; background/new-evidence separation; token rollover; oversized mandatory input; malformed output; timeout; retry fingerprint; stable IDs; and no routine summary.
-- [ ] Existing provider save/test behavior, external credential redaction, classification isolation, and scheduler ordering remain green.
-- [ ] Syntax, focused contracts, and diff checks pass.
-- [ ] No coordinator, storage, wiring, provider UI, or Whisper file has changed.
+- [x] Focused tests cover LM Studio/OpenAI-compatible zero, one, and multiple outputs; duplicate suppression context; background/new-evidence separation; token rollover; oversized mandatory input; malformed output; timeout; retry fingerprint; stable IDs; and no routine summary.
+- [x] Existing provider save/test behavior, external credential redaction, classification isolation, and scheduler ordering remain green.
+- [x] Syntax, focused contracts, and diff checks pass.
+- [x] No coordinator, storage, wiring, provider UI, or Whisper file has changed.
 
 ### Out of scope
 
