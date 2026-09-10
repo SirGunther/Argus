@@ -18,10 +18,14 @@ const FAILURE_CATEGORIES = new Set(['validation', 'conflict', 'dependency', 'tim
 const pending = new Map();
 const scribeBatches = createScribeBatchRetention({ capacity: MAX_PENDING_REQUESTS, instance });
 const scribePolicies = new Map();
+const drainingSessions = new Set();
+let draining = false;
+let drainWaiter;
 
 runLineService({ service: SERVICE, operations: {
   'transcript.context-window': { name: 'schedule-local-http-extraction', handle(message) {
     try {
+      rejectNewWorkWhileDraining('transcript.context-window', message.payload?.session_id);
       const window = structuredClone(message.payload);
       const modelName = readModelName();
       const workId = `logged-item-extraction:${window.session_id}:${window.window_id}`;
@@ -42,6 +46,7 @@ runLineService({ service: SERVICE, operations: {
       if (fingerprintValue(retained) === fingerprintValue(policy)) return [];
       throw new ServiceOperationError(`conflicting Scribe policy is already retained for session ${policy.session_id}`, { code: 'SCRIBE_BATCH_POLICY_CONFLICT', category: 'conflict', details: { session_id: policy.session_id, policy_id: retained.policy_id } });
     }
+    rejectNewWorkWhileDraining('scribe.batch-policy', policy.session_id);
     if (scribePolicies.size >= MAX_RETAINED_POLICIES) throw new ServiceOperationError(`retained scribe policy capacity reached: ${MAX_RETAINED_POLICIES}`, { code: 'SCRIBE_POLICY_CAPACITY_FULL', category: 'unavailable', retryable: true, details: { capacity: MAX_RETAINED_POLICIES } });
     scribePolicies.set(policy.session_id, policy);
     return [];
@@ -49,6 +54,7 @@ runLineService({ service: SERVICE, operations: {
   'scribe.batch-admitted': { name: 'dispatch-scribe-batch', handle(message) {
     const admission = structuredClone(message.payload);
     const sessionId = admission?.batch_identity?.session_id;
+    if (draining && !drainingSessions.has(sessionId) && !scribeBatches.hasActiveSession(sessionId)) rejectNewWorkWhileDraining('scribe.batch-admitted', sessionId);
     const policy = scribePolicies.get(sessionId);
     if (!policy) throw new ServiceOperationError(`no governed scribe batch policy is active for session ${sessionId}`, { code: 'SCRIBE_BATCH_POLICY_MISSING', category: 'unavailable', retryable: true, details: { session_id: sessionId } });
     try {
@@ -73,7 +79,7 @@ runLineService({ service: SERVICE, operations: {
       assertScribeCompletionCorrelation(completion, activeScribeBatch || settledScribeBatch);
       return settledScribeBatch
         ? [scribeEvaluatedOutput(settledScribeBatch.terminalEvaluation)]
-        : acceptScribeBatchCompletion(completion);
+        : settleAware(() => acceptScribeBatchCompletion(completion));
     }
     const state = pending.get(completion.work_id);
     if (!state) {
@@ -87,6 +93,7 @@ runLineService({ service: SERVICE, operations: {
     try {
       if (completion.result.status === 'failed') {
         pending.delete(completion.work_id);
+        maybeFinishDrain();
         return [failureOutput(completion, state, completion.result.error)];
       }
       const response = validateModelResponse(completion.result.response, 'logged-item-extraction', EXTRACTION_OUTPUT_LIMITS);
@@ -97,15 +104,18 @@ runLineService({ service: SERVICE, operations: {
         revision: 0, revision_id: `${itemId}:r0`, source, generator: { implementation: SERVICE, input_window_id: state.window.window_id }
       } };
       pending.delete(completion.work_id);
+      maybeFinishDrain();
       return [output];
     } catch (error) {
       pending.delete(completion.work_id);
+      maybeFinishDrain();
       throw boundaryError(error, { work_id: completion.work_id, context_window_id: state.window.window_id, request_fingerprint: state.requestFingerprint, retained_exact_context: true });
     }
   } },
   'logged-item.stored': { name: 'confirm-scribe-draft-storage', handle(message) {
     try {
       const result = scribeBatches.confirmStoredItem(message.payload, { acknowledgedAt: message.timestamp });
+      maybeFinishDrain();
       if (!result.matched || !result.settled) return [];
       return [scribeEvaluatedOutput(result.evaluated)];
     } catch (error) { throw boundaryError(error, { item_id: message.payload?.item_id, batch_request_id: message.payload?.generator?.input_window_id }); }
@@ -116,6 +126,7 @@ runLineService({ service: SERVICE, operations: {
     const result = scribeBatches.failOwnerMessage(message.payload.input_message_id, {
       code: reason.code || 'LOGGED_ITEM_OWNER_REJECTED', category: 'conflict', message: reason.message || 'Logged Item owner rejected the Scribe draft', retryable: false
     }, { evaluatedAt: message.timestamp });
+    maybeFinishDrain();
     if (!result.matched) throw new ServiceOperationError('Logged Item owner rejection did not match a retained Scribe draft', { code: 'SCRIBE_OWNER_CONFIRMATION_UNKNOWN', category: 'conflict', details: { input_message_id: message.payload.input_message_id } });
     return [scribeEvaluatedOutput(result.evaluated)];
   } },
@@ -125,10 +136,69 @@ runLineService({ service: SERVICE, operations: {
     const result = scribeBatches.failOwnerMessage(message.payload.input_message_id, {
       code: error.code || 'LOGGED_ITEM_STORAGE_FAILED', category: FAILURE_CATEGORIES.has(error.category) ? error.category : 'dependency', message: error.message || 'Logged Item storage failed', retryable: Boolean(error.retryable)
     }, { evaluatedAt: message.timestamp });
+    maybeFinishDrain();
     if (!result.matched) throw new ServiceOperationError('Logged Item storage failure did not match a retained Scribe draft', { code: 'SCRIBE_OWNER_CONFIRMATION_UNKNOWN', category: 'conflict', details: { input_message_id: message.payload.input_message_id } });
     return [scribeEvaluatedOutput(result.evaluated)];
   } }
-}, onDrain() { pending.clear(); scribeBatches.clear(); scribePolicies.clear(); return []; } });
+}, onDrain(message) {
+  draining = true;
+  if (message?.correlation_id) drainingSessions.add(message.correlation_id);
+  if (pending.size === 0 && scribeBatches.size === 0) {
+    releaseDrainedState();
+    return [];
+  }
+  if (!drainWaiter) drainWaiter = createDrainWaiter(message?.payload?.deadline_ms);
+  return { outputs: [], whenDrained: drainWaiter.promise };
+} });
+
+function rejectNewWorkWhileDraining(messageType, sessionId) {
+  if (!draining) return;
+  throw new ServiceOperationError(`Cannot accept new ${messageType} work while the extractor is draining`, {
+    code: 'SCRIBE_EXTRACTOR_DRAINING', category: 'conflict', retryable: true, details: { message_type: messageType, session_id: sessionId }
+  });
+}
+
+function settleAware(action) {
+  const outputs = action();
+  maybeFinishDrain();
+  return outputs;
+}
+
+function createDrainWaiter(deadlineMs) {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+  const timeoutMs = Number.isInteger(deadlineMs) && deadlineMs > 0 ? deadlineMs : 120000;
+  const timer = setTimeout(() => {
+    const current = drainWaiter;
+    if (!current || current.promise !== promise) return;
+    drainWaiter = undefined;
+    reject(new ServiceOperationError('Scribe extractor drain deadline elapsed before active work reached a terminal evaluation', {
+      code: 'SCRIBE_EXTRACTOR_DRAIN_INCOMPLETE', category: 'timeout', retryable: true,
+      details: { pending_extractions: pending.size, pending_scribe_batches: scribeBatches.size }
+    }));
+  }, timeoutMs);
+  timer.unref?.();
+  return { promise, resolve, reject, timer };
+}
+
+function maybeFinishDrain() {
+  if (!draining || pending.size || scribeBatches.size) return;
+  const waiter = drainWaiter;
+  drainWaiter = undefined;
+  releaseDrainedState();
+  if (waiter) {
+    clearTimeout(waiter.timer);
+    setImmediate(() => waiter.resolve());
+  }
+}
+
+function releaseDrainedState() {
+  pending.clear();
+  scribeBatches.clear();
+  scribePolicies.clear();
+  drainingSessions.clear();
+}
 
 function acceptScribeBatchCompletion(completion) {
   const state = scribeBatches.get(completion.work_id);

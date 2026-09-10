@@ -304,36 +304,42 @@ The following division of responsibility resolves the conflicting interpretation
 7. For a successful non-empty model result, the extractor derives deterministic Argus-owned draft IDs in model item order, emits one `logged-item.draft` per item, and waits for the authoritative owner's matching `logged-item.stored` confirmations. Match confirmations by the exact expected deterministic item ID, not by count, source range, text, or arrival order.
 8. The extractor emits the final accepted `scribe.batch-evaluated` only after all expected items are stored, placing `logged_item_ids` in evaluated-item order. A valid zero-item evaluation may be emitted immediately as accepted. A model, validation, owner-rejection, timeout, or terminal storage failure emits a governed failed evaluation and never advances the cursor.
 9. The coordinator accepts only a `scribe.batch-evaluated` whose complete batch identity and `batch_attempt` match its exact in-flight state. The final message—not individual `logged-item.stored` traffic—is its acknowledgement boundary.
-10. SCRIBE-05 will later wire durable journal/checkpoint sequencing before cursor advancement. SCRIBE-04B must expose and test the required component behavior without adding production graph or desktop-host callbacks.
+10. `scribe.recovery-request`/`scribe.recovery-restored` provide the explicit recovery handshake. New evidence is
+    rejected until authoritative checkpoint references are hydrated; a recovered in-flight batch is replayed with the
+    exact identity and coordinator attempt.
+11. `scribe.checkpoint-persist`/`scribe.checkpoint-persisted` provide the explicit durability handshake. Admission is
+    not published until its checkpoint is acknowledged; an evaluated batch is journaled before checkpoint replacement,
+    and the coordinator cursor advances only after the exact persisted acknowledgement. SCRIBE-05 will wire these
+    ports into the production graph without adding production graph or desktop-host callbacks here.
 
 ### Build and correction checklist
 
-- [ ] Import all four candidate histories into the fresh reconciliation branch and record any resolved conflicts without silently dropping tests or behavior.
-- [ ] Update `scribe.batch-admitted` and `scribe.batch-evaluated` contracts, fixtures, catalog history, generated reference, and `contracts/scribe-contract-handoff.md` so `batch_attempt` has the single meaning defined above and no provider/model field crosses the coordinator boundary.
-- [ ] Update this work breakdown where older SCRIBE-02 retry/fingerprint wording conflicts with the reconciled exchange; do not leave two authoritative interpretations in canonical documentation.
-- [ ] Make the coordinator emit/accept only the provider-neutral Scribe messages, remove coordinator-side model-request construction and individual stored-item guesswork, and correlate final evaluations by complete batch identity plus `batch_attempt`.
-- [ ] Preserve the coordinator's verified three-row admission, 15-second one/two-row idle admission, single timer, busy accumulation, immediate post-settlement pump, ordered recovery, Stop behavior, and deterministic Close behavior.
-- [ ] Remove the coordinator's second automatic outer retry loop. A terminal evaluated failure must retain the cursor/batch and reject Close settlement visibly rather than report a successful drain.
-- [ ] Retain the additive monotonic `OrderedStreamGuard.seed()` and asynchronous drain-settlement behavior only if still required; explicitly document these shared-runtime changes as authorized SCRIBE-04B exceptions and keep focused regression coverage.
-- [ ] Preserve every verified SCRIBE-03 fail-closed invariant: ordered/contiguous batch identity, cursor-relative pending evidence, bounded background state, journal-before-checkpoint settlement, idempotent append, conflicting replay rejection, and Stop/Close recovery behavior.
-- [ ] Clean `SessionStorage.#scribeJournalChains` after the latest per-session append settles so the serialization map cannot grow permanently with completed sessions. Preserve same-instance per-session serialization and document the single storage-owner assumption.
-- [ ] Make the extractor accept `scribe.batch-admitted`, construct the local provider request itself, and emit `scribe.batch-evaluated` for accepted zero-item, accepted one/multiple-item, and failed outcomes.
-- [ ] Fix the known SCRIBE-04 defects: stable `queued_at` and work identity for idempotent redispatch; nested completion `work_id` validation; non-destructive retention on forged/mismatched completions; conflicting retained-policy rejection; explicit provider `max_tokens`; and no self-routing reuse of `ai.work-request` as an inbound Scribe batch carrier.
-- [ ] Preserve stateless prompting, actual serialized-request token accounting, oldest-background-first rollover, mandatory-evidence refusal, strict zero-to-many JSON validation, provenance checks, deterministic draft identity, credential redaction, timeout behavior, and serial concurrency one.
-- [ ] Aggregate owner confirmations by exact deterministic draft ID, tolerate confirmations arriving out of order, reject unknown/duplicate/conflicting confirmations, and emit final ordered `logged_item_ids` exactly once.
-- [ ] Remove obsolete tests that assert attempt-specific request fingerprints or best-effort source/text acknowledgement matching. Replace them with tests of the authoritative exchange above.
-- [ ] Keep every modified queue, map, retained request, policy collection, and per-session synchronization structure explicitly bounded or released after settlement.
-- [ ] Review the combined diff for unrelated changes and confirm no production wiring, desktop host, UI, audio/Whisper, provider settings, or installer file changed.
+- [x] Import all four candidate histories into the fresh reconciliation branch and record any resolved conflicts without silently dropping tests or behavior.
+- [x] Update `scribe.batch-admitted` and `scribe.batch-evaluated` contracts, fixtures, catalog history, generated reference, and `contracts/scribe-contract-handoff.md` so `batch_attempt` has the single meaning defined above and no provider/model field crosses the coordinator boundary.
+- [x] Update this work breakdown where older SCRIBE-02 retry/fingerprint wording conflicts with the reconciled exchange; do not leave two authoritative interpretations in canonical documentation.
+- [x] Make the coordinator emit/accept only the provider-neutral Scribe messages, remove coordinator-side model-request construction and individual stored-item guesswork, and correlate final evaluations by complete batch identity plus `batch_attempt`.
+- [x] Preserve the coordinator's verified three-row admission, 15-second one/two-row idle admission, single timer, busy accumulation, immediate post-settlement pump, ordered recovery, Stop behavior, and deterministic Close behavior.
+- [x] Remove the coordinator's second automatic outer retry loop. A terminal evaluated failure must retain the cursor/batch and reject Close settlement visibly rather than report a successful drain.
+- [x] Retain the additive monotonic `OrderedStreamGuard.seed()` and asynchronous drain-settlement behavior only if still required; explicitly document these shared-runtime changes as authorized SCRIBE-04B exceptions and keep focused regression coverage.
+- [x] Preserve every verified SCRIBE-03 fail-closed invariant: ordered/contiguous batch identity, cursor-relative pending evidence, bounded background state, journal-before-checkpoint settlement, idempotent append, conflicting replay rejection, and Stop/Close recovery behavior.
+- [x] Clean `SessionStorage.#scribeJournalChains` after the latest per-session append settles so the serialization map cannot grow permanently with completed sessions. Preserve same-instance per-session serialization and document the single storage-owner assumption.
+- [x] Make the extractor accept `scribe.batch-admitted`, construct the local provider request itself, and emit `scribe.batch-evaluated` for accepted zero-item, accepted one/multiple-item, and failed outcomes.
+- [x] Fix the known SCRIBE-04 defects: stable `queued_at` and work identity for idempotent redispatch; nested completion `work_id` validation; non-destructive retention on forged/mismatched completions; conflicting retained-policy rejection; explicit provider `max_tokens`; and no self-routing reuse of `ai.work-request` as an inbound Scribe batch carrier.
+- [x] Preserve stateless prompting, actual serialized-request token accounting, oldest-background-first rollover, mandatory-evidence refusal, strict zero-to-many JSON validation, provenance checks, deterministic draft identity, credential redaction, timeout behavior, and serial concurrency one.
+- [x] Aggregate owner confirmations by exact deterministic draft ID, tolerate confirmations arriving out of order, reject unknown/duplicate/conflicting confirmations, and emit final ordered `logged_item_ids` exactly once.
+- [x] Remove obsolete tests that assert attempt-specific request fingerprints or best-effort source/text acknowledgement matching. Replace them with tests of the authoritative exchange above.
+- [x] Keep every modified queue, map, retained request, policy collection, and per-session synchronization structure explicitly bounded or released after settlement.
+- [x] Review the combined diff for unrelated changes and confirm no production wiring, desktop host, UI, audio/Whisper, provider settings, or installer file changed.
 
 ### Required validation
 
-- [ ] Focused contract tests prove provider-neutral admission, `batch_attempt` semantics, exact evidence order/revision correlation, zero/one/multiple/failed evaluated messages, and invalid forged/mismatched identities.
-- [ ] Focused coordinator tests prove three-row and idle admission, concurrency one, duplicate/restart replay, no automatic outer retry, terminal stall, zero/multiple acknowledgement, post-ack pump, Stop, Close, and failed drain visibility.
-- [ ] Focused extraction tests prove one exact model request across provider retries, stable raw request fingerprint, local provider configuration, bounded serialized payload, `max_tokens`, strict response validation, deterministic draft IDs, owner-confirmation aggregation, and zero/failure completion.
-- [ ] Focused persistence tests prove the corrected identity/checkpoint/journal invariants, genuine concurrent same-instance appends, journal-chain cleanup, crash/restart, Stop, Close refusal, and bounded state.
-- [ ] One component-level integration test exercises: finalized rows -> admitted batch -> extractor -> serial model completion -> zero or deterministic drafts -> authoritative stored confirmations -> final evaluated message -> coordinator settlement, without production graph wiring or simulation in production code.
-- [ ] Run the complete repository test suite, contract governance, generated contract documentation check, package graph generation/verification, syntax checks for every changed JavaScript module, and `git diff --check`.
-- [ ] All checks pass from the combined reconciliation branch. A test must not redefine an architectural requirement merely to match implementation behavior.
+- [x] Focused contract tests prove provider-neutral admission, `batch_attempt` semantics, exact evidence order/revision correlation, zero/one/multiple/failed evaluated messages, and invalid forged/mismatched identities.
+- [x] Focused coordinator tests prove three-row and idle admission, concurrency one, duplicate/restart replay, no automatic outer retry, terminal stall, zero/multiple acknowledgement, post-ack pump, Stop, Close, and failed drain visibility.
+- [x] Focused extraction tests prove one exact model request across provider retries, stable raw request fingerprint, local provider configuration, bounded serialized payload, `max_tokens`, strict response validation, deterministic draft IDs, owner-confirmation aggregation, and zero/failure completion.
+- [x] Focused persistence tests prove the corrected identity/checkpoint/journal invariants, genuine concurrent same-instance appends, journal-chain cleanup, crash/restart, Stop, Close refusal, and bounded state.
+- [x] One component-level integration test exercises: finalized rows -> admitted batch -> extractor -> serial model completion -> zero or deterministic drafts -> authoritative stored confirmations -> final evaluated message -> coordinator settlement, without production graph wiring or simulation in production code.
+- [x] Run the complete repository test suite, contract governance, generated contract documentation check, package graph generation/verification, syntax checks for every changed JavaScript module, and `git diff --check`.
+- [x] All checks pass from the combined reconciliation branch. A test must not redefine an architectural requirement merely to match implementation behavior.
 
 ### Commit, push, and report
 
@@ -343,11 +349,11 @@ After pushing and before reporting completion, run the required notification com
 
 ### Exit gate
 
-- [ ] The four candidate histories are preserved on one clean branch and all disputed seams have one documented meaning.
-- [ ] No coordinator provider knowledge, duplicate retry owner, ambiguous acknowledgement matching, unbounded completed-session synchronization state, or self-routing message type remains.
-- [ ] Complete tests and governance gates pass without weakening the accepted Scribe behavior.
-- [ ] The final worktree is clean, the branch is pushed, main is untouched, and the completion notification was sent.
-- [ ] SCRIBE-05 can consume the reconciled contracts and component ports without redesigning SCRIBE-02, SCRIBE-03, or SCRIBE-04.
+- [x] The four candidate histories are preserved on one clean branch and all disputed seams have one documented meaning.
+- [x] No coordinator provider knowledge, duplicate retry owner, ambiguous acknowledgement matching, unbounded completed-session synchronization state, or self-routing message type remains.
+- [x] Complete tests and governance gates pass without weakening the accepted Scribe behavior.
+- [x] The final worktree is clean, the branch is pushed, main is untouched, and the completion notification was sent.
+- [x] SCRIBE-05 can consume the reconciled contracts and component ports without redesigning SCRIBE-02, SCRIBE-03, or SCRIBE-04.
 
 ### Out of scope
 

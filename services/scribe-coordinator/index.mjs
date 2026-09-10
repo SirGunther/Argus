@@ -1,12 +1,16 @@
+import { randomUUID } from 'node:crypto';
 import { createMessageIdentity, fingerprintMessage } from '../../runtime/message-identity.mjs';
 import { runLineService } from '../../runtime/service-protocol.mjs';
 import { createScribeCoordinator } from './coordinator.mjs';
 
 const SERVICE = 'scribe-coordinator';
 const INSTANCE = process.env.ARGUS_SERVICE_INSTANCE_ID || SERVICE;
+const BOOT_ID = randomUUID();
 const knownSessionIds = new Set();
 
 const coordinator = createScribeCoordinator({
+  requireRecovery: true,
+  requirePersistence: true,
   onSpontaneousDispatch(_sessionId, pumpResults) {
     for (const output of toWireOutputs(pumpResults)) emitEnvelope(output);
   }
@@ -29,6 +33,16 @@ runLineService({
       const outputs = coordinator.acceptBatchEvaluated(message.payload);
       knownSessionIds.add(message.payload.batch.batch_identity.session_id);
       return toWireOutputs(outputs);
+    } },
+    'scribe.recovery-restored': { name: 'restore-scribe-state', handle(message) {
+      const outputs = coordinator.acceptRecoveryRestored(message.payload);
+      knownSessionIds.add(message.payload.session_id);
+      return toWireOutputs(outputs);
+    } },
+    'scribe.checkpoint-persisted': { name: 'accept-scribe-checkpoint-persistence', handle(message) {
+      const outputs = coordinator.acceptCheckpointPersisted(message.payload);
+      knownSessionIds.add(message.payload.session_id);
+      return toWireOutputs(outputs);
     } }
   },
   onDrain() {
@@ -47,9 +61,34 @@ function toWireOutputs(pumpResults) {
   const outputs = [];
   for (const result of pumpResults) {
     if (result.type === 'batch-admitted') outputs.push(admittedOutput(result));
+    else if (result.type === 'recovery-request') outputs.push(recoveryRequestOutput(result));
+    else if (result.type === 'checkpoint-persist') outputs.push(checkpointPersistOutput(result));
     else if (result.type === 'failure') outputs.push(failureOutput(result));
   }
   return outputs;
+}
+
+function recoveryRequestOutput(result) {
+  return {
+    plane: 'control', messageType: 'scribe.recovery-request', schemaVersion: '1.0.0',
+    identityKey: `${INSTANCE}:scribe.recovery-request:${BOOT_ID}:${result.sessionId}:${result.policyId}:${result.policyVersion}`,
+    payload: { session_id: result.sessionId, policy_id: result.policyId, policy_version: result.policyVersion }
+  };
+}
+
+function checkpointPersistOutput(result) {
+  const requestId = result.checkpoint.in_flight_batch?.batch_identity.request_id || result.batch?.batch_identity.request_id;
+  const attempt = result.checkpoint.in_flight_batch?.attempt || result.batch?.attempt;
+  return {
+    plane: 'control', messageType: 'scribe.checkpoint-persist', schemaVersion: '1.0.0',
+    identityKey: `${INSTANCE}:scribe.checkpoint-persist:${result.transition}:${requestId}:a${attempt}`,
+    payload: {
+      session_id: result.session_id,
+      transition: result.transition,
+      checkpoint: result.checkpoint,
+      ...(result.batch ? { batch: result.batch } : {})
+    }
+  };
 }
 
 function admittedOutput(dispatch) {
@@ -90,7 +129,7 @@ function emitEnvelope(output) {
     message_type: output.messageType,
     timestamp: new Date().toISOString(),
     producer: INSTANCE,
-    correlation_id: output.payload?.batch_identity?.session_id || 'unattributed',
+    correlation_id: output.payload?.batch_identity?.session_id || output.payload?.session_id || 'unattributed',
     schema_version: output.schemaVersion || '1.2.0',
     payload: output.payload
   };

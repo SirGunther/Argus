@@ -31,6 +31,8 @@
         "session.stop",
         "session.resume",
         "session.close",
+        "scribe.recovery-request",
+        "scribe.checkpoint-persist",
         "lifecycle.health-check",
         "lifecycle.drain"
       ],
@@ -39,6 +41,8 @@
         "session.stopped",
         "session.resumed",
         "session.closed",
+        "scribe.recovery-restored",
+        "scribe.checkpoint-persisted",
         "service.failure",
         "service.health",
         "service.drained",
@@ -47,8 +51,9 @@
       ]
     }
   },
-  "state": "durable session metadata, lifecycle state, finalization progress, and close evidence through the governed storage boundary",
+  "state": "durable session metadata, lifecycle state, finalization progress, close evidence, and Scribe recovery/checkpoint transitions through the governed storage boundary",
   "side_effects": [
-    "filesystem:session-metadata-and-finalization"
+    "filesystem:session-metadata-and-finalization",
+    "filesystem:scribe-checkpoint-and-batch-journal"
   ]
 }

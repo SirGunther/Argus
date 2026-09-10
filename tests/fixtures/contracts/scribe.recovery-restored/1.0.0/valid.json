@@ -1,0 +1,56 @@
+{
+  "message_id": "fixture-scribe-recovery-restored",
+  "plane": "control",
+  "message_type": "scribe.recovery-restored",
+  "timestamp": "2026-09-08T12:00:00.100Z",
+  "producer": "fixture-session-lifecycle",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "session_id": "fixture-scribe-session",
+    "policy_id": "fixture-default",
+    "policy_version": "1.0.0",
+    "recovered_at": "2026-09-08T12:00:00.100Z",
+    "checkpoint": {
+      "schema_version": "1.0.0",
+      "session_id": "fixture-scribe-session",
+      "saved_at": "2026-09-08T11:59:59.000Z",
+      "admitted_through": { "last_segment_id": null, "last_sequence": -1, "last_revision": 0 },
+      "pending_partial": {
+        "segments": [{ "segment_id": "fixture-segment-3", "revision": 0, "sequence": 3 }],
+        "accumulated_since": "2026-09-08T11:59:58.000Z"
+      },
+      "background_context": { "prior_logged_items": [] },
+      "policy_id": "fixture-default",
+      "policy_version": "1.0.0",
+      "in_flight_batch": {
+        "batch_identity": {
+          "request_id": "fixture-scribe-request",
+          "session_id": "fixture-scribe-session",
+          "segments": [
+            { "segment_id": "fixture-segment-0", "revision": 0, "sequence": 0 },
+            { "segment_id": "fixture-segment-1", "revision": 0, "sequence": 1 },
+            { "segment_id": "fixture-segment-2", "revision": 0, "sequence": 2 }
+          ],
+          "first_sequence": 0,
+          "last_sequence": 2,
+          "admission_reason": "batch-complete",
+          "policy_id": "fixture-default",
+          "policy_version": "1.0.0",
+          "instruction_version": "1.0.0"
+        },
+        "attempt": 1,
+        "dispatched_at": "2026-09-08T11:59:57.000Z"
+      }
+    },
+    "pending_segments": [
+      { "segment_id": "fixture-segment-3", "revision": 0, "session_id": "fixture-scribe-session", "sequence": 3, "start_time": "00:00:03.000", "end_time": "00:00:04.000", "text": "Pending row.", "boundary": "continuation" }
+    ],
+    "in_flight_segments": [
+      { "segment_id": "fixture-segment-0", "revision": 0, "session_id": "fixture-scribe-session", "sequence": 0, "start_time": "00:00:00.000", "end_time": "00:00:01.000", "text": "First row.", "boundary": "continuation" },
+      { "segment_id": "fixture-segment-1", "revision": 0, "session_id": "fixture-scribe-session", "sequence": 1, "start_time": "00:00:01.000", "end_time": "00:00:02.000", "text": "Second row.", "boundary": "continuation" },
+      { "segment_id": "fixture-segment-2", "revision": 0, "session_id": "fixture-scribe-session", "sequence": 2, "start_time": "00:00:02.000", "end_time": "00:00:03.000", "text": "Third row.", "boundary": "continuation" }
+    ],
+    "background_transcript_segments": []
+  }
+}

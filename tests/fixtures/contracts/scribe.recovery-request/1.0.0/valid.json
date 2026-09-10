@@ -1,0 +1,14 @@
+{
+  "message_id": "fixture-scribe-recovery-request",
+  "plane": "control",
+  "message_type": "scribe.recovery-request",
+  "timestamp": "2026-09-08T12:00:00.000Z",
+  "producer": "fixture-scribe-coordinator",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "session_id": "fixture-scribe-session",
+    "policy_id": "fixture-default",
+    "policy_version": "1.0.0"
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.14.0",
+  "schema_version": "1.15.0",
   "governance": {
     "compatibility_policy": "backward-compatible-minor",
     "plane_change": "breaking",
@@ -188,6 +188,38 @@
       "schema": "scribe-batch-evaluated-message.schema.json",
       "max_payload_bytes": 65536,
       "changelog": "history/scribe.batch-evaluated.md"
+    },
+    "scribe.recovery-request": {
+      "plane": "control",
+      "version": "1.0.0",
+      "owner": "logged-items/scribe-coordinator",
+      "schema": "scribe-recovery-request.schema.json",
+      "max_payload_bytes": 16384,
+      "changelog": "history/scribe.recovery-request.md"
+    },
+    "scribe.recovery-restored": {
+      "plane": "control",
+      "version": "1.0.0",
+      "owner": "runtime/session-lifecycle",
+      "schema": "scribe-recovery-restored.schema.json",
+      "max_payload_bytes": 262144,
+      "changelog": "history/scribe.recovery-restored.md"
+    },
+    "scribe.checkpoint-persist": {
+      "plane": "control",
+      "version": "1.0.0",
+      "owner": "logged-items/scribe-coordinator",
+      "schema": "scribe-checkpoint-persist.schema.json",
+      "max_payload_bytes": 262144,
+      "changelog": "history/scribe.checkpoint-persist.md"
+    },
+    "scribe.checkpoint-persisted": {
+      "plane": "control",
+      "version": "1.0.0",
+      "owner": "runtime/session-lifecycle",
+      "schema": "scribe-checkpoint-persisted.schema.json",
+      "max_payload_bytes": 262144,
+      "changelog": "history/scribe.checkpoint-persisted.md"
     },
     "ai.provider-configure": {
       "plane": "control",

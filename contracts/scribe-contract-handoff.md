@@ -24,12 +24,16 @@ explicitly supersedes an earlier implementation note. Production graph wiring re
 | `ai.work-completed` | catalog message (control plane) | `1.5.0` (new `protocol_version: "2.0.0"` `modelResponse` variant; existing `1.0.0` variants unchanged) | `contracts/ai-work-completed.schema.json` |
 | `scribe.batch-admitted` | catalog message (domain plane) | `1.0.0` | `contracts/scribe-batch-admitted.schema.json` |
 | `scribe.batch-evaluated` | catalog message (domain plane) | `1.0.0` | `contracts/scribe-batch-evaluated-message.schema.json` |
+| `scribe.recovery-request` | catalog message (control plane) | `1.0.0` | `contracts/scribe-recovery-request.schema.json` |
+| `scribe.recovery-restored` | catalog message (control plane) | `1.0.0` | `contracts/scribe-recovery-restored.schema.json` |
+| `scribe.checkpoint-persist` | catalog message (control plane) | `1.0.0` | `contracts/scribe-checkpoint-persist.schema.json` |
+| `scribe.checkpoint-persisted` | catalog message (control plane) | `1.0.0` | `contracts/scribe-checkpoint-persisted.schema.json` |
 | `scribe_batch_identity` | catalog artifact | schema `1.0.0` (no `schema_version` field; shape is the version) | `contracts/scribe-batch-identity.schema.json` |
 | `scribe_batch_evaluated` | catalog artifact | schema `1.0.0` | `contracts/scribe-batch-evaluated.schema.json` |
 | `scribe_checkpoint` | catalog artifact | `schema_version: "1.0.0"` | `contracts/scribe-checkpoint.schema.json` |
 | `scribe_batch_journal_entry` | catalog artifact | schema `1.0.0` | `contracts/scribe-batch-journal-entry.schema.json` |
 
-Catalog `schema_version` is `1.14.0`. Pure-function validators for the batch protocol
+Catalog `schema_version` is `1.15.0`. Pure-function validators for the batch protocol
 live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0"`),
 `EXTRACTION_BATCH_OUTPUT_LIMITS`, `validateScribeBatchModelRequest`,
 `validateScribeBatchModelResponse`. These are additive exports; the existing 1.0.0-only
@@ -38,8 +42,9 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
 
 ## Current ownership after SCRIBE-04B
 
-- **Wiring**: no production graph wires exist yet for the Scribe coordinator channel or its
-  checkpoint/journal sequencing. SCRIBE-05 owns those wires and lifecycle orchestration.
+- **Wiring**: no production graph wires exist yet for the Scribe coordinator channel. The
+  coordinator and lifecycle owner now expose explicit recovery and checkpoint-persistence ports,
+  but SCRIBE-05 still owns the graph wires and lifecycle orchestration that connect them.
 - **Cross-message correlation**: `validateScribeBatchModelRequest` rejects a request
   whose `identity.session_id`/`identity.batch_request_id`/`instruction_version`
   conflicts with its own `batch_identity`, and requires `new_evidence_segments` to
@@ -279,11 +284,24 @@ The following rules are the current implementation authority:
    one failed evaluation. Extraction emits exactly one final `scribe.batch-evaluated` only after
    the batch is terminal.
 7. The coordinator accepts only that final boundary with the exact identity and `batch_attempt`.
-   Success advances the cursor once; failure retains and stalls the exact batch with no automatic
-   outer retry.
+   Failure retains and stalls the exact batch with no automatic outer retry.
+8. A configured coordinator service first emits `scribe.recovery-request` and rejects new evidence
+   until `scribe.recovery-restored` supplies the authoritative checkpoint plus hydrated pending and
+   in-flight transcript rows. A recovered in-flight batch is replayed with its exact identity and
+   coordinator attempt; recovery requests are replay-stable within a process boot and fresh across
+   coordinator restarts.
+9. New admission is not published until `scribe.checkpoint-persisted` exactly acknowledges the
+   `batch-admitted` checkpoint transition. A successful evaluation similarly emits
+   `scribe.checkpoint-persist`; the lifecycle owner appends the evaluated-batch journal entry first,
+   atomically replaces the checkpoint second, and only its exact acknowledgement lets the
+   coordinator advance its cursor and publish settlement.
+10. Close preserves active and forced one/two-row remainder work. The extractor retains policy,
+    request, and owner-acknowledgement state through drain, emits terminal evaluation before
+    `service.drained`, and reports a deadline failure instead of clearing unfinished work. A failed
+    terminal evaluation visibly stalls coordinator Close and never produces `service.drained`.
 
 Bounded state is explicit: coordinator sessions, pending evidence, remembered fingerprints,
-background transcript/items, and Close waiters all have ceilings; extraction has bounded pending
+background transcript/items, Close waiters, and single pending persistence transition all have ceilings; extraction has bounded pending
 and settled replay retention plus bounded immutable policies. Session-storage journal append chains
 are serialized inside one `SessionStorage` owner instance and are removed when the last queued
 append settles, including failure.

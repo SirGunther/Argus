@@ -3,6 +3,7 @@ import { assertGovernedScribeCheckpointShape, fingerprintValue, FINALIZATION_PHA
 export const SESSION_METADATA_VERSION = '1.0.0';
 const ACTIVE_CACHE_LIMIT = 32;
 const TRANSCRIPT_HISTORY_PAYLOAD_LIMIT_BYTES = 65536;
+const SCRIBE_RECOVERY_BACKGROUND_SEGMENTS_MAX = 48;
 
 export function calculateRecordingDurationMs(metadata, nowMs = Date.now()) {
   let total = 0;
@@ -298,6 +299,75 @@ export class SessionLifecycle {
   async getScribeBatchJournal(sessionId) {
     validateSessionId(sessionId);
     return this.storage.readScribeBatchJournal(sessionId);
+  }
+
+  async getScribeRecoveryState(sessionId, { policyId, policyVersion, recoveredAt = this.clock() } = {}) {
+    if (!policyId || !policyVersion) throw invalid('Scribe recovery requires policyId and policyVersion');
+    const metadata = await this.#loadMetadata(sessionId);
+    if (metadata.state === 'closed') throw conflict('SESSION_CLOSED', `Session ${sessionId} is sealed`);
+    const checkpoint = await this.storage.readScribeCheckpoint(sessionId);
+    if (!checkpoint) {
+      return {
+        session_id: sessionId, policy_id: policyId, policy_version: policyVersion, recovered_at: recoveredAt,
+        checkpoint: null, pending_segments: [], in_flight_segments: [], background_transcript_segments: []
+      };
+    }
+    if (checkpoint.policy_id !== policyId || checkpoint.policy_version !== policyVersion) {
+      throw conflict('SCRIBE_RECOVERY_POLICY_CONFLICT', `Stored Scribe policy ${checkpoint.policy_id}@${checkpoint.policy_version} does not match ${policyId}@${policyVersion}`);
+    }
+    const transcript = await this.storage.readActiveSnapshot(sessionId, 'transcript');
+    if (!transcript) throw integrity('ACTIVE_SNAPSHOT_MISSING', `Session ${sessionId} does not have an active transcript snapshot for Scribe recovery`);
+    const byId = new Map();
+    for (const segment of transcript.segments) {
+      if (byId.has(segment.segment_id)) throw integrity('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', `Active transcript repeats segment ${segment.segment_id}`);
+      byId.set(segment.segment_id, segment);
+    }
+    const pendingSegments = checkpoint.pending_partial.segments.map((reference) => hydrateScribeSegment(sessionId, reference, byId, 'pending'));
+    const inFlightReferences = checkpoint.in_flight_batch?.batch_identity.segments || [];
+    const inFlightSegments = inFlightReferences.map((reference) => hydrateScribeSegment(sessionId, reference, byId, 'in-flight'));
+    const inFlightIds = new Set(inFlightReferences.map((reference) => reference.segment_id));
+    if (pendingSegments.some((segment) => inFlightIds.has(segment.segment_id))) throw integrity('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', 'Pending and in-flight Scribe recovery evidence overlap');
+    const backgroundTranscriptSegments = transcript.segments
+      .filter((segment) => Number.isInteger(segment.sequence) && segment.sequence <= checkpoint.admitted_through.last_sequence)
+      .sort((left, right) => left.sequence - right.sequence)
+      .slice(-SCRIBE_RECOVERY_BACKGROUND_SEGMENTS_MAX)
+      .map(projectScribeBackgroundSegment);
+    return {
+      session_id: sessionId,
+      policy_id: policyId,
+      policy_version: policyVersion,
+      recovered_at: recoveredAt,
+      checkpoint: structuredClone(checkpoint),
+      pending_segments: pendingSegments,
+      in_flight_segments: inFlightSegments,
+      background_transcript_segments: backgroundTranscriptSegments
+    };
+  }
+
+  async persistScribeCheckpointTransition(sessionId, payload) {
+    const metadata = await this.#loadMetadata(sessionId);
+    if (metadata.state === 'closed') throw conflict('SESSION_CLOSED', `Session ${sessionId} is sealed`);
+    if (!payload || payload.session_id !== sessionId || !['batch-admitted', 'batch-evaluated'].includes(payload.transition)) {
+      throw invalid('Scribe checkpoint persistence requires an exact session and governed transition');
+    }
+    const checkpoint = payload.checkpoint;
+    assertGovernedScribeCheckpointShape(sessionId, checkpoint);
+    if (payload.transition === 'batch-admitted') {
+      if (!checkpoint.in_flight_batch || payload.batch !== undefined) throw invalid('batch-admitted persistence requires an in-flight checkpoint and no evaluated batch');
+    } else {
+      if (!payload.batch || checkpoint.in_flight_batch || fingerprintValue(checkpoint.last_evaluated_batch) !== fingerprintValue(payload.batch)) {
+        throw invalid('batch-evaluated persistence requires the exact evaluated batch in a cleared in-flight checkpoint');
+      }
+      await this.recordScribeBatchOutcome(sessionId, payload.batch, { writtenAt: checkpoint.saved_at });
+    }
+    await this.acceptScribeCheckpoint(sessionId, checkpoint, { savedAt: checkpoint.saved_at });
+    const persisted = await this.getScribeCheckpoint(sessionId);
+    return {
+      session_id: sessionId,
+      transition: payload.transition,
+      checkpoint: persisted,
+      ...(payload.batch ? { batch: structuredClone(payload.batch) } : {})
+    };
   }
 
   memoryStats() {
@@ -909,6 +979,33 @@ function recoveryRevisionId(segment, explicitId) {
 function reportRevisionId(segment, fallback) { return recoveryRevisionId(segment) || (segment?.revision_id || `${fallback}`); }
 function compareRecoveryCandidates(a, b) { return (a.segment?.sequence ?? Number.MAX_SAFE_INTEGER) - (b.segment?.sequence ?? Number.MAX_SAFE_INTEGER) || (a.segment?.revision ?? Number.MAX_SAFE_INTEGER) - (b.segment?.revision ?? Number.MAX_SAFE_INTEGER) || a.revisionId.localeCompare(b.revisionId); }
 function ensureLatestHistory(history, id, value) { const entry = history.find((item) => item.history_entry_id === id); if (!entry) throw integrity('MISSING_AUTHORITATIVE_HISTORY', `Missing authoritative history entry ${id}`); if (entry.fingerprint !== fingerprintValue(value)) throw integrity('AUTHORITATIVE_HISTORY_CONFLICT', `Authoritative history entry ${id} differs from active state`); }
+function hydrateScribeSegment(sessionId, reference, byId, label) {
+  const segment = byId.get(reference.segment_id);
+  const revision = segment?.revision ?? 0;
+  if (!segment || segment.session_id !== sessionId || segment.sequence !== reference.sequence || revision !== reference.revision) {
+    throw integrity('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', `Stored ${label} Scribe reference ${reference.segment_id} does not match authoritative transcript evidence`);
+  }
+  const projected = {
+    segment_id: segment.segment_id,
+    revision,
+    session_id: segment.session_id,
+    sequence: segment.sequence,
+    start_time: segment.start_time,
+    end_time: segment.end_time,
+    text: segment.text,
+    boundary: segment.boundary
+  };
+  if (!projected.start_time || !projected.end_time || !projected.text || !['continuation', 'pause', 'size', 'latency', 'flush'].includes(projected.boundary)) {
+    throw integrity('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', `Authoritative transcript segment ${reference.segment_id} cannot hydrate governed Scribe evidence`);
+  }
+  return projected;
+}
+function projectScribeBackgroundSegment(segment) {
+  if (!segment.segment_id || !Number.isInteger(segment.sequence) || !segment.start_time || !segment.end_time || !segment.text) {
+    throw integrity('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', 'Authoritative transcript background cannot hydrate governed Scribe context');
+  }
+  return { segment_id: segment.segment_id, sequence: segment.sequence, start_time: segment.start_time, end_time: segment.end_time, text: segment.text, relation: 'lookback' };
+}
 function assertScribeCheckpointAdvancement(sessionId, existing, next) {
   if (!existing) return;
   if (next.admitted_through.last_sequence < existing.admitted_through.last_sequence) {

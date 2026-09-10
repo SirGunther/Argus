@@ -1,0 +1,46 @@
+{
+  "$id": "argus.scribe-recovery-restored.v1",
+  "type": "object",
+  "required": ["session_id", "policy_id", "policy_version", "recovered_at", "checkpoint", "pending_segments", "in_flight_segments", "background_transcript_segments"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "policy_id": { "type": "string", "minLength": 1 },
+    "policy_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "recovered_at": { "type": "string", "minLength": 1 },
+    "checkpoint": { "oneOf": [{ "type": "null" }, { "$ref": "argus.scribe-checkpoint.v1" }] },
+    "pending_segments": { "type": "array", "maxItems": 2, "items": { "$ref": "#/$defs/recoveredSegment" } },
+    "in_flight_segments": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/recoveredSegment" } },
+    "background_transcript_segments": { "type": "array", "maxItems": 48, "items": { "$ref": "#/$defs/backgroundSegment" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "recoveredSegment": {
+      "type": "object",
+      "required": ["segment_id", "revision", "session_id", "sequence", "start_time", "end_time", "text", "boundary"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 0 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "boundary": { "type": "string", "enum": ["continuation", "pause", "size", "latency", "flush"] }
+      },
+      "additionalProperties": false
+    },
+    "backgroundSegment": {
+      "type": "object",
+      "required": ["segment_id", "sequence", "start_time", "end_time", "text", "relation"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "start_time": { "type": "string", "minLength": 1 },
+        "end_time": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "relation": { "const": "lookback" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

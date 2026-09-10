@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.14.0`
+- Catalog version: `1.15.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -35,6 +35,10 @@
 | `scribe.batch-policy` | control | `1.0.0` | `logged-items/scribe-coordinator` | 32 KiB |
 | `scribe.batch-admitted` | domain | `1.0.0` | `logged-items/scribe-coordinator` | 256 KiB |
 | `scribe.batch-evaluated` | domain | `1.0.0` | `logged-items/extraction` | 64 KiB |
+| `scribe.recovery-request` | control | `1.0.0` | `logged-items/scribe-coordinator` | 16 KiB |
+| `scribe.recovery-restored` | control | `1.0.0` | `runtime/session-lifecycle` | 256 KiB |
+| `scribe.checkpoint-persist` | control | `1.0.0` | `logged-items/scribe-coordinator` | 256 KiB |
+| `scribe.checkpoint-persisted` | control | `1.0.0` | `runtime/session-lifecycle` | 256 KiB |
 | `ai.provider-configure` | control | `1.0.0` | `runtime/ai-provider-settings` | 8 KiB |
 | `logged-item.update` | domain | `1.3.0` | `logged-items/active-owner` | 64 KiB |
 | `classification.suggestion` | domain | `1.2.0` | `logged-items/classification` | 64 KiB |
@@ -485,6 +489,65 @@
 | --- | --- | --- | --- |
 | `batch_attempt` | yes | integer | minimum 1 |
 | `batch` | yes | any | — |
+
+## `scribe.recovery-request`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `logged-items/scribe-coordinator`
+- Schema: [`scribe-recovery-request.schema.json`](../scribe-recovery-request.schema.json)
+- History: [`history/scribe.recovery-request.md`](../history/scribe.recovery-request.md)
+- Maximum payload: 16 KiB (16384 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `session_id` | yes | string | min length 1 |
+| `policy_id` | yes | string | min length 1 |
+| `policy_version` | yes | string | — |
+
+## `scribe.recovery-restored`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `runtime/session-lifecycle`
+- Schema: [`scribe-recovery-restored.schema.json`](../scribe-recovery-restored.schema.json)
+- History: [`history/scribe.recovery-restored.md`](../history/scribe.recovery-restored.md)
+- Maximum payload: 256 KiB (262144 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `session_id` | yes | string | min length 1 |
+| `policy_id` | yes | string | min length 1 |
+| `policy_version` | yes | string | — |
+| `recovered_at` | yes | string | min length 1 |
+| `checkpoint` | yes | any | — |
+| `pending_segments` | yes | array<value> | — |
+| `in_flight_segments` | yes | array<value> | — |
+| `background_transcript_segments` | yes | array<value> | — |
+
+## `scribe.checkpoint-persist`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `logged-items/scribe-coordinator`
+- Schema: [`scribe-checkpoint-persist.schema.json`](../scribe-checkpoint-persist.schema.json)
+- History: [`history/scribe.checkpoint-persist.md`](../history/scribe.checkpoint-persist.md)
+- Maximum payload: 256 KiB (262144 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+
+## `scribe.checkpoint-persisted`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `runtime/session-lifecycle`
+- Schema: [`scribe-checkpoint-persisted.schema.json`](../scribe-checkpoint-persisted.schema.json)
+- History: [`history/scribe.checkpoint-persisted.md`](../history/scribe.checkpoint-persisted.md)
+- Maximum payload: 256 KiB (262144 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
 
 ## `ai.provider-configure`
 

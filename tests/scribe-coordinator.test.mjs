@@ -262,6 +262,48 @@ test('recovered pending remainder resumes idle eligibility and live-state recove
   assert.throws(() => coordinator.restoreState('s1', { cursor: { last_sequence: -1 }, pendingSegments: [] }), /already has coordinator state/);
 });
 
+test('explicit recovery and durable checkpoint acknowledgements gate admission and cursor advancement', () => {
+  const coordinator = createScribeCoordinator({ clock: createFakeClock().clock, requireRecovery: true, requirePersistence: true });
+  const configured = coordinator.configurePolicy(policy('s1'));
+  assert.deepEqual(configured.map((output) => output.type), ['recovery-request']);
+  assert.throws(() => coordinator.acceptFinalizedSegment(segment('s1', 0)), (error) => error.code === 'SCRIBE_RECOVERY_REQUIRED');
+
+  assert.deepEqual(coordinator.acceptRecoveryRestored({
+    session_id: 's1', policy_id: 'test-policy', policy_version: '1.0.0', recovered_at: '2026-09-08T11:59:00.000Z',
+    checkpoint: null, pending_segments: [], in_flight_segments: [], background_transcript_segments: []
+  }), []);
+  let persistence;
+  for (let sequence = 0; sequence < 3; sequence += 1) {
+    const outputs = coordinator.acceptFinalizedSegment(segment('s1', sequence));
+    persistence ||= outputs.find((output) => output.type === 'checkpoint-persist');
+  }
+  assert.ok(persistence);
+  assert.equal(persistence.transition, 'batch-admitted');
+  assert.equal(coordinator.status('s1').cursor.last_sequence, -1);
+  assert.equal(coordinator.status('s1').busy, true);
+
+  const { type: _admissionType, ...admissionAck } = persistence;
+  const admitted = coordinator.acceptCheckpointPersisted(admissionAck)[0];
+  assert.equal(admitted.type, 'batch-admitted');
+  const evaluationPersistence = coordinator.acceptBatchEvaluated(evaluated(admitted))[0];
+  assert.equal(evaluationPersistence.type, 'checkpoint-persist');
+  assert.equal(evaluationPersistence.transition, 'batch-evaluated');
+  assert.equal(coordinator.status('s1').cursor.last_sequence, -1, 'evaluation is not final before journal/checkpoint acknowledgement');
+
+  const conflictingAck = structuredClone(evaluationPersistence);
+  conflictingAck.checkpoint.saved_at = '2026-09-08T12:00:02.000Z';
+  delete conflictingAck.type;
+  assert.throws(() => coordinator.acceptCheckpointPersisted(conflictingAck), (error) => error.code === 'SCRIBE_PERSISTENCE_ACK_CONFLICT');
+  assert.equal(coordinator.status('s1').cursor.last_sequence, -1);
+
+  const { type: _evaluationType, ...evaluationAck } = evaluationPersistence;
+  const settled = coordinator.acceptCheckpointPersisted(evaluationAck);
+  assert.equal(settled[0].type, 'settled');
+  assert.equal(coordinator.status('s1').cursor.last_sequence, 2);
+  assert.equal(coordinator.status('s1').busy, false);
+  assert.deepEqual(coordinator.acceptCheckpointPersisted(evaluationAck), []);
+});
+
 test('session, pending-row, remembered identity, context, and close-waiter state are bounded', () => {
   const sessions = createScribeCoordinator({ maxSessions: 1, clock: createFakeClock().clock });
   sessions.status('s1');
@@ -281,17 +323,30 @@ test('OrderedStreamGuard.seed cannot rewind a stream', () => {
   guard.accept('s1', 3);
 });
 
-test('the real coordinator process emits a valid provider-neutral admitted batch', async () => {
+test('the real coordinator process recovers and durably gates a provider-neutral admitted batch', async () => {
   const sessionId = 'contract-session';
-  const inputs = [0, 1, 2].map((sequence) => createEnvelope({ plane: 'domain', messageType: 'transcript.segment', producer: 'contract-test', correlationId: sessionId, payload: segment(sessionId, sequence) }));
-  const result = await runService(MANIFEST, inputs, 4);
+  const result = await runServiceBatches(MANIFEST, [
+    { inputs: [policyEnvelope(sessionId)], expectedOutputCount: 2 },
+    { inputs: [emptyRecoveryEnvelope(sessionId)], expectedOutputCount: 1 },
+    {
+      inputs: [0, 1, 2].map((sequence) => createEnvelope({ plane: 'domain', messageType: 'transcript.segment', producer: 'contract-test', correlationId: sessionId, payload: segment(sessionId, sequence) })),
+      expectedOutputCount: 4
+    },
+    {
+      inputs: (outputs) => [persistenceAckEnvelope(outputs.find((message) => message.message_type === 'scribe.checkpoint-persist'))],
+      expectedOutputCount: 2
+    }
+  ]);
+  const persisted = result.outputs.find((message) => message.message_type === 'scribe.checkpoint-persist');
   const admitted = result.outputs.find((message) => message.message_type === 'scribe.batch-admitted');
+  assert.ok(persisted, 'admission checkpoint must be requested before publication');
+  assert.equal(result.outputs.indexOf(persisted) < result.outputs.indexOf(admitted), true);
   assert.ok(admitted);
   assert.deepEqual(registry.validateEnvelope(admitted), []);
   assert.equal(admitted.payload.batch_attempt, 1);
   assert.equal(admitted.payload.new_evidence_segments.length, 3);
   assert.equal(/model|provider|endpoint/.test(JSON.stringify(admitted.payload)), false);
-  assert.equal(result.outputs.filter((message) => message.message_type === 'operation.completed').length, 3);
+  assert.equal(result.outputs.filter((message) => message.message_type === 'operation.completed').length, 6);
 });
 
 test('the real coordinator answers health and converts malformed rows to contract-valid failure', async () => {
@@ -311,8 +366,14 @@ test('wire Close emits a forced admission and drains only after final evaluation
   const row = createEnvelope({ plane: 'domain', messageType: 'transcript.segment', producer: 'contract-test', correlationId: sessionId, payload: segment(sessionId, 0) });
   const drain = createEnvelope({ plane: 'control', messageType: 'lifecycle.drain', producer: 'contract-test', correlationId: sessionId, payload: {} });
   const result = await runServiceBatches(MANIFEST, [
+    { inputs: [policyEnvelope(sessionId)], expectedOutputCount: 2 },
+    { inputs: [emptyRecoveryEnvelope(sessionId)], expectedOutputCount: 1 },
     { inputs: [row], expectedOutputCount: 1 },
     { inputs: [drain], expectedOutputCount: 1 },
+    {
+      inputs: (outputs) => [persistenceAckEnvelope(outputs.find((message) => message.message_type === 'scribe.checkpoint-persist' && message.payload.transition === 'batch-admitted'))],
+      expectedOutputCount: 2
+    },
     {
       inputs: (outputs) => {
         const admitted = outputs.find((message) => message.message_type === 'scribe.batch-admitted');
@@ -323,6 +384,10 @@ test('wire Close emits a forced admission and drains only after final evaluation
         })];
       },
       expectedOutputCount: 2
+    },
+    {
+      inputs: (outputs) => [persistenceAckEnvelope(outputs.find((message) => message.message_type === 'scribe.checkpoint-persist' && message.payload.transition === 'batch-evaluated'))],
+      expectedOutputCount: 2
     }
   ]);
   const admitted = result.outputs.find((message) => message.message_type === 'scribe.batch-admitted');
@@ -330,3 +395,28 @@ test('wire Close emits a forced admission and drains only after final evaluation
   assert.ok(result.outputs.find((message) => message.message_type === 'service.drained'));
   for (const output of result.outputs) assert.deepEqual(registry.validateEnvelope(output), [], output.message_type);
 });
+
+function policyEnvelope(sessionId) {
+  return createEnvelope({
+    plane: 'control', messageType: 'scribe.batch-policy', producer: 'contract-test', correlationId: sessionId,
+    schemaVersion: '1.0.0', payload: policy(sessionId)
+  });
+}
+
+function emptyRecoveryEnvelope(sessionId) {
+  return createEnvelope({
+    plane: 'control', messageType: 'scribe.recovery-restored', producer: 'session-lifecycle-controller', correlationId: sessionId,
+    schemaVersion: '1.0.0', payload: {
+      session_id: sessionId, policy_id: 'test-policy', policy_version: '1.0.0', recovered_at: '2026-09-08T11:59:00.000Z',
+      checkpoint: null, pending_segments: [], in_flight_segments: [], background_transcript_segments: []
+    }
+  });
+}
+
+function persistenceAckEnvelope(request) {
+  assert.ok(request, 'expected a Scribe checkpoint persistence request');
+  return createEnvelope({
+    plane: 'control', messageType: 'scribe.checkpoint-persisted', producer: 'session-lifecycle-controller', correlationId: request.payload.session_id,
+    schemaVersion: '1.0.0', payload: structuredClone(request.payload)
+  });
+}

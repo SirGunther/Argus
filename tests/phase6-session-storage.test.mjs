@@ -780,6 +780,77 @@ test('a valid pending Scribe batch survives a simulated crash/restart', async ()
   });
 });
 
+test('Scribe recovery hydrates pending and in-flight checkpoint references from authoritative active transcript state', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-governed-recovery-state';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    const segments = Array.from({ length: 4 }, (_, sequence) => storedSegment(sessionId, sequence, 0, `Recovered row ${sequence}.`));
+    await storage.writeActiveSnapshot(sessionId, 'transcript', {
+      schema_version: '1.0.0', session_id: sessionId, saved_at: '2026-08-19T00:05:00.000Z', segments
+    });
+    const references = segments.map(({ segment_id, revision, sequence }) => ({ segment_id, revision, sequence }));
+    const checkpoint = scribeCheckpoint(sessionId, {
+      pending_partial: { segments: [references[3]], accumulated_since: '2026-08-19T00:04:30.000Z' },
+      in_flight_batch: {
+        batch_identity: scribeBatchIdentity(sessionId, 'batch-recovery-state', { segments: references.slice(0, 3) }),
+        attempt: 1,
+        dispatched_at: '2026-08-19T00:04:45.000Z'
+      }
+    });
+    await lifecycle.acceptScribeCheckpoint(sessionId, checkpoint);
+    const persistedCheckpoint = await lifecycle.getScribeCheckpoint(sessionId);
+
+    const restarted = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
+    const recovered = await restarted.getScribeRecoveryState(sessionId, {
+      policyId: 'default-scribe-policy', policyVersion: '1.0.0', recoveredAt: '2026-08-19T00:06:00.000Z'
+    });
+    assert.deepEqual(recovered.checkpoint, persistedCheckpoint);
+    assert.deepEqual(recovered.in_flight_segments.map((segment) => segment.segment_id), references.slice(0, 3).map((segment) => segment.segment_id));
+    assert.deepEqual(recovered.pending_segments.map((segment) => segment.segment_id), [references[3].segment_id]);
+    assert.deepEqual(recovered.background_transcript_segments, []);
+  });
+});
+
+test('governed Scribe evaluation persistence appends the journal before advancing its checkpoint', async () => {
+  await withRoot(async (directory) => {
+    const sessionId = 'scribe-governed-transition-order';
+    const storage = new SessionStorage({ root: directory });
+    const lifecycle = new SessionLifecycle({ storage });
+    await lifecycle.record(command('record-1', sessionId));
+    const identity = scribeBatchIdentity(sessionId, 'batch-transition-order');
+    const admission = scribeCheckpoint(sessionId, {
+      saved_at: '2026-08-19T00:07:00.000Z',
+      in_flight_batch: { batch_identity: identity, attempt: 1, dispatched_at: '2026-08-19T00:07:00.000Z' }
+    });
+    const admitted = await lifecycle.persistScribeCheckpointTransition(sessionId, {
+      session_id: sessionId, transition: 'batch-admitted', checkpoint: admission
+    });
+    assert.deepEqual(admitted.checkpoint, admission);
+    assert.deepEqual(await lifecycle.getScribeBatchJournal(sessionId), []);
+
+    const events = [];
+    const appendJournal = storage.appendScribeBatchJournal.bind(storage);
+    const writeCheckpoint = storage.writeScribeCheckpoint.bind(storage);
+    storage.appendScribeBatchJournal = async (...args) => { events.push('journal'); return appendJournal(...args); };
+    storage.writeScribeCheckpoint = async (...args) => { events.push('checkpoint'); return writeCheckpoint(...args); };
+    const batch = scribeBatchEvaluated(sessionId, 'batch-transition-order', { attempt: 1 });
+    const evaluation = scribeCheckpoint(sessionId, {
+      saved_at: '2026-08-19T00:08:00.000Z',
+      admitted_through: { last_segment_id: `${sessionId}-segment-0`, last_sequence: 0, last_revision: 0 },
+      last_evaluated_batch: batch
+    });
+    const persisted = await lifecycle.persistScribeCheckpointTransition(sessionId, {
+      session_id: sessionId, transition: 'batch-evaluated', checkpoint: evaluation, batch
+    });
+    assert.deepEqual(events, ['journal', 'checkpoint']);
+    assert.deepEqual(persisted.checkpoint, evaluation);
+    assert.deepEqual((await lifecycle.getScribeBatchJournal(sessionId)).map((entry) => entry.batch), [batch]);
+    assert.equal((await lifecycle.getScribeCheckpoint(sessionId)).admitted_through.last_sequence, 0);
+  });
+});
+
 test('Scribe checkpoint survives Stop and Resume unchanged', async () => {
   await withRoot(async (directory) => {
     const sessionId = 'scribe-stop-resume';

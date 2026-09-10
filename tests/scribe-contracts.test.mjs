@@ -258,7 +258,7 @@ const SCRIBE_TRANSPORT_MESSAGE_TYPES = ['scribe.batch-admitted', 'scribe.batch-e
 
 test('catalog registers the Scribe batch transport messages additively without disturbing the SCRIBE-01 entries', () => {
   const catalog = registry.catalog;
-  assert.equal(catalog.schema_version, '1.14.0');
+  assert.equal(catalog.schema_version, '1.15.0');
   for (const messageType of SCRIBE_TRANSPORT_MESSAGE_TYPES) {
     const definition = catalog.messages[messageType];
     assert.ok(definition, `${messageType} must be registered`);
@@ -274,6 +274,55 @@ test('catalog registers the Scribe batch transport messages additively without d
   assert.equal(catalog.messages['ai.work-completed'].version, '1.5.0');
   assert.equal(catalog.messages['scribe.batch-policy'].version, '1.0.0');
   assert.equal(catalog.messages['scribe.batch-policy'].plane, 'control');
+});
+
+test('catalog registers provider-neutral Scribe recovery and checkpoint persistence ports on the control plane', async () => {
+  const messageTypes = [
+    'scribe.recovery-request', 'scribe.recovery-restored',
+    'scribe.checkpoint-persist', 'scribe.checkpoint-persisted'
+  ];
+  for (const messageType of messageTypes) {
+    const definition = registry.catalog.messages[messageType];
+    assert.ok(definition, `${messageType} must be registered`);
+    assert.equal(definition.version, '1.0.0');
+    assert.equal(definition.plane, 'control');
+    assert.ok(definition.owner);
+    const fixture = await loadMessageFixture(messageType, '1.0.0', 'valid.json');
+    assert.deepEqual(registry.validateEnvelope(fixture), [], messageType);
+    assert.equal(/model|provider|endpoint/.test(JSON.stringify(fixture.payload)), false);
+  }
+});
+
+test('checkpoint persistence contracts distinguish in-flight admission from evaluated journal-plus-checkpoint settlement', async () => {
+  const admittedRequest = await loadMessageFixture('scribe.checkpoint-persist', '1.0.0', 'valid.json');
+  const evaluatedMessage = await loadMessageFixture('scribe.batch-evaluated', '1.0.0', 'valid-empty-evaluated.json');
+  const evaluatedBatch = evaluatedMessage.payload.batch;
+  const evaluatedCheckpoint = structuredClone(admittedRequest.payload.checkpoint);
+  delete evaluatedCheckpoint.in_flight_batch;
+  evaluatedCheckpoint.saved_at = evaluatedBatch.acknowledgement.acknowledged_at;
+  evaluatedCheckpoint.admitted_through = { last_segment_id: 'fixture-segment-2', last_sequence: 2, last_revision: 0 };
+  evaluatedCheckpoint.last_evaluated_batch = structuredClone(evaluatedBatch);
+
+  for (const messageType of ['scribe.checkpoint-persist', 'scribe.checkpoint-persisted']) {
+    const fixture = await loadMessageFixture(messageType, '1.0.0', 'valid.json');
+    const evaluated = {
+      ...fixture,
+      message_type: messageType,
+      payload: {
+        session_id: evaluatedBatch.batch_identity.session_id,
+        transition: 'batch-evaluated',
+        checkpoint: evaluatedCheckpoint,
+        batch: evaluatedBatch
+      }
+    };
+    assert.deepEqual(registry.validateEnvelope(evaluated), [], `${messageType} evaluated transition`);
+    const missingBatch = structuredClone(evaluated);
+    delete missingBatch.payload.batch;
+    assert.match(registry.validateEnvelope(missingBatch).join('\n'), /batch is required/);
+    const admissionWithBatch = structuredClone(fixture);
+    admissionWithBatch.payload.batch = evaluatedBatch;
+    assert.match(registry.validateEnvelope(admissionWithBatch).join('\n'), /batch is not allowed/);
+  }
 });
 
 test('scribe.batch-admitted declares no model, provider, or endpoint field at all', async () => {

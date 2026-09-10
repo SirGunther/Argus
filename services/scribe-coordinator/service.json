@@ -25,10 +25,14 @@
     "control": {
       "accepts": [
         "scribe.batch-policy",
+        "scribe.recovery-restored",
+        "scribe.checkpoint-persisted",
         "lifecycle.health-check",
         "lifecycle.drain"
       ],
       "emits": [
+        "scribe.recovery-request",
+        "scribe.checkpoint-persist",
         "service.failure",
         "service.health",
         "service.drained",
@@ -37,6 +41,6 @@
       ]
     }
   },
-  "state": "bounded in-memory Scribe acknowledgement cursor, finalized-row admission state, one in-flight coordinator batch attempt, rolling background context, and one idle timer per bounded session",
+  "state": "bounded Scribe cursor and admission state gated by explicit recovery and durable checkpoint acknowledgement, one in-flight coordinator batch attempt, rolling background context, and one idle timer per bounded session",
   "side_effects": []
 }

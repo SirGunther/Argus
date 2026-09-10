@@ -35,7 +35,9 @@ export function createScribeCoordinator({
   clock = {},
   onSpontaneousDispatch,
   maxSessions = DEFAULT_MAX_SESSIONS,
-  maxPendingSegments = DEFAULT_MAX_PENDING_SEGMENTS
+  maxPendingSegments = DEFAULT_MAX_PENDING_SEGMENTS,
+  requireRecovery = false,
+  requirePersistence = false
 } = {}) {
   if (!Number.isInteger(maxSessions) || maxSessions < 1) throw new TypeError('maxSessions must be a positive integer');
   if (!Number.isInteger(maxPendingSegments) || maxPendingSegments < 3) throw new TypeError('maxPendingSegments must be at least three');
@@ -67,6 +69,11 @@ export function createScribeCoordinator({
         closing: false,
         stalledRequestId: undefined,
         lastSettled: undefined,
+        lastEvaluatedBatch: undefined,
+        pendingEvaluation: undefined,
+        pendingPersistence: undefined,
+        lastPersistence: undefined,
+        recovered: !requireRecovery,
         settleWaiters: undefined
       };
       sessions.set(sessionId, state);
@@ -82,7 +89,10 @@ export function createScribeCoordinator({
     validatePolicy(payload);
     const state = stateFor(payload.session_id);
     const current = policyFor(state, payload.session_id);
-    if (fingerprintValue(current) === fingerprintValue(payload)) return [];
+    if (fingerprintValue(current) === fingerprintValue(payload)) {
+      state.policy ||= structuredClone(payload);
+      return recoveryRequest(state, payload.session_id);
+    }
     if (state.policy && state.policy.policy_id === payload.policy_id) {
       throw new ServiceOperationError(`Scribe batch policy id ${payload.policy_id} was reused with different content`, { code: 'SCRIBE_POLICY_ID_CONFLICT', category: 'conflict' });
     }
@@ -90,12 +100,19 @@ export function createScribeCoordinator({
       throw rejected('SCRIBE_POLICY_CHANGE_DURING_ACTIVE_BATCH', 'Scribe batch policy cannot change while rows are pending or a batch is active');
     }
     state.policy = structuredClone(payload);
-    return [];
+    return recoveryRequest(state, payload.session_id);
+  }
+
+  function recoveryRequest(state, sessionId) {
+    if (!requireRecovery || state.recovered) return [];
+    const policy = policyFor(state, sessionId);
+    return [{ type: 'recovery-request', sessionId, policyId: policy.policy_id, policyVersion: policy.policy_version }];
   }
 
   function acceptFinalizedSegment(segment) {
     validateSegment(segment);
     const state = stateFor(segment.session_id);
+    if (!state.recovered) throw rejected('SCRIBE_RECOVERY_REQUIRED', `Scribe recovery must complete for session ${segment.session_id} before finalized evidence is admitted`);
     const fingerprint = fingerprintValue(segment);
     const known = state.acceptedFingerprints.get(segment.segment_id);
     if (known) {
@@ -165,7 +182,78 @@ export function createScribeCoordinator({
     if (batch.acknowledgement.accepted !== true) {
       throw conflict('SCRIBE_ACKNOWLEDGEMENT_REJECTED', 'A successful Scribe evaluation must carry the extraction boundary final acknowledgement');
     }
-    return completeBatch(sessionId, state, payload, evaluationKey, evaluationFingerprint);
+    if (!requirePersistence) return completeBatch(sessionId, state, payload, evaluationKey, evaluationFingerprint);
+    if (state.pendingEvaluation) {
+      if (state.pendingEvaluation.fingerprint !== evaluationFingerprint) throw conflict('SCRIBE_EVALUATION_REPLAY_CONFLICT', 'Pending Scribe evaluation was replayed with different content');
+      return [structuredClone(state.pendingPersistence.output)];
+    }
+    const checkpoint = checkpointAfterEvaluation(sessionId, state, batch);
+    state.pendingEvaluation = { payload: structuredClone(payload), key: evaluationKey, fingerprint: evaluationFingerprint };
+    return [beginPersistence(state, sessionId, 'batch-evaluated', checkpoint, batch)];
+  }
+
+  function acceptRecoveryRestored(payload) {
+    if (!payload || typeof payload !== 'object' || !payload.session_id) throw invalid('scribe.recovery-restored must carry a session_id');
+    const state = stateFor(payload.session_id);
+    if (state.recovered) throw rejected('SCRIBE_RECOVERY_CONFLICT', `Scribe recovery already completed for session ${payload.session_id}`);
+    const policy = policyFor(state, payload.session_id);
+    if (!state.policy || payload.policy_id !== policy.policy_id || payload.policy_version !== policy.policy_version) {
+      throw conflict('SCRIBE_RECOVERY_POLICY_CONFLICT', 'Recovered Scribe policy identity does not match the configured policy');
+    }
+    const checkpoint = payload.checkpoint;
+    if (checkpoint === null) {
+      if ((payload.pending_segments?.length || 0) || (payload.in_flight_segments?.length || 0) || (payload.background_transcript_segments?.length || 0)) {
+        throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Absent Scribe checkpoint cannot carry hydrated recovery state');
+      }
+      return restoreState(payload.session_id, emptyRecoverySnapshot());
+    }
+    if (!checkpoint || checkpoint.session_id !== payload.session_id) throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Recovered Scribe checkpoint targets a different session');
+    if (checkpoint.policy_id !== policy.policy_id || checkpoint.policy_version !== policy.policy_version) throw conflict('SCRIBE_RECOVERY_POLICY_CONFLICT', 'Recovered Scribe checkpoint policy identity does not match the configured policy');
+    const pendingSegments = requireRecoverySegments(payload.pending_segments, 'pending');
+    const inFlightSegments = requireRecoverySegments(payload.in_flight_segments, 'in-flight');
+    assertReferenceMatch(checkpoint.pending_partial?.segments || [], pendingSegments, 'pending');
+    assertReferenceMatch(checkpoint.in_flight_batch?.batch_identity?.segments || [], inFlightSegments, 'in-flight');
+    const accumulated = checkpoint.pending_partial?.accumulated_since;
+    const accumulatedSinceMs = accumulated === null ? null : Date.parse(accumulated);
+    if (accumulated !== null && !Number.isFinite(accumulatedSinceMs)) throw invalid('recovered pending accumulated_since must be a timestamp');
+    return restoreState(payload.session_id, {
+      cursor: structuredClone(checkpoint.admitted_through),
+      pendingSegments,
+      accumulatedSinceMs,
+      backgroundContext: {
+        transcript_segments: structuredClone(payload.background_transcript_segments || []),
+        prior_logged_items: structuredClone(checkpoint.background_context?.prior_logged_items || [])
+      },
+      ...(checkpoint.in_flight_batch ? { inFlightBatch: {
+        batchIdentity: structuredClone(checkpoint.in_flight_batch.batch_identity),
+        admittedSegments: inFlightSegments,
+        attempt: checkpoint.in_flight_batch.attempt,
+        dispatchedAtIso: checkpoint.in_flight_batch.dispatched_at
+      } } : {}),
+      lastEvaluatedBatch: checkpoint.last_evaluated_batch
+    });
+  }
+
+  function acceptCheckpointPersisted(payload) {
+    if (!payload || typeof payload !== 'object' || !payload.session_id || !payload.transition || !payload.checkpoint) throw invalid('scribe.checkpoint-persisted must carry session_id, transition, and checkpoint');
+    const state = stateFor(payload.session_id);
+    const fingerprint = fingerprintValue(payload);
+    if (!state.pendingPersistence) {
+      if (state.lastPersistence?.fingerprint === fingerprint) return [];
+      throw conflict('SCRIBE_PERSISTENCE_ACK_CONFLICT', 'No matching Scribe checkpoint persistence request is pending');
+    }
+    if (state.pendingPersistence.fingerprint !== fingerprint) throw conflict('SCRIBE_PERSISTENCE_ACK_CONFLICT', 'Persisted Scribe checkpoint does not exactly match the pending transition');
+    const transition = state.pendingPersistence.transition;
+    state.pendingPersistence = undefined;
+    state.lastPersistence = { fingerprint };
+    if (transition === 'batch-admitted') {
+      state.inFlight.admissionPersisted = true;
+      return [dispatchDescriptor(payload.session_id, state, state.inFlight)];
+    }
+    const pending = state.pendingEvaluation;
+    if (!pending) throw conflict('SCRIBE_PERSISTENCE_ACK_CONFLICT', 'Persisted evaluation has no matching pending coordinator evaluation');
+    state.pendingEvaluation = undefined;
+    return completeBatch(payload.session_id, state, pending.payload, pending.key, pending.fingerprint);
   }
 
   function close(sessionId) {
@@ -209,6 +297,7 @@ export function createScribeCoordinator({
       state.policy = structuredClone(snapshot.policy);
     }
     state.cursor = { ...snapshot.cursor };
+    state.recovered = true;
     state.backgroundContext = normalizeBackgroundContext(snapshot.backgroundContext);
     for (const segment of snapshot.pendingSegments) rememberRecoveredSegment(state, segment);
     state.accumulatedSinceMs = state.pendingSegments.length ? (snapshot.accumulatedSinceMs ?? now()) : null;
@@ -226,9 +315,15 @@ export function createScribeCoordinator({
         failureFingerprint: undefined,
         terminalFailure: undefined
       };
+      state.inFlight.admissionPersisted = true;
       assertInFlightEvidence(state.inFlight);
       trimRememberedSegments(state);
       return [dispatchDescriptor(sessionId, state, state.inFlight)];
+    }
+    if (snapshot.lastEvaluatedBatch) {
+      const batch = snapshot.lastEvaluatedBatch;
+      state.lastEvaluatedBatch = structuredClone(batch);
+      state.lastSettled = { key: `${batch.batch_identity.request_id}:${batch.attempt}`, fingerprint: fingerprintValue({ batch_attempt: batch.attempt, batch }) };
     }
     return pump(sessionId);
   }
@@ -269,7 +364,21 @@ export function createScribeCoordinator({
       terminalFailure: undefined
     };
     cancelIdleTimer(state);
-    return [dispatchDescriptor(sessionId, state, state.inFlight)];
+    if (!requirePersistence) return [dispatchDescriptor(sessionId, state, state.inFlight)];
+    return [beginPersistence(state, sessionId, 'batch-admitted', checkpointForState(sessionId, state, { savedAtMs: now() }))];
+  }
+
+  function beginPersistence(state, sessionId, transition, checkpoint, batch) {
+    if (state.pendingPersistence) throw conflict('SCRIBE_PERSISTENCE_IN_FLIGHT', 'A Scribe checkpoint transition is already awaiting durable acknowledgement');
+    const payload = {
+      session_id: sessionId,
+      transition,
+      checkpoint: structuredClone(checkpoint),
+      ...(batch ? { batch: structuredClone(batch) } : {})
+    };
+    const output = { type: 'checkpoint-persist', ...structuredClone(payload) };
+    state.pendingPersistence = { transition, fingerprint: fingerprintValue(payload), output };
+    return output;
   }
 
   function dispatchDescriptor(sessionId, state, inFlight) {
@@ -295,6 +404,7 @@ export function createScribeCoordinator({
     state.inFlight = undefined;
     state.stalledRequestId = undefined;
     state.lastSettled = { key: evaluationKey, fingerprint: evaluationFingerprint };
+    state.lastEvaluatedBatch = structuredClone(batch);
     if (!state.pendingSegments.length) state.accumulatedSinceMs = null;
     trimRememberedSegments(state);
     const settledOutput = { type: 'settled', sessionId, batch: structuredClone(batch), batchAttempt: payload.batch_attempt };
@@ -366,7 +476,69 @@ export function createScribeCoordinator({
     if (waiters) for (const waiter of waiters) waiter.reject(error);
   }
 
-  return Object.freeze({ configurePolicy, acceptFinalizedSegment, acceptBatchEvaluated, close, stop, status, restoreState });
+  return Object.freeze({ configurePolicy, acceptFinalizedSegment, acceptBatchEvaluated, acceptRecoveryRestored, acceptCheckpointPersisted, close, stop, status, restoreState });
+}
+
+function checkpointForState(sessionId, state, overrides = {}) {
+  const policy = state.policy || { ...DEFAULT_POLICY, session_id: sessionId };
+  const pending = state.pendingSegments.length <= 2 ? state.pendingSegments : [];
+  const checkpoint = {
+    schema_version: '1.0.0',
+    session_id: sessionId,
+    saved_at: new Date(overrides.savedAtMs ?? Date.now()).toISOString(),
+    admitted_through: structuredClone(overrides.cursor || state.cursor),
+    pending_partial: {
+      segments: pending.map(({ segment_id, revision, sequence }) => ({ segment_id, revision, sequence })),
+      accumulated_since: pending.length && state.accumulatedSinceMs != null ? new Date(state.accumulatedSinceMs).toISOString() : null
+    },
+    background_context: { prior_logged_items: structuredClone(overrides.priorLoggedItems || state.backgroundContext.prior_logged_items) },
+    policy_id: policy.policy_id,
+    policy_version: policy.policy_version,
+    ...(state.inFlight && !overrides.clearInFlight ? { in_flight_batch: {
+      batch_identity: structuredClone(state.inFlight.batchIdentity),
+      attempt: state.inFlight.batchAttempt,
+      dispatched_at: state.inFlight.admittedAtIso
+    } } : {}),
+    ...(overrides.lastEvaluatedBatch || state.lastEvaluatedBatch ? { last_evaluated_batch: structuredClone(overrides.lastEvaluatedBatch || state.lastEvaluatedBatch) } : {})
+  };
+  return checkpoint;
+}
+
+function checkpointAfterEvaluation(sessionId, state, batch) {
+  const last = state.inFlight.admittedSegments.at(-1);
+  const priorLoggedItems = [...state.backgroundContext.prior_logged_items, ...batch.items.map((item) => structuredClone(item))].slice(-MAX_BACKGROUND_LOGGED_ITEMS);
+  return checkpointForState(sessionId, state, {
+    savedAtMs: Date.parse(batch.acknowledgement.acknowledged_at || batch.evaluated_at),
+    cursor: { last_segment_id: last.segment_id, last_sequence: last.sequence, last_revision: last.revision },
+    priorLoggedItems,
+    clearInFlight: true,
+    lastEvaluatedBatch: batch
+  });
+}
+
+function emptyRecoverySnapshot() {
+  return {
+    cursor: { last_segment_id: null, last_sequence: -1, last_revision: 0 },
+    pendingSegments: [],
+    accumulatedSinceMs: null,
+    backgroundContext: { transcript_segments: [], prior_logged_items: [] }
+  };
+}
+
+function requireRecoverySegments(value, label) {
+  if (!Array.isArray(value)) throw invalid(`recovered ${label} segments must be an array`);
+  for (const segment of value) validateSegment(segment);
+  return value.map((segment) => structuredClone(segment));
+}
+
+function assertReferenceMatch(references, segments, label) {
+  if (references.length !== segments.length) throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', `Recovered ${label} evidence count does not match its checkpoint references`);
+  references.forEach((reference, index) => {
+    const segment = segments[index];
+    if (reference.segment_id !== segment.segment_id || reference.revision !== segment.revision || reference.sequence !== segment.sequence) {
+      throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', `Recovered ${label} evidence does not exactly match its checkpoint references`);
+    }
+  });
 }
 
 function projectSegmentContent({ segment_id, revision, sequence, start_time, end_time, text }) {
