@@ -1,0 +1,11 @@
+{
+  "$id": "argus.scribe-guidance-configure.v1",
+  "type": "object",
+  "required": ["session_id", "additional_guidance", "guidance_fingerprint"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "additional_guidance": { "type": "string", "maxLength": 2000 },
+    "guidance_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}

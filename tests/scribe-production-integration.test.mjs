@@ -28,7 +28,12 @@ test('production graph configures the governed Scribe defaults without coupling 
   const policy = definition.run.configuration.scribe_policy;
   assert.deepEqual(policy.admission, { rows_per_batch: 3, idle_timeout_ms: 15000 });
   assert.deepEqual(policy.context, { max_total_context_tokens: 8000 });
-  assert.equal(policy.generation.instruction_version, '1.0.0');
+  // 1.1.0 is the first instruction whose wording ranks optional user guidance below the governed
+  // role, schema, provenance, and ownership rules, so it is the version this graph prompts under.
+  assert.equal(policy.generation.instruction_version, '1.1.0');
+  // Guidance is per session and supplied by the host before that session starts; it is never baked
+  // into the graph definition, where it would apply to every session at once.
+  assert.equal(Object.hasOwn(policy.generation, 'additional_guidance'), false);
   // ADR-021's operational defaults are configuration; nothing about the model provider may leak
   // into the governed policy the coordinator and extraction boundary agree on.
   const serialized = JSON.stringify(policy);

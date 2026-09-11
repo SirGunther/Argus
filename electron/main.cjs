@@ -52,6 +52,7 @@ async function createWindow() {
 async function start() {
   const { DesktopApplication } = await import('../runtime/desktop-application.mjs');
   const { createModelProviderSettingsStore, createSafeStorageCredentialStore } = await import('../runtime/model-provider-settings.mjs');
+  const { createScribeGuidanceSettingsStore } = await import('../runtime/scribe-guidance-settings.mjs');
   configurePermissions();
   const sessionRoot = process.env.ARGUS_SESSION_ROOT || path.join(app.getPath('userData'), 'sessions');
   process.env.ARGUS_SESSION_ROOT = sessionRoot;
@@ -60,6 +61,9 @@ async function start() {
   const userData = app.getPath('userData');
   const providerSettingsStore = createModelProviderSettingsStore({ filePath: path.join(userData, 'argus-ai-provider-settings.json') });
   const credentialStore = createSafeStorageCredentialStore({ safeStorage, filePath: path.join(userData, 'argus-ai-provider-credential.bin') });
+  // Guidance is ordinary non-secret preference text, so it keeps its own plain-JSON store beside
+  // the provider settings rather than sharing the encrypted credential store.
+  const scribeGuidanceStore = createScribeGuidanceSettingsStore({ filePath: path.join(userData, 'argus-scribe-guidance.json') });
   if (diagnosticsEnabled) {
     const { createDiagnosticFileOutput, installProcessDiagnosticHandlers } = await import('../runtime/diagnostics.mjs');
     const defaultFile = path.join(app.getPath('userData'), 'diagnostics', 'argus-finalization.jsonl');
@@ -71,6 +75,7 @@ async function start() {
     graphFile: path.join(ROOT, 'wiring', 'production-electron.json'),
     sessionRoot,
     providerSettingsStore,
+    scribeGuidanceStore,
     credentialStore,
     environment: process.env,
     diagnosticsEnabled,
@@ -95,6 +100,8 @@ async function start() {
   ipcMain.handle('argus.ai-provider-settings', () => application.aiProviderSettings());
   ipcMain.handle('argus.ai-provider-save', (_event, payload) => application.saveAiProviderSettings(payload));
   ipcMain.handle('argus.ai-provider-test', (_event, payload) => application.testAiProviderSettings(payload));
+  ipcMain.handle('argus.scribe-guidance-settings', () => application.scribeGuidanceSettings());
+  ipcMain.handle('argus.scribe-guidance-save', (_event, payload) => application.saveScribeGuidanceSettings(payload));
 
   await createWindow();
 }

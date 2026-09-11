@@ -7,7 +7,13 @@ import { runLineService, ServiceOperationError } from '../../runtime/service-pro
 // so the template is retained at start and projected when a session actually begins recording
 // or resumes.
 const SERVICE = 'scribe-policy-source';
+const SCRIBE_GUIDANCE_MAX_CHARS = 2000;
+// One entry per live session, matching the extraction boundary's retained-policy ceiling. The
+// host re-sends a session's snapshot on every resume, so evicting the oldest entry loses nothing
+// durable: the durable copy lives with the session, not here.
+const MAX_RETAINED_GUIDANCE = 8;
 let template;
+const sessionGuidance = new Map();
 
 runLineService({ service: SERVICE, operations: {
   'lifecycle.start': { name: 'retain-scribe-batch-policy', handle(message) {
@@ -16,6 +22,25 @@ runLineService({ service: SERVICE, operations: {
     template = validateTemplate(configured);
     return [];
   } },
+  'scribe.guidance-configure': { name: 'retain-scribe-session-guidance', handle(message) {
+    const { session_id: sessionId, additional_guidance: guidance, guidance_fingerprint: fingerprint } = message.payload || {};
+    if (!sessionId) throw invalid('scribe.guidance-configure requires a session_id');
+    if (typeof guidance !== 'string') throw invalid('scribe.guidance-configure requires additional_guidance text');
+    if (guidance.length > SCRIBE_GUIDANCE_MAX_CHARS) throw invalid(`scribe.guidance-configure additional_guidance exceeds ${SCRIBE_GUIDANCE_MAX_CHARS} characters`);
+    if (typeof fingerprint !== 'string' || !fingerprint) throw invalid('scribe.guidance-configure requires a guidance_fingerprint');
+    const retained = sessionGuidance.get(sessionId);
+    if (retained) {
+      // A session's guidance is snapshotted once. A second value for the same session is the
+      // substitution this ticket exists to prevent, so it is a visible conflict, not an update.
+      if (retained.fingerprint === fingerprint && retained.guidance === guidance) return [];
+      throw new ServiceOperationError(`Scribe guidance for session ${sessionId} is already snapshotted and cannot be replaced`, {
+        code: 'SCRIBE_GUIDANCE_CONFLICT', category: 'conflict', details: { session_id: sessionId, retained_fingerprint: retained.fingerprint, offered_fingerprint: fingerprint }
+      });
+    }
+    if (sessionGuidance.size >= MAX_RETAINED_GUIDANCE) sessionGuidance.delete(sessionGuidance.keys().next().value);
+    sessionGuidance.set(sessionId, { guidance, fingerprint });
+    return [];
+  }, traceDetail: (message) => ({ session_id: message.payload?.session_id, guidance_fingerprint: message.payload?.guidance_fingerprint }) },
   'session.recorded': { name: 'publish-scribe-batch-policy', handle: publish },
   'session.resumed': { name: 'publish-scribe-batch-policy', handle: publish }
 } });
@@ -28,14 +53,39 @@ function publish(message) {
       code: 'SCRIBE_POLICY_NOT_CONFIGURED', category: 'validation', details: { session_id: sessionId }
     });
   }
-  const payload = { ...structuredClone(template), session_id: sessionId };
+  // An unconfigured session publishes without guidance rather than failing: guidance is optional,
+  // and blank guidance means Scribe runs on its protected instruction alone. The host sends and
+  // awaits a session's snapshot before recording or resuming it, so a real session that has
+  // guidance has it here first.
+  const snapshot = sessionGuidance.get(sessionId);
+  const guidance = snapshot?.guidance?.trim() ? snapshot.guidance.trim() : undefined;
+  const payload = {
+    ...structuredClone(template),
+    session_id: sessionId,
+    policy_id: guidanceScopedPolicyId(template.policy_id, snapshot, guidance),
+    generation: { ...structuredClone(template.generation), ...(guidance ? { additional_guidance: guidance } : {}) }
+  };
   return [{
     plane: 'control',
     messageType: 'scribe.batch-policy',
-    schemaVersion: '1.0.0',
+    schemaVersion: '1.1.0',
     identityKey: `scribe.batch-policy:${sessionId}:${payload.policy_id}:${payload.policy_version}`,
     payload
   }];
+}
+
+/**
+ * Fold the guidance identity into `policy_id`.
+ *
+ * Guidance is part of what the model was prompted with, so it has to be part of the policy
+ * identity that `scribe_batch_identity`, the durable checkpoint, and the batch journal already
+ * carry. Deriving it here means a changed guidance value is a changed policy everywhere
+ * downstream - the checkpoint's existing policy comparison detects a substituted snapshot on
+ * recovery - without adding a second identity that could drift out of step with the first.
+ */
+function guidanceScopedPolicyId(policyId, snapshot, guidance) {
+  if (!guidance || !snapshot) return policyId;
+  return `${policyId}+g${snapshot.fingerprint.replace(/^sha256:/, '').slice(0, 12)}`;
 }
 
 function validateTemplate(configured) {

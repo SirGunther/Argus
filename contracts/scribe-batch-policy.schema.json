@@ -28,7 +28,8 @@
       "required": ["policy_profile", "instruction_version"],
       "properties": {
         "policy_profile": { "type": "string", "minLength": 1 },
-        "instruction_version": { "type": "string", "minLength": 1 }
+        "instruction_version": { "type": "string", "minLength": 1 },
+        "additional_guidance": { "type": "string", "minLength": 1, "maxLength": 2000 }
       },
       "additionalProperties": false
     }

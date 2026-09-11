@@ -31,7 +31,11 @@ const MODEL = 'scribe-test-model';
 test('the versioned Scribe instruction carries the accepted role, forbids routine summaries, and separates background from new evidence', () => {
   const instruction = scribeBatchInstruction('1.0.0');
   assert.equal(instruction.version, '1.0.0');
-  assert.deepEqual(SCRIBE_BATCH_INSTRUCTION_VERSIONS, ['1.0.0']);
+  // 1.1.0 (SCRIBE-05B) adds the user-guidance precedence wording. 1.0.0 stays byte-identical and
+  // free of any guidance wording, so a batch admitted under it still prompts with the exact text
+  // it was evaluated against.
+  assert.deepEqual(SCRIBE_BATCH_INSTRUCTION_VERSIONS, ['1.0.0', '1.1.0']);
+  assert.equal(instruction.text.includes('additional_guidance'), false);
 
   // Role and responsibility, verbatim from Architecture/OperationalAgentRoles.md.
   assert.match(instruction.text, /determine what happened that is worth retaining/i);
@@ -158,7 +162,7 @@ test('mandatory instruction, schema, new evidence, and output reserve that canno
     () => buildScribeBatchRequest(dispatchInput({ totalContextTokens: noRoomForEvidence })),
     (error) => {
       assert.equal(error.cause.code, 'SCRIBE_BATCH_BUDGET_EXCEEDED');
-      assert.match(error.message, /new evidence is never truncated/);
+      assert.match(error.message, /new evidence and guidance are never truncated/);
       return true;
     }
   );

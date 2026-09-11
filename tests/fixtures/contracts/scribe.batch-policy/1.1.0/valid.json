@@ -1,0 +1,26 @@
+{
+  "message_id": "fixture-scribe-batch-policy-guidance",
+  "plane": "control",
+  "message_type": "scribe.batch-policy",
+  "timestamp": "2026-09-11T00:00:00.000Z",
+  "producer": "fixture-scribe-policy-source",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.1.0",
+  "payload": {
+    "policy_id": "fixture-default:g-1a2b3c4d",
+    "policy_version": "1.0.0",
+    "session_id": "fixture-scribe-session",
+    "admission": {
+      "rows_per_batch": 3,
+      "idle_timeout_ms": 15000
+    },
+    "context": {
+      "max_total_context_tokens": 8000
+    },
+    "generation": {
+      "policy_profile": "neutral-contextual-log",
+      "instruction_version": "1.1.0",
+      "additional_guidance": "Capture bugs and feature requests; ignore casual test chatter."
+    }
+  }
+}

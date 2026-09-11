@@ -13,7 +13,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   const AUDIO_INPUT_STORAGE_KEY = 'argus.selected-audio-input-device';
   const ui = createUiState();
   const desktop = window.argus || null;
-  const state = { session: null, transcript: [], derived: [], liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null, aiProvider: null, aiProviderTab: 'local', aiProviderSaving: false };
+  const state = { session: null, transcript: [], derived: [], liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null, aiProvider: null, aiProviderTab: 'local', aiProviderSaving: false, scribeGuidance: null, scribeGuidanceSaving: false };
   const timer = createSessionTimer();
   const STARTING_TIMEOUT_MS = 15000;
   const audioInput = { devices: [], selectedDeviceId: readRememberedAudioInput(), refreshing: false, initialized: false, ready: false, message: 'Checking microphone access...', tone: '' };
@@ -30,7 +30,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     sessionDrawer: document.querySelector('#sessionDrawer'), closeModal: document.querySelector('#closeModal'), drawerState: document.querySelector('#drawerState'), drawerDuration: document.querySelector('#drawerDuration'), drawerEntries: document.querySelector('#drawerEntries'), finalTranscriptCount: document.querySelector('#finalTranscriptCount'), finalDerivedCount: document.querySelector('#finalDerivedCount'), toastRegion: document.querySelector('#toastRegion'), serviceStatusList: document.querySelector('#serviceStatusList'), systemStatusSummary: document.querySelector('#systemStatusSummary'), systemStatusIndicator: document.querySelector('#systemStatusIndicator'),
     audioInputDetails: document.querySelector('#audioInputDetails'), audioInputControl: document.querySelector('#audioInputControl'), audioInputSelect: document.querySelector('#audioInputSelect'), audioInputRefresh: document.querySelector('#audioInputRefresh'), audioInputStatus: document.querySelector('#audioInputStatus'), audioInputSummary: document.querySelector('#audioInputSummary'),
     includeTimestamps: document.querySelector('#includeTimestamps'), sessionDetailsButton: document.querySelector('#sessionDetailsButton'), openFolderButton: document.querySelector('#openFolderButton'), drawerFolderButton: document.querySelector('#drawerFolderButton'), copyPathButton: document.querySelector('#copyPathButton'), confirmCloseButton: document.querySelector('#confirmCloseButton'),
-    aiProviderButton: document.querySelector('#aiProviderButton'), aiProviderDrawer: document.querySelector('#aiProviderDrawer'), aiProviderActive: document.querySelector('#aiProviderActive'), localModelTab: document.querySelector('#localModelTab'), externalServiceTab: document.querySelector('#externalServiceTab'), localModelPanel: document.querySelector('#localModelPanel'), externalServicePanel: document.querySelector('#externalServicePanel'), localProviderSelect: document.querySelector('#localProviderSelect'), localEndpointInput: document.querySelector('#localEndpointInput'), localModelInput: document.querySelector('#localModelInput'), testLocalConnectionButton: document.querySelector('#testLocalConnectionButton'), localConnectionStatus: document.querySelector('#localConnectionStatus'), externalProviderSelect: document.querySelector('#externalProviderSelect'), externalEndpointInput: document.querySelector('#externalEndpointInput'), externalModelInput: document.querySelector('#externalModelInput'), externalApiKeyInput: document.querySelector('#externalApiKeyInput'), externalCredentialStatus: document.querySelector('#externalCredentialStatus'), removeApiKeyButton: document.querySelector('#removeApiKeyButton'), testExternalConnectionButton: document.querySelector('#testExternalConnectionButton'), externalConnectionStatus: document.querySelector('#externalConnectionStatus'), aiProviderSaveStatus: document.querySelector('#aiProviderSaveStatus'), saveAiProviderButton: document.querySelector('#saveAiProviderButton')
+    aiProviderButton: document.querySelector('#aiProviderButton'), aiProviderDrawer: document.querySelector('#aiProviderDrawer'), aiProviderActive: document.querySelector('#aiProviderActive'), localModelTab: document.querySelector('#localModelTab'), externalServiceTab: document.querySelector('#externalServiceTab'), localModelPanel: document.querySelector('#localModelPanel'), externalServicePanel: document.querySelector('#externalServicePanel'), localProviderSelect: document.querySelector('#localProviderSelect'), localEndpointInput: document.querySelector('#localEndpointInput'), localModelInput: document.querySelector('#localModelInput'), testLocalConnectionButton: document.querySelector('#testLocalConnectionButton'), localConnectionStatus: document.querySelector('#localConnectionStatus'), externalProviderSelect: document.querySelector('#externalProviderSelect'), externalEndpointInput: document.querySelector('#externalEndpointInput'), externalModelInput: document.querySelector('#externalModelInput'), externalApiKeyInput: document.querySelector('#externalApiKeyInput'), externalCredentialStatus: document.querySelector('#externalCredentialStatus'), removeApiKeyButton: document.querySelector('#removeApiKeyButton'), testExternalConnectionButton: document.querySelector('#testExternalConnectionButton'), externalConnectionStatus: document.querySelector('#externalConnectionStatus'), aiProviderSaveStatus: document.querySelector('#aiProviderSaveStatus'), saveAiProviderButton: document.querySelector('#saveAiProviderButton'), aiProviderFooter: document.querySelector('#aiProviderFooter'), scribeGuidanceTab: document.querySelector('#scribeGuidanceTab'), scribeGuidancePanel: document.querySelector('#scribeGuidancePanel'), scribeGuidanceInput: document.querySelector('#scribeGuidanceInput'), scribeGuidanceCount: document.querySelector('#scribeGuidanceCount'), scribeGuidanceSessionStatus: document.querySelector('#scribeGuidanceSessionStatus'), scribeGuidanceSaveStatus: document.querySelector('#scribeGuidanceSaveStatus'), saveScribeGuidanceButton: document.querySelector('#saveScribeGuidanceButton'), resetScribeGuidanceButton: document.querySelector('#resetScribeGuidanceButton')
   };
 
   assertRequiredBindings(els);
@@ -653,13 +653,21 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   }
 
   function updateProviderTabVisibility() {
-    const local = state.aiProviderTab === 'local';
-    els.localModelTab.classList.toggle('active', local);
-    els.externalServiceTab.classList.toggle('active', !local);
-    els.localModelTab.setAttribute('aria-selected', String(local));
-    els.externalServiceTab.setAttribute('aria-selected', String(!local));
-    els.localModelPanel.hidden = !local;
-    els.externalServicePanel.hidden = local;
+    const tabs = [
+      [els.localModelTab, els.localModelPanel, 'local'],
+      [els.externalServiceTab, els.externalServicePanel, 'external'],
+      [els.scribeGuidanceTab, els.scribeGuidancePanel, 'scribe']
+    ];
+    for (const [tab, panel, name] of tabs) {
+      if (!tab || !panel) continue;
+      const active = state.aiProviderTab === name;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+      panel.hidden = !active;
+    }
+    // Scribe guidance saves from its own panel, so the provider footer would offer a Save Provider
+    // action that has nothing to do with what the user is looking at.
+    if (els.aiProviderFooter) els.aiProviderFooter.hidden = state.aiProviderTab === 'scribe';
   }
 
   function providerDraft(mode) {
@@ -685,6 +693,63 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     } catch (error) {
       els.aiProviderSaveStatus.textContent = `Settings unavailable · ${error.message}`;
       els.aiProviderSaveStatus.className = 'provider-save-status error';
+    }
+  }
+
+  function renderScribeGuidance() {
+    const settings = state.scribeGuidance;
+    if (!settings || !els.scribeGuidanceInput) return;
+    if (document.activeElement !== els.scribeGuidanceInput) els.scribeGuidanceInput.value = settings.additional_guidance || '';
+    updateScribeGuidanceCount();
+    // The saved value and the value this session is actually running under are different facts.
+    // Saying only "saved" would imply the change already affects the recording in progress.
+    els.scribeGuidanceSessionStatus.className = 'provider-test-status';
+    els.scribeGuidanceSessionStatus.textContent = settings.applies_next_session
+      ? 'Saved. The current session keeps the guidance it started with; this applies to your next new session.'
+      : state.session?.session_id
+        ? 'The current session is using this guidance.'
+        : 'This guidance applies to your next new session.';
+  }
+
+  function updateScribeGuidanceCount() {
+    if (!els.scribeGuidanceCount || !els.scribeGuidanceInput) return;
+    const max = Number(els.scribeGuidanceInput.getAttribute('maxlength')) || 2000;
+    els.scribeGuidanceCount.textContent = `${els.scribeGuidanceInput.value.length} / ${max} characters`;
+  }
+
+  async function loadScribeGuidanceSettings() {
+    if (!desktop?.scribeGuidanceSettings) return;
+    try {
+      state.scribeGuidance = await desktop.scribeGuidanceSettings();
+      renderScribeGuidance();
+    } catch (error) {
+      els.scribeGuidanceSaveStatus.className = 'provider-save-status error';
+      els.scribeGuidanceSaveStatus.textContent = `Scribe guidance unavailable · ${error.message}`;
+    }
+  }
+
+  async function saveScribeGuidance(clear = false) {
+    if (!desktop?.saveScribeGuidanceSettings || state.scribeGuidanceSaving) return;
+    state.scribeGuidanceSaving = true;
+    els.saveScribeGuidanceButton.disabled = true;
+    els.resetScribeGuidanceButton.disabled = true;
+    els.scribeGuidanceSaveStatus.className = 'provider-save-status';
+    els.scribeGuidanceSaveStatus.textContent = 'Saving Scribe guidance…';
+    try {
+      const additionalGuidance = clear ? '' : els.scribeGuidanceInput.value;
+      state.scribeGuidance = await desktop.saveScribeGuidanceSettings({ additional_guidance: additionalGuidance });
+      els.scribeGuidanceInput.value = state.scribeGuidance.additional_guidance || '';
+      els.scribeGuidanceSaveStatus.textContent = '';
+      renderScribeGuidance();
+      showToast(clear ? 'Scribe guidance cleared' : 'Scribe guidance saved', 'success');
+    } catch (error) {
+      els.scribeGuidanceSaveStatus.className = 'provider-save-status error';
+      els.scribeGuidanceSaveStatus.textContent = `Guidance was not saved · ${error.message}`;
+      showToast(`Scribe guidance failed · ${error.message}`, 'error');
+    } finally {
+      state.scribeGuidanceSaving = false;
+      els.saveScribeGuidanceButton.disabled = false;
+      els.resetScribeGuidanceButton.disabled = false;
     }
   }
 
@@ -965,6 +1030,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
         state.newSession = Boolean(bootstrap.new_session);
         bootstrap.projections.forEach((message) => receive(message, { bootstrap: true }));
         await loadAiProviderSettings();
+        await loadScribeGuidanceSettings();
         unsubscribeProjection = desktop.onProjection((message) => receive(message));
         state.ready = true;
         setBridgeStatus('available', 'Electron host connected; governed projections and commands are live.');
@@ -1040,6 +1106,10 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   els.aiProviderButton.addEventListener('click', openAiProviderDrawer);
   els.localModelTab.addEventListener('click', () => { state.aiProviderTab = 'local'; updateProviderTabVisibility(); });
   els.externalServiceTab.addEventListener('click', () => { state.aiProviderTab = 'external'; updateProviderTabVisibility(); });
+  els.scribeGuidanceTab?.addEventListener('click', () => { state.aiProviderTab = 'scribe'; updateProviderTabVisibility(); loadScribeGuidanceSettings(); });
+  els.scribeGuidanceInput?.addEventListener('input', updateScribeGuidanceCount);
+  els.saveScribeGuidanceButton?.addEventListener('click', () => saveScribeGuidance(false));
+  els.resetScribeGuidanceButton?.addEventListener('click', () => saveScribeGuidance(true));
   els.localProviderSelect.addEventListener('change', () => {
     if (els.localProviderSelect.value === 'ollama') {
       els.localEndpointInput.value = 'http://127.0.0.1:11434/api/generate';

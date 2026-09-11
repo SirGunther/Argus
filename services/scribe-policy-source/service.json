@@ -14,6 +14,7 @@
     "control": {
       "accepts": [
         "lifecycle.start",
+        "scribe.guidance-configure",
         "session.recorded",
         "session.resumed",
         "lifecycle.health-check",
@@ -29,6 +30,6 @@
       ]
     }
   },
-  "state": "one retained governed Scribe batch policy template projected from explicit run configuration",
+  "state": "one retained governed Scribe batch policy template projected from explicit run configuration, plus one bounded immutable user-guidance snapshot per live session",
   "side_effects": []
 }

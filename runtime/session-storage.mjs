@@ -29,8 +29,11 @@ const RECOVERY_BACKUP_FILE_NAMES = Object.freeze([
   'loggedItemHistory',
   'closeEvidence',
   'scribeCheckpoint',
+  'scribeGuidance',
   'scribeBatchJournal'
 ]);
+export const SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION = '1.0.0';
+const SCRIBE_GUIDANCE_SNAPSHOT_MAX_CHARS = 2000;
 const SCRIBE_ITEM_KIND_VALUES = new Set(['action', 'decision', 'open-question', 'reminder', 'other']);
 const SCRIBE_ADMISSION_REASON_VALUES = new Set(['batch-complete', 'idle-timeout']);
 const SCRIBE_OUTCOME_VALUES = new Set(['items-recorded', 'empty-evaluated', 'failed']);
@@ -102,6 +105,7 @@ export class SessionStorage {
       loggedItemHistory: path.join(permanent, HISTORY_FILE_BY_KIND['logged-item']),
       closeEvidence: path.join(permanent, 'close.evidence.json'),
       scribeCheckpoint: path.join(active, 'scribe.checkpoint.json'),
+      scribeGuidance: path.join(active, 'scribe.guidance.json'),
       scribeBatchJournal: path.join(permanent, 'scribe.batch-journal.ndjson'),
       recoveryBackups: this.#insideRoot(path.join(session, 'recovery-backups'))
     });
@@ -204,6 +208,28 @@ export class SessionStorage {
     assertGovernedScribeCheckpointShape(sessionId, checkpoint);
     const paths = await this.ensureSession(sessionId);
     return this.#writeAtomic(paths.scribeCheckpoint, checkpoint);
+  }
+
+  /**
+   * The exact user Scribe guidance this session runs under.
+   *
+   * It lives with the session rather than beside the global setting because it must survive a
+   * restart: without a durable per-session copy, resuming a session after the user edited their
+   * guidance would silently prompt the model with wording that session never used.
+   */
+  async readScribeGuidance(sessionId) {
+    await this.ensureRoot();
+    const paths = this.paths(sessionId);
+    await this.#assertSafeSessionPaths(paths, ['scribeGuidance']);
+    const snapshot = await this.#readJson(paths.scribeGuidance, { missing: undefined, label: 'Scribe guidance snapshot' });
+    if (snapshot !== undefined) assertGovernedScribeGuidanceShape(sessionId, snapshot);
+    return snapshot;
+  }
+
+  async writeScribeGuidance(sessionId, snapshot) {
+    assertGovernedScribeGuidanceShape(sessionId, snapshot);
+    const paths = await this.ensureSession(sessionId);
+    return this.#writeAtomic(paths.scribeGuidance, snapshot);
   }
 
   async readScribeBatchJournal(sessionId) {
@@ -608,6 +634,19 @@ export function assertGovernedScribeCheckpointShape(sessionId, checkpoint) {
   if (checkpoint.last_evaluated_batch !== undefined) {
     assertGovernedBatchEvaluatedShape(sessionId, checkpoint.last_evaluated_batch, 'Scribe checkpoint.last_evaluated_batch');
   }
+}
+
+export function assertGovernedScribeGuidanceShape(sessionId, snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot must be an object');
+  const allowed = new Set(['schema_version', 'session_id', 'saved_at', 'additional_guidance', 'guidance_fingerprint']);
+  if (Object.keys(snapshot).some((key) => !allowed.has(key))) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot has an undeclared field');
+  if (snapshot.schema_version !== SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', `Scribe guidance snapshot schema_version must be ${SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION}`);
+  if (snapshot.session_id !== sessionId) throw new SessionStorageError('SCRIBE_GUIDANCE_SESSION_CONFLICT', 'Scribe guidance snapshot targets a different session', { details: { session_id: snapshot.session_id } });
+  if (!isNonEmptyString(snapshot.saved_at)) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot.saved_at is required');
+  if (typeof snapshot.additional_guidance !== 'string' || snapshot.additional_guidance.length > SCRIBE_GUIDANCE_SNAPSHOT_MAX_CHARS) {
+    throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', `Scribe guidance snapshot.additional_guidance must be text of at most ${SCRIBE_GUIDANCE_SNAPSHOT_MAX_CHARS} characters`);
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(snapshot.guidance_fingerprint || '')) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot.guidance_fingerprint is invalid');
 }
 
 function assertGovernedJournalEntryShape(sessionId, entry, lineNumber) {

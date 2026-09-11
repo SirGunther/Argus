@@ -26,6 +26,11 @@ export const EXTRACTION_BATCH_OUTPUT_LIMITS = Object.freeze({
   max_output_chars: 2048,
   max_output_tokens: 512
 });
+// Optional user Scribe guidance (SCRIBE-05B). 2000 chars is ~500 governed tokens, so even a
+// maximum-length guidance leaves the instruction, the whole new evidence, and the output reserve
+// inside the ~8000-token policy budget. Guidance is never truncated to fit: an over-budget request
+// fails visibly at the extraction boundary instead of silently prompting under shortened wording.
+export const SCRIBE_GUIDANCE_LIMITS = Object.freeze({ max_chars: 2000 });
 
 export function fingerprintModelRequest(request) {
   return `sha256:${createHash('sha256').update(JSON.stringify(request)).digest('hex')}`;
@@ -150,7 +155,18 @@ export function validateScribeBatchModelRequest(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) throw protocolError('INVALID_MODEL_REQUEST', 'model request must be an object');
   if (request.protocol_version !== SCRIBE_BATCH_PROTOCOL_VERSION) throw protocolError('INVALID_MODEL_REQUEST', `scribe batch protocol version must be ${SCRIBE_BATCH_PROTOCOL_VERSION}`);
   if (request.purpose !== 'logged-item-extraction') throw protocolError('INVALID_MODEL_REQUEST', 'scribe batch request purpose must be logged-item-extraction');
-  requireExactKeys(request, ['protocol_version', 'purpose', 'model', 'batch_identity', 'new_evidence_segments', 'background_context', 'policy_profile', 'instruction_version', 'limits', 'identity']);
+  // `additional_guidance` is optional and declared only when present, so a request without user
+  // guidance keeps exactly the key set SCRIBE-01 shipped and still validates unchanged.
+  const guidanceKeys = request.additional_guidance !== undefined ? ['additional_guidance'] : [];
+  requireExactKeys(request, ['protocol_version', 'purpose', 'model', 'batch_identity', 'new_evidence_segments', 'background_context', 'policy_profile', 'instruction_version', 'limits', 'identity', ...guidanceKeys]);
+  if (request.additional_guidance !== undefined) {
+    if (typeof request.additional_guidance !== 'string' || !request.additional_guidance.trim()) {
+      throw protocolError('INVALID_MODEL_REQUEST', 'scribe additional_guidance must be a non-empty string when present');
+    }
+    if (request.additional_guidance.length > SCRIBE_GUIDANCE_LIMITS.max_chars) {
+      throw protocolError('INVALID_MODEL_REQUEST', `scribe additional_guidance exceeds the governed ${SCRIBE_GUIDANCE_LIMITS.max_chars}-character limit`);
+    }
+  }
   if (!request.model || typeof request.model !== 'string') throw protocolError('INVALID_MODEL_REQUEST', 'model name is required');
   validateLimits(request.limits);
   if (!request.policy_profile || !request.instruction_version) throw protocolError('INVALID_MODEL_REQUEST', 'policy profile and instruction version are required');

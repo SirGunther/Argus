@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('argus', Object.freeze({
   aiProviderSettings: () => ipcRenderer.invoke('argus.ai-provider-settings'),
   saveAiProviderSettings: (payload) => ipcRenderer.invoke('argus.ai-provider-save', payload),
   testAiProviderSettings: (payload) => ipcRenderer.invoke('argus.ai-provider-test', payload),
+  scribeGuidanceSettings: () => ipcRenderer.invoke('argus.scribe-guidance-settings'),
+  saveScribeGuidanceSettings: (payload) => ipcRenderer.invoke('argus.scribe-guidance-save', payload),
   onProjection(listener) {
     if (typeof listener !== 'function') throw new TypeError('projection listener must be a function');
     projectionListeners.add(listener);

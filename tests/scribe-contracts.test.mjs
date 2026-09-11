@@ -33,7 +33,9 @@ async function loadArtifactFixture(kind, name) {
 test('catalog registers the governed Scribe policy message and the batch-shaped 1.5.0 protocol bump', () => {
   const catalog = registry.catalog;
   assert.equal(catalog.messages['scribe.batch-policy'].plane, 'control');
-  assert.equal(catalog.messages['scribe.batch-policy'].version, '1.0.0');
+  // SCRIBE-05B took a backward-compatible minor for the optional generation.additional_guidance
+  // field; the retained 1.0.0 fixture still replays unchanged against the current schema.
+  assert.equal(catalog.messages['scribe.batch-policy'].version, '1.1.0');
   assert.ok(catalog.messages['scribe.batch-policy'].owner);
   assert.equal(catalog.messages['ai.work-request'].version, '1.5.0');
   assert.equal(catalog.messages['ai.work-completed'].version, '1.5.0');
@@ -277,7 +279,7 @@ test('catalog registers the Scribe batch transport messages additively without d
   // Every shape SCRIBE-01 shipped keeps the exact version and plane current code emits/consumes.
   assert.equal(catalog.messages['ai.work-request'].version, '1.5.0');
   assert.equal(catalog.messages['ai.work-completed'].version, '1.5.0');
-  assert.equal(catalog.messages['scribe.batch-policy'].version, '1.0.0');
+  assert.equal(catalog.messages['scribe.batch-policy'].version, '1.1.0');
   assert.equal(catalog.messages['scribe.batch-policy'].plane, 'control');
 });
 

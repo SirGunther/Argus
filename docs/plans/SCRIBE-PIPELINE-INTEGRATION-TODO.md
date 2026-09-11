@@ -554,44 +554,44 @@ The three stages below are sequential and constitute the ticket's single authori
 
 #### Stage 1 — Lower-cost model, low reasoning/effort: bounded preparation
 
-- [ ] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05A merge.
-- [ ] Read `contracts/scribe-contract-handoff.md`, this ticket, and only the protected instruction, Scribe policy/request/checkpoint path, settings persistence/bridge, existing AI settings drawer, and focused tests.
-- [ ] Map where guidance must be snapshotted, budgeted, fingerprinted, persisted, recovered, rendered, and transmitted without treating it as a provider credential or server-side conversation.
-- [ ] Identify the smallest compatible contract-minor additions needed; retain every older fixture and verify old messages still replay.
-- [ ] Record the exact current user-facing expectation gap and the proposed field label/help text before implementation.
-- [ ] Display this complete ticket-derived checklist in chat with Stage 1 progress recorded.
-- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05B preparation is complete, then pause for the high-reasoning stage.
+- [x] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05A merge.
+- [x] Read `contracts/scribe-contract-handoff.md`, this ticket, and only the protected instruction, Scribe policy/request/checkpoint path, settings persistence/bridge, existing AI settings drawer, and focused tests.
+- [x] Map where guidance must be snapshotted, budgeted, fingerprinted, persisted, recovered, rendered, and transmitted without treating it as a provider credential or server-side conversation.
+- [x] Identify the smallest compatible contract-minor additions needed; retain every older fixture and verify old messages still replay.
+- [x] Record the exact current user-facing expectation gap and the proposed field label/help text before implementation.
+- [x] Display this complete ticket-derived checklist in chat with Stage 1 progress recorded.
+- [x] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05B preparation is complete, then pause for the high-reasoning stage.
 
 #### Stage 2 — Stronger model, high reasoning/effort: governed guidance implementation
 
-- [ ] Add a versioned, bounded Scribe settings record separate from AI provider credentials, with load, save, validation, default, and reset behavior.
-- [ ] Add the Scribe settings section/tab to the existing AI settings drawer with concise expected-output text and an **Additional Scribe guidance** input. Make saved/applies-next-session state truthful and accessible.
-- [ ] Keep the protected Scribe instruction fixed. Treat user text only as an explicitly labeled guidance field whose precedence is below role, schema, evidence, provenance, safety, and ownership rules.
-- [ ] Snapshot guidance once per new session before its first batch. Prevent an edit from changing an existing session's pending, in-flight, stopped/resumable, retried, or recovered work.
-- [ ] Carry the exact guidance snapshot and stable identity/fingerprint through the governed policy, request, checkpoint/journal, retry, and recovery seams required to reproduce a batch exactly after restart.
-- [ ] Include serialized guidance in the approximately 8,000-token accounting and remove old background context first under the existing policy. Reject over-limit guidance visibly; never truncate it silently or truncate new evidence.
-- [ ] Ensure every stateless LM Studio request contains the protected instruction, the labeled optional guidance, the complete new evidence, and bounded background context. Do not rely on LM Studio conversation memory or configure prompting inside LM Studio.
-- [ ] Preserve zero/one/multiple-item validation, exact batch identity, provenance, deterministic draft identity, owner acknowledgement, and serial execution.
-- [ ] Add focused tests for blank/default guidance, custom guidance transmission, maximum/oversized input, next-session application, mid-session edit isolation, retry identity, restart recovery, token rollover, and older contract compatibility.
-- [ ] Review the diff for contract truthfulness, settings separation, boundedness, identity stability, recovery, and scope.
-- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05B implementation is ready for verification, then pause for the lower-tier verification stage.
+- [x] Add a versioned, bounded Scribe settings record separate from AI provider credentials, with load, save, validation, default, and reset behavior.
+- [x] Add the Scribe settings section/tab to the existing AI settings drawer with concise expected-output text and an **Additional Scribe guidance** input. Make saved/applies-next-session state truthful and accessible.
+- [x] Keep the protected Scribe instruction fixed. Treat user text only as an explicitly labeled guidance field whose precedence is below role, schema, evidence, provenance, safety, and ownership rules.
+- [x] Snapshot guidance once per new session before its first batch. Prevent an edit from changing an existing session's pending, in-flight, stopped/resumable, retried, or recovered work.
+- [x] Carry the exact guidance snapshot and stable identity/fingerprint through the governed policy, request, checkpoint/journal, retry, and recovery seams required to reproduce a batch exactly after restart.
+- [x] Include serialized guidance in the approximately 8,000-token accounting and remove old background context first under the existing policy. Reject over-limit guidance visibly; never truncate it silently or truncate new evidence.
+- [x] Ensure every stateless LM Studio request contains the protected instruction, the labeled optional guidance, the complete new evidence, and bounded background context. Do not rely on LM Studio conversation memory or configure prompting inside LM Studio.
+- [x] Preserve zero/one/multiple-item validation, exact batch identity, provenance, deterministic draft identity, owner acknowledgement, and serial execution.
+- [x] Add focused tests for blank/default guidance, custom guidance transmission, maximum/oversized input, next-session application, mid-session edit isolation, retry identity, restart recovery, token rollover, and older contract compatibility.
+- [x] Review the diff for contract truthfulness, settings separation, boundedness, identity stability, recovery, and scope.
+- [x] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05B implementation is ready for verification, then pause for the lower-tier verification stage.
 
 #### Stage 3 — Lower-cost model, low reasoning/effort: verification and delivery
 
-- [ ] Run focused Scribe guidance, settings, contract, model extraction, persistence/recovery, production integration, and UI suites plus the complete repository suite.
-- [ ] Run contract governance/docs, package graph generation/verification, production graph validation, syntax checks, and `git diff --check`.
+- [x] Run focused Scribe guidance, settings, contract, model extraction, persistence/recovery, production integration, and UI suites plus the complete repository suite.
+- [x] Run contract governance/docs, package graph generation/verification, production graph validation, syntax checks, and `git diff --check`.
 - [ ] Launch the real source Electron app with LM Studio; save recognizable guidance, begin a new real session, and confirm LM Studio receives that exact bounded guidance while the prior/current-session behavior remains correctly described.
 - [ ] Confirm the UI explains valid zero output and does not imply that every batch becomes a summary or Logged Item.
 - [ ] Confirm secrets remain redacted, guidance is not stored as a credential, ordinary startup stays quiet, and the installer is not rebuilt.
-- [ ] Update every checklist item truthfully, leaving no required item checked if its evidence is missing.
-- [ ] Commit and push the isolated branch, verify the worktree is clean and remote-aligned, send the required completion notification, and report the exact SHA, files, contract versions, checks, real-run evidence, and remaining user judgment. Do not merge `main`.
+- [x] Update every checklist item truthfully, leaving no required item checked if its evidence is missing.
+- [x] Commit and push the isolated branch, verify the worktree is clean and remote-aligned, send the required completion notification, and report the exact SHA, files, contract versions, checks, real-run evidence, and remaining user judgment. Do not merge `main`.
 
 ### Exit gate
 
-- [ ] The user can see what Scribe may return and can save/reset bounded additional guidance without editing protected instructions or provider credentials.
-- [ ] A new session uses one immutable guidance snapshot across batches, retries, Stop/Resume, Close, and restart recovery; an existing session cannot silently change guidance.
+- [x] The user can see what Scribe may return and can save/reset bounded additional guidance without editing protected instructions or provider credentials.
+- [x] A new session uses one immutable guidance snapshot across batches, retries, Stop/Resume, Close, and restart recovery; an existing session cannot silently change guidance.
 - [ ] Guidance is present in the real stateless LM Studio request, included in the total token budget, and unable to weaken schema, provenance, or authority rules.
-- [ ] Default/blank and customized guidance both preserve valid zero, one, and multiple Logged Item outcomes.
+- [x] Default/blank and customized guidance both preserve valid zero, one, and multiple Logged Item outcomes.
 - [ ] All focused/full automated gates and a real LM Studio source launch pass.
 
 ### Out of scope

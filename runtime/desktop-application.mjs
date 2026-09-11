@@ -4,7 +4,8 @@ import path from 'node:path';
 import { createUiContractBoundary } from '../ui/bridge-contracts.mjs';
 import { createPlatformCapabilities } from '../ui/platform-capabilities.mjs';
 import { InteractiveGraph } from './interactive-graph.mjs';
-import { SessionStorage } from './session-storage.mjs';
+import { SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION, SessionStorage } from './session-storage.mjs';
+import { DEFAULT_SCRIBE_GUIDANCE_SETTINGS, SCRIBE_GUIDANCE_MAX_CHARS, normalizeScribeGuidanceSettings, scribeGuidanceFingerprint } from './scribe-guidance-settings.mjs';
 import { calculateRecordingDurationMs } from './session-lifecycle.mjs';
 import { createDiagnosticLogger } from './diagnostics.mjs';
 import { createAudioPreviewScheduler } from './audio-preview-scheduler.mjs';
@@ -54,12 +55,13 @@ const SCRIBE_STATE_LABELS = Object.freeze({
 });
 
 export class DesktopApplication {
-  constructor({ root, graphFile, sessionRoot, environment = process.env, providerSettingsStore, credentialStore, diagnosticsEnabled = false, diagnosticsOutput, diagnosticClock, diagnosticStallThresholdMs = PIPELINE_STALL_THRESHOLD_MS } = {}) {
+  constructor({ root, graphFile, sessionRoot, environment = process.env, providerSettingsStore, scribeGuidanceStore, credentialStore, diagnosticsEnabled = false, diagnosticsOutput, diagnosticClock, diagnosticStallThresholdMs = PIPELINE_STALL_THRESHOLD_MS } = {}) {
     this.root = path.resolve(root);
     this.graphFile = path.resolve(graphFile);
     this.sessionRoot = path.resolve(sessionRoot);
     this.environment = { ...environment };
     this.providerSettingsStore = providerSettingsStore;
+    this.scribeGuidanceStore = scribeGuidanceStore;
     this.credentialStore = credentialStore || createMemoryCredentialStore();
     this.explicitProviderSettings = undefined;
     this.providerConfiguration = undefined;
@@ -302,6 +304,57 @@ export class DesktopApplication {
     return this.aiProviderSettings();
   }
 
+  /**
+   * The saved global Scribe guidance plus what the user needs to judge it: the bound, and whether
+   * the value they are looking at is the one the current session is actually running under.
+   */
+  async scribeGuidanceSettings() {
+    const saved = (await this.scribeGuidanceStore?.load()) || DEFAULT_SCRIBE_GUIDANCE_SETTINGS;
+    const active = this.sessionId ? await this.storage.readScribeGuidance(this.sessionId).catch(() => undefined) : undefined;
+    return {
+      ...saved,
+      max_chars: SCRIBE_GUIDANCE_MAX_CHARS,
+      applies_next_session: Boolean(active) && active.guidance_fingerprint !== scribeGuidanceFingerprint(saved.additional_guidance),
+      ...(active ? { active_session_guidance: active.additional_guidance } : {})
+    };
+  }
+
+  async saveScribeGuidanceSettings(payload = {}) {
+    const settings = normalizeScribeGuidanceSettings(payload);
+    await this.scribeGuidanceStore?.save(settings);
+    return this.scribeGuidanceSettings();
+  }
+
+  /**
+   * Resolve and publish the guidance one session runs under, before that session's first batch.
+   *
+   * A session that already pinned a snapshot keeps it, whatever the global setting now says - that
+   * is what stops an edit, or a restart after an edit, from changing the prompt for work already
+   * in flight, stopped, or being recovered. A session with no snapshot yet adopts the current
+   * saved value and pins it durably, so the same resolution survives the next restart.
+   */
+  async configureScribeGuidance(sessionId) {
+    if (!sessionId || !this.graph || this.graph.closed) return undefined;
+    let snapshot = await this.storage.readScribeGuidance(sessionId).catch(() => undefined);
+    if (!snapshot) {
+      const saved = (await this.scribeGuidanceStore?.load()) || DEFAULT_SCRIBE_GUIDANCE_SETTINGS;
+      snapshot = {
+        schema_version: SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION,
+        session_id: sessionId,
+        saved_at: new Date().toISOString(),
+        additional_guidance: saved.additional_guidance,
+        guidance_fingerprint: scribeGuidanceFingerprint(saved.additional_guidance)
+      };
+      await this.storage.writeScribeGuidance(sessionId, snapshot);
+    }
+    await this.graph.dispatchFrom('@desktop-controller', 'control', 'scribe.guidance-configure', sessionId, {
+      session_id: sessionId,
+      additional_guidance: snapshot.additional_guidance,
+      guidance_fingerprint: snapshot.guidance_fingerprint
+    }, `scribe-guidance-configure:${sessionId}:${snapshot.guidance_fingerprint.slice(7, 19)}`);
+    return snapshot;
+  }
+
   async testAiProviderSettings(payload = {}) {
     const settings = normalizeModelProviderSettings(payload);
     const suppliedCredential = Object.hasOwn(payload, 'api_key') ? String(payload.api_key || '').trim() : undefined;
@@ -526,6 +579,9 @@ export class DesktopApplication {
       }
     }
     if (payload.command === 'session.close') await this.flushScribeBeforeClose(payload.session_id);
+    // The policy source publishes this session's policy in response to the lifecycle outcome, so
+    // its guidance snapshot has to be in place before the command is dispatched, not after.
+    if (payload.command === 'session.record' || payload.command === 'session.resume') await this.configureScribeGuidance(payload.session_id);
     const output = await this.graph.dispatchFrom('@desktop-controller', 'control', payload.command, payload.session_id, { operation_id: payload.command_id, session_id: payload.session_id, requested_at: new Date().toISOString() }, payload.command_id);
     await this.graph.waitForIdle();
     await this.loadLatestSession(payload.session_id);
@@ -642,6 +698,7 @@ export class DesktopApplication {
   async newSessionCommand(payload) {
     if (this.metadata && this.metadata.state !== 'closed') throw Object.assign(new Error('New Session is available only after the current session is closed.'), { code: 'SESSION_NOT_CLOSED' });
     const sessionId = `session-${randomUUID()}`;
+    await this.configureScribeGuidance(sessionId);
     await this.graph.dispatchFrom('@desktop-controller', 'control', 'session.record', sessionId, {
       operation_id: payload.command_id,
       session_id: sessionId,

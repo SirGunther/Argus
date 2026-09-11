@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.18.0`
+- Catalog version: `1.19.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -32,7 +32,8 @@
 | `operation.rejected` | control | `1.2.0` | `runtime/operation-outcomes` | 16 KiB |
 | `ai.work-request` | control | `1.5.0` | `runtime/ai-scheduling` | 256 KiB |
 | `ai.work-completed` | control | `1.5.0` | `runtime/ai-scheduling` | 256 KiB |
-| `scribe.batch-policy` | control | `1.0.0` | `logged-items/scribe-coordinator` | 32 KiB |
+| `scribe.batch-policy` | control | `1.1.0` | `logged-items/scribe-coordinator` | 32 KiB |
+| `scribe.guidance-configure` | control | `1.0.0` | `runtime/scribe-guidance-settings` | 8 KiB |
 | `scribe.batch-admitted` | domain | `1.0.0` | `logged-items/scribe-coordinator` | 256 KiB |
 | `scribe.batch-evaluated` | domain | `1.0.0` | `logged-items/extraction` | 64 KiB |
 | `scribe.recovery-request` | control | `1.0.0` | `logged-items/scribe-coordinator` | 16 KiB |
@@ -445,7 +446,7 @@
 ## `scribe.batch-policy`
 
 - Plane: `control`
-- Version: `1.0.0`
+- Version: `1.1.0`
 - Owner: `logged-items/scribe-coordinator`
 - Schema: [`scribe-batch-policy.schema.json`](../scribe-batch-policy.schema.json)
 - History: [`history/scribe.batch-policy.md`](../history/scribe.batch-policy.md)
@@ -459,6 +460,21 @@
 | `admission` | yes | object | requires `rows_per_batch`, `idle_timeout_ms` |
 | `context` | yes | object | requires `max_total_context_tokens` |
 | `generation` | yes | object | requires `policy_profile`, `instruction_version` |
+
+## `scribe.guidance-configure`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `runtime/scribe-guidance-settings`
+- Schema: [`scribe-guidance-configure.schema.json`](../scribe-guidance-configure.schema.json)
+- History: [`history/scribe.guidance-configure.md`](../history/scribe.guidance-configure.md)
+- Maximum payload: 8 KiB (8192 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `session_id` | yes | string | min length 1 |
+| `additional_guidance` | yes | string | — |
+| `guidance_fingerprint` | yes | string | — |
 
 ## `scribe.batch-admitted`
 

@@ -3,13 +3,14 @@ import { canonicalJson, deterministicMessageId, fingerprintValue } from '../../r
 import {
   EXTRACTION_BATCH_OUTPUT_LIMITS,
   SCRIBE_BATCH_PROTOCOL_VERSION,
+  SCRIBE_GUIDANCE_LIMITS,
   estimateModelTokens,
   fingerprintModelRequest,
   protocolError,
   validateScribeBatchModelRequest,
   validateScribeBatchModelResponse
 } from '../../contracts/model-protocol.mjs';
-import { scribeBatchInstruction } from '../../contracts/scribe-instruction.mjs';
+import { SCRIBE_GUIDANCE_INSTRUCTION_VERSION, scribeBatchInstruction } from '../../contracts/scribe-instruction.mjs';
 
 const IMPLEMENTATION = 'log-extractor-local-http';
 
@@ -64,6 +65,7 @@ export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
   assertPolicyAgreement(batch, policy, generation);
 
   const instruction = scribeBatchInstruction(batchIdentity.instruction_version);
+  const guidance = normalizeGuidance(generation.additional_guidance, instruction.version);
   const outputReserveTokens = EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens;
   const requestAllowanceTokens = totalContextTokens - instruction.tokens - outputReserveTokens;
   if (requestAllowanceTokens < 1) {
@@ -89,6 +91,7 @@ export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
     batch_identity: structuredClone(batchIdentity),
     new_evidence_segments: structuredClone(newEvidenceSegments),
     background_context: { transcript_segments: structuredClone(transcriptSegments), prior_logged_items: structuredClone(loggedItems) },
+    ...(guidance ? { additional_guidance: guidance } : {}),
     policy_profile: generation.policy_profile,
     instruction_version: instruction.version,
     limits,
@@ -99,9 +102,11 @@ export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
   // serialized new evidence and its structure, and the output reserve. New evidence is the
   // authoritative reason the batch exists, so if the floor does not fit, the dispatch fails
   // visibly rather than clipping evidence and evaluating a batch that is not the recorded one.
+  // User guidance sits inside this floor with the new evidence: it is a governed session-immutable
+  // input, so it is never shortened to make a batch fit either.
   const mandatoryTotalTokens = instruction.tokens + serializedRequestTokens(assemble([], [])) + outputReserveTokens;
   if (mandatoryTotalTokens > totalContextTokens) {
-    throw budgetError(`scribe batch mandatory instruction, schema, serialized new evidence, and output reserve need ${mandatoryTotalTokens} tokens but the governed budget is ${totalContextTokens}; new evidence is never truncated`);
+    throw budgetError(`scribe batch mandatory instruction, schema, serialized new evidence, user guidance, and output reserve need ${mandatoryTotalTokens} tokens but the governed budget is ${totalContextTokens}; new evidence and guidance are never truncated`);
   }
 
   const transcriptSegments = [...backgroundTranscript];
@@ -140,6 +145,7 @@ export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
     budget: Object.freeze({
       total_context_tokens: totalContextTokens,
       instruction_tokens: instruction.tokens,
+      guidance_tokens: guidance ? estimateModelTokens(guidance) : 0,
       output_reserve_tokens: outputReserveTokens,
       request_allowance_tokens: requestAllowanceTokens,
       // The measured size of the transmission this dispatch produces, and the whole governed
@@ -456,6 +462,38 @@ function normalizeItem(item) {
 
 function pendingAcknowledgement(batchIdentity, attempt) {
   return { ack_id: `${batchIdentity.request_id}:a${attempt}`, accepted: false, acknowledged_at: null, logged_item_ids: [] };
+}
+
+/**
+ * Validate the optional user guidance carried by the session's immutable policy.
+ *
+ * Guidance may only travel under an instruction version that actually states its precedence. An
+ * older instruction has no wording subordinating guidance to the role, schema, provenance, and
+ * ownership rules, so sending the field anyway would hand the model unranked user text - exactly
+ * the redefinition of the protected instruction this boundary exists to prevent.
+ */
+function normalizeGuidance(value, instructionVersion) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw inputError('scribe policy generation.additional_guidance must be a string when present');
+  const guidance = value.trim();
+  if (!guidance) return undefined;
+  if (guidance.length > SCRIBE_GUIDANCE_LIMITS.max_chars) {
+    throw budgetError(`scribe user guidance is ${guidance.length} characters but the governed limit is ${SCRIBE_GUIDANCE_LIMITS.max_chars}; guidance is never truncated`);
+  }
+  if (compareInstructionVersions(instructionVersion, SCRIBE_GUIDANCE_INSTRUCTION_VERSION) < 0) {
+    throw inputError(`scribe user guidance requires instruction version ${SCRIBE_GUIDANCE_INSTRUCTION_VERSION} or later, but the batch was admitted under ${instructionVersion}`);
+  }
+  return guidance;
+}
+
+function compareInstructionVersions(left, right) {
+  const leftParts = String(left).split('.').map(Number);
+  const rightParts = String(right).split('.').map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference !== 0) return difference < 0 ? -1 : 1;
+  }
+  return 0;
 }
 
 function assertPolicyAgreement(batch, policy, generation) {

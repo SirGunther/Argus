@@ -263,6 +263,7 @@
         <div class="provider-tabs" role="tablist" aria-label="AI Provider type">
           <button class="provider-tab active" id="localModelTab" type="button" role="tab" aria-selected="true" aria-controls="localModelPanel" data-provider-tab="local">Local Model</button>
           <button class="provider-tab" id="externalServiceTab" type="button" role="tab" aria-selected="false" aria-controls="externalServicePanel" data-provider-tab="external">External Service</button>
+          <button class="provider-tab" id="scribeGuidanceTab" type="button" role="tab" aria-selected="false" aria-controls="scribeGuidancePanel" data-provider-tab="scribe">Scribe</button>
         </div>
         <section class="provider-panel" id="localModelPanel" role="tabpanel" aria-labelledby="localModelTab">
           <label class="settings-field" for="localProviderSelect">Local provider
@@ -297,7 +298,20 @@
           <button class="button button-secondary provider-test-button" id="testExternalConnectionButton" type="button">Test Connection</button>
           <div class="provider-test-status" id="externalConnectionStatus" role="status" aria-live="polite"></div>
         </section>
-        <div class="settings-footer">
+        <section class="provider-panel" id="scribeGuidancePanel" role="tabpanel" aria-labelledby="scribeGuidanceTab" hidden>
+          <p class="settings-intro">Scribe reviews new finalized transcript rows and may record zero, one, or several Logged Items &mdash; actions, decisions, open questions, reminders, or other noteworthy facts &mdash; each linked to the rows that evidence it. It does not summarize every batch, and returning nothing is a normal result when there is nothing new worth keeping.</p>
+          <label class="settings-field" for="scribeGuidanceInput">Additional Scribe guidance <span class="settings-optional">(optional)</span>
+            <textarea id="scribeGuidanceInput" rows="5" maxlength="2000" spellcheck="true" placeholder="Capture bugs and feature requests; ignore casual test chatter."></textarea>
+          </label>
+          <p class="settings-hint" id="scribeGuidanceHint">Tell Scribe what matters to you. This does not replace Scribe&rsquo;s built-in instructions, its response format, or how items are linked to their source &mdash; it only refines what Scribe treats as worth keeping. Guidance is saved on this computer and sent only to your configured AI provider.</p>
+          <div class="credential-row"><span id="scribeGuidanceCount">0 / 2000 characters</span><button class="text-button" id="resetScribeGuidanceButton" type="button">Clear guidance</button></div>
+          <div class="provider-test-status" id="scribeGuidanceSessionStatus" role="status" aria-live="polite"></div>
+          <div class="settings-footer">
+            <span class="provider-save-status" id="scribeGuidanceSaveStatus" role="status" aria-live="polite"></span>
+            <button class="button" id="saveScribeGuidanceButton" type="button">Save Guidance</button>
+          </div>
+        </section>
+        <div class="settings-footer" id="aiProviderFooter">
           <span class="provider-save-status" id="aiProviderSaveStatus" role="status" aria-live="polite"></span>
           <button class="button" id="saveAiProviderButton" type="button">Save Provider</button>
         </div>

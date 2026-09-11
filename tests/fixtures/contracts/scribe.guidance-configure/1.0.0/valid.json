@@ -1,0 +1,15 @@
+{
+  "message_id": "fixture-scribe-guidance-configure",
+  "idempotency_key": "fixture:scribe.guidance-configure:0",
+  "plane": "control",
+  "message_type": "scribe.guidance-configure",
+  "timestamp": "2026-09-11T00:00:00.000Z",
+  "producer": "fixture-host",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "session_id": "fixture-scribe-session",
+    "additional_guidance": "Capture bugs and feature requests; ignore casual test chatter.",
+    "guidance_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}
