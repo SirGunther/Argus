@@ -12,7 +12,7 @@ Transcript history is the durable backlog. A durable Scribe cursor records the l
 
 Only one Scribe batch may be active. While the model lane is busy, new transcript rows remain in authoritative history. After a valid zero-item outcome or durable acknowledgement of every emitted Logged Item, the cursor advances and the coordinator immediately evaluates the next rows. A failure retains the identical batch and leaves the cursor unchanged.
 
-Every LM Studio request is stateless. Argus reconstructs a bounded request containing the versioned Scribe instruction, bounded prior Scribe context for interpretation and duplicate suppression, and one-to-three new finalized rows. Only the new rows may trigger new Logged Items; older context is background evidence.
+Every LM Studio request is stateless. Argus reconstructs a bounded request containing the protected versioned Scribe instruction, optional bounded user guidance, bounded prior Scribe context for interpretation and duplicate suppression, and one-to-three new finalized rows. Only the new rows may trigger new Logged Items; older context is background evidence.
 
 This work does not modify Whisper, introduce Assistant reasoning, grant Actor authority, add a message broker, or require Ollama.
 
@@ -34,15 +34,15 @@ This work does not modify Whisper, introduce Assistant reasoning, grant Actor au
 - Production composition: `wiring/production-electron.json`
 - Relevant focused suites: `tests/phase5b-model-adapter.test.mjs`, `tests/phase6-session-storage.test.mjs`, `tests/contract-governance.test.mjs`, and the production graph/Electron integration suites
 
-## Current behavior and exact gap
+## Current behavior and exact remaining gaps
 
-- `transcript-window-selector` is already an isolated service, but its pending windows and context history are in memory. It releases on pause, size, latency, topic, or drain rather than the accepted Scribe cursor/idle policy.
-- The production policy already selects at most three source segments, but there is no durable Scribe acknowledgement cursor or batch journal.
-- `log-extractor-local-http` retains at most 32 pending model requests in memory and emits exactly one `logged-item.draft` for each successful model response.
-- `serial-ai-model-lane` already enforces bounded concurrency-one execution and supports LM Studio through the OpenAI-compatible provider setting. Its production service journal is currently in memory.
-- The current extraction response contains one `text` field; it cannot represent a valid zero-item result or multiple Logged Items.
-- Session storage already owns durable transcript and Logged Item state, but it does not yet own a Scribe checkpoint or append-only Scribe batch journal.
-- The existing AI Provider interface already separates local and external providers. No new provider settings UI is required.
+- SCRIBE-05 is merged. The production graph now has durable Scribe checkpoints/journals, one-at-a-time batch admission, stateless bounded requests, zero-to-many results, exact owner acknowledgement, restart recovery, and the Close flush handshake.
+- A real LM Studio run exposed a transport defect that fast automated endpoints did not: `ai.work-request` holds its service receipt until model inference completes while the graph's default operation deadline is 15,000 ms.
+- In session `session-4c87d452-f960-41b8-8b00-5818f8e9e435`, LM Studio received the first batch at 09:28:24 and completed it in 14,665.58 ms. Argus overhead crossed the 15-second wire deadline, leaving later work unable to use that wire.
+- The first batch correctly produced `items: []`. Argus durably admitted the next one-row idle batch at 09:28:50, but LM Studio recorded no second POST; the checkpoint remained in flight at segment 3 while authoritative transcript history continued through segment 9 and the Logged Item snapshot stayed empty.
+- This is not prompt judgment, an idle-policy outcome, or a Logged Items rendering problem. Queue admission and long-running inference completion are incorrectly represented by one synchronous receipt.
+- The existing Scribe instruction is protected and versioned, but users have no bounded place to state what Scribe should prioritize or a clear surface explaining that zero, one, or multiple evidence-linked items may be returned.
+- The AI Provider interface already separates local and external connectivity. Scribe guidance must remain separate from provider credentials and endpoint configuration while reusing that existing settings area.
 
 ## Non-negotiable integration rules
 
@@ -55,9 +55,11 @@ Every ticket inherits these rules:
 - Use one event-driven pump. Finalized rows, one idle timer, completion/failure, startup recovery, and Close may wake the same eligibility function.
 - Admit exactly three new rows when available. Admit one or two after a 15,000 ms idle threshold. Close forces a remainder; Stop does not.
 - Preserve one Scribe batch in flight. Busy is a visible waiting state, not an error and not permission to start concurrent model work.
+- Treat `ai.work-request` delivery as bounded queue admission, not as the duration of model inference. A service receipt must complete promptly after accepted admission; the terminal `ai.work-completed` message remains the separate result boundary.
 - Advance the Scribe cursor only after a valid zero-item result or durable acknowledgement of every resulting Logged Item.
 - Preserve an identical batch ID, exact segment IDs/revisions, prompt/policy version, work ID, and request fingerprint across provider retries within one coordinator `batch_attempt`. Never fabricate, skip, or silently drop work.
 - Model calls are stateless. Argus owns and bounds the reconstructed rolling context to an approximately 8,000-token total model budget.
+- User Scribe guidance is optional, bounded, included in the approximately 8,000-token accounting, immutable for the session that snapshots it, and carried in retry/recovery identity. It may refine retention priorities but may not replace the protected instruction, response schema, provenance rules, role boundary, or ownership authority.
 - Separate background context from new evidence. Background may disambiguate and prevent duplicates, but only new evidence may cause an item.
 - Every item retains exact new-evidence source provenance. Any background context used must be separately identifiable and cannot be represented as the triggering source.
 - A valid Scribe result may contain zero, one, or multiple items. Scribe does not generate a routine summary for every batch.
@@ -71,7 +73,7 @@ Every ticket inherits these rules:
 
 ```text
 SCRIBE-01 ──┬──> SCRIBE-02 ─┐
-            ├──> SCRIBE-03 ─┼──> SCRIBE-04B ──> SCRIBE-05 ──> SCRIBE-06
+            ├──> SCRIBE-03 ─┼──> SCRIBE-04B ──> SCRIBE-05 ──> SCRIBE-05A ──> SCRIBE-05B ──> SCRIBE-06
             ├──> SCRIBE-04 ─┤
             └──> SCRIBE-04A ┘
 ```
@@ -82,9 +84,11 @@ SCRIBE-01 ──┬──> SCRIBE-02 ─┐
 | 2A | SCRIBE-02, SCRIBE-03, SCRIBE-04, SCRIBE-04A | Previously parallel | Preserve the completed branch implementations as reconciliation inputs; do not merge them independently. |
 | 2B | SCRIBE-04B | No | Reconcile the four Wave 2 candidates into one internally consistent contract and implementation baseline. |
 | 3 | SCRIBE-05 | No | Join the reconciled foundation in the production graph and desktop lifecycle. |
-| 4 | SCRIBE-06 | No | Perform final regression, real-runtime acceptance, and canonical documentation closure. |
+| 4A | SCRIBE-05A | No | Decouple model queue admission from long-running inference and expose truthful Scribe progress. |
+| 4B | SCRIBE-05B | No | Add bounded, session-stable Scribe guidance and explain expected output. |
+| 5 | SCRIBE-06 | No | Perform final regression, real-runtime acceptance, and canonical documentation closure. |
 
-This is now **eight ticket identifiers across four delivery waves**, including the corrective SCRIBE-04A contract seam and SCRIBE-04B reconciliation. SCRIBE-04B is the only ticket authorized to combine the four unmerged Wave 2 candidate branches. Do not merge SCRIBE-02, SCRIBE-03, SCRIBE-04, or SCRIBE-04A independently. Merge only the reviewed SCRIBE-04B result before dispatching SCRIBE-05.
+This is now **ten ticket identifiers across five delivery waves**, including the corrective SCRIBE-04A contract seam, SCRIBE-04B reconciliation, SCRIBE-05A runtime correction, and SCRIBE-05B guidance surface. SCRIBE-05A and SCRIBE-05B are sequential because both touch the model-request boundary. Merge and review each before starting the next ticket.
 
 ## Agent dispatch and merge rules
 
@@ -98,7 +102,7 @@ For every ticket:
 6. The coordinating agent reviews the exact commit, validates its ticket exit gate, merges it to `main`, pushes, and confirms the next wave's prerequisites.
 7. Every later wave starts from the updated `origin/main`; agents do not stack unmerged branches themselves.
 8. Every implementation agent must run `C:\dustin-thomason\scripts\notify-agent-complete.ps1` after pushing and before reporting completion, using a 5–9 word message containing `Codex`. If blocked and user input is required, the agent must send the notification before asking the question.
-9. SCRIBE-02 through SCRIBE-05 must read `contracts/scribe-contract-handoff.md` from their starting `origin/main` and implement its runtime invariants without weakening or privately reinterpreting the governed shapes.
+9. SCRIBE-02 through SCRIBE-05B must read `contracts/scribe-contract-handoff.md` from their starting `origin/main` and implement its runtime invariants without weakening or privately reinterpreting the governed shapes.
 
 If a ticket discovers that another ticket must own a file, it must stop and report the collision. It must not broaden its scope or edit the shared file preemptively.
 
@@ -449,9 +453,156 @@ Prompt/schema redesign, broad UI redesign, new settings tabs, Whisper changes, A
 
 ---
 
-## SCRIBE-06 — Regression, documentation, and real-runtime acceptance gate
+## SCRIBE-05A — Asynchronous model admission and truthful Scribe progress
 
 **Depends on:** SCRIBE-05 merged into `origin/main`
+**May run in parallel with:** Nothing
+**Suggested branch slug:** `scribe-async-model-admission`
+**Exclusive production ownership:** `services/serial-ai-model-lane/`, only the scheduler/runtime seam required for correct admission and drain behavior, `wiring/production-electron.json`, the existing Scribe status projection/rendering path, and focused model-lane/production integration tests
+**Must not change:** Scribe batching thresholds, prompt semantics, model-provider settings, transcript/audio behavior, Logged Item ownership, unrelated contracts, or installer artifacts
+**Checklist in chat:** Mandatory. Display a ticket-derived checklist in the agent chat before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
+
+### Goal
+
+Repair the real failure in which a slow but healthy LM Studio inference consumes the graph's 15-second operation receipt, permanently fails the `ai.work-request` wire, and prevents every later Scribe batch from reaching the model. Queue admission must complete promptly; model completion remains asynchronous, serial, bounded, correlated, and visible.
+
+### Reproduction evidence
+
+- Session: `session-4c87d452-f960-41b8-8b00-5818f8e9e435`.
+- LM Studio received the first request at 09:28:24 and reported 14,665.58 ms of model processing. It returned a valid zero-item response.
+- The graph default `operation_timeout_ms` is 15,000 ms and the `log-extractor` -> `model-lane` `ai.work-request` wire has no distinct admission deadline.
+- The next idle-triggered batch was durably admitted at 09:28:50, but LM Studio received no second POST. The checkpoint remained in flight at segment 3 while transcript history reached segment 9.
+- The correction must reproduce this timing relationship and prove that two or more consecutive batches reach the provider even when each inference outlasts the graph's ordinary operation deadline.
+
+### Model-tiered execution checklist
+
+The three stages below are sequential and constitute the ticket's single authoritative checklist. At the end of Stages 1 and 2, send the required notification and pause. Do not continue until the user resumes the ticket after changing the model configuration.
+
+#### Stage 1 — Lower-cost model, low reasoning/effort: bounded preparation
+
+- [ ] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05 merge.
+- [ ] Read `contracts/scribe-contract-handoff.md`, this ticket, and only the model-lane operation, scheduler admission/drain seam, production wire, existing Scribe status rendering path, and focused tests.
+- [ ] Trace the exact receipt lifecycle from `scribe.batch-admitted` through `ai.work-request`, `operation.completed`, and later `ai.work-completed`; record where the 15-second deadline marks the wire failed.
+- [ ] Confirm from the supplied real-run evidence that only the first POST reached LM Studio and that later authoritative rows remained durable but undispatched.
+- [ ] Run the smallest focused baseline necessary to demonstrate that current fast endpoint tests do not cover inference lasting beyond the wire operation deadline.
+- [ ] Display this complete ticket-derived checklist in chat with Stage 1 progress recorded.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05A preparation is complete, then pause for the high-reasoning stage.
+
+#### Stage 2 — Stronger model, high reasoning/effort: runtime correction
+
+- [ ] Make `ai.work-request` acknowledge bounded scheduler admission promptly instead of holding the service receipt for the entire inference.
+- [ ] Emit the existing governed `ai.work-completed` success or failure asynchronously after the serial scheduler finishes, preserving the exact work ID, request fingerprint, session, sequence, attempt, idempotency, and causation needed by the extractor.
+- [ ] Preserve scheduler concurrency one, workload priority, bounded capacity, and the explicit recovery-attempt policy. Do not add a second queue, worker, provider connection, or hidden cross-service callback.
+- [ ] Handle admission/capacity/configuration failures through a terminal correlated result without unhandled promise rejection, silent loss, fabricated success, or a permanently pending extractor batch.
+- [ ] Make model-lane application drain stop accepting new work, wait asynchronously for admitted work to settle and emit its completion, then report `service.drained`; do not block the serial stdin loop needed to complete that drain.
+- [ ] Do not use a very large graph receipt timeout as the primary fix. The provider timeout governs inference; the wire operation timeout governs admission.
+- [ ] Render the existing `scribe_processing` state where a user can actually see it near the Logged Items workflow: pending, queued, processing, delayed, caught up, unavailable, or failed. Do not represent a failed/stuck batch merely as `scribe: available`.
+- [ ] Add focused regressions proving an inference longer than the ordinary wire deadline does not fail the wire, the next queued batch reaches the provider, results remain ordered/exactly once, and Stop/Resume plus application drain preserve work.
+- [ ] Preserve durable transcript backlog and restart recovery. No transcript row may be dropped or duplicated merely because model work is slow.
+- [ ] Review the diff against the explicit service boundaries and the real failure evidence.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05A implementation is ready for verification, then pause for the lower-tier verification stage.
+
+#### Stage 3 — Lower-cost model, low reasoning/effort: verification and delivery
+
+- [ ] Run the focused model-lane, Scribe integration/recovery, and UI status suites plus the complete repository suite.
+- [ ] Run contract governance/docs, production graph validation, package graph generation/verification, syntax checks, and `git diff --check`.
+- [ ] Launch the real source Electron app against LM Studio without microphone or model simulation; prove at least two consecutive admitted Scribe batches reach LM Studio and settle, including a response whose total duration exceeds 15 seconds if the configured model naturally does so.
+- [ ] Confirm ordinary startup remains quiet, diagnostics remain opt-in, and visible Scribe state accurately follows the real batch.
+- [ ] Confirm the final diff stays within authorized ownership and does not rebuild the installer.
+- [ ] Update every checklist item truthfully, leaving no required item checked if its evidence is missing.
+- [ ] Commit and push the isolated branch, verify the worktree is clean and remote-aligned, send the required completion notification, and report the exact SHA, files, checks, real-run evidence, and remaining user acceptance. Do not merge `main`.
+
+### Exit gate
+
+- [ ] Queue admission completes within the graph operation deadline while inference may safely continue beyond it.
+- [ ] Two or more consecutive Scribe batches reach the configured provider and settle in order without a failed wire, duplicate result, skipped row, or stuck checkpoint.
+- [ ] Model-lane drain waits for admitted asynchronous work and emits its terminal result before reporting drained.
+- [ ] The application visibly distinguishes Scribe pending, active, delayed, caught-up, and failed states.
+- [ ] All focused/full automated gates and a real LM Studio source launch pass.
+
+### Out of scope
+
+Prompt customization, response-schema redesign, batching-policy changes, Whisper/audio work, Assistant/Actor behavior, installer rebuild, and unrelated UI redesign.
+
+---
+
+## SCRIBE-05B — Governed user Scribe guidance and output expectations
+
+**Depends on:** SCRIBE-05A merged into `origin/main`
+**May run in parallel with:** Nothing
+**Suggested branch slug:** `scribe-user-guidance`
+**Exclusive production ownership:** Scribe policy/request/checkpoint contract additions required for guidance, `contracts/scribe-instruction.mjs`, the Scribe policy/settings persistence path, existing AI settings drawer and Electron bridge, and focused guidance/recovery/UI tests
+**Must not change:** Provider credential semantics, fixed Scribe role and response schema, transcript/audio behavior, batch thresholds, Logged Item authority, Assistant/Actor scope, or installer artifacts
+**Checklist in chat:** Mandatory. Display a ticket-derived checklist in the agent chat before implementation, update it as work progresses, and leave no required item unchecked before notification or completion reporting.
+
+### Goal
+
+Give the user one clear, bounded place to tell Scribe what information to prioritize while also explaining what Scribe can return. Preserve Argus's protected operational instruction and contracts: user guidance refines retention judgment but cannot redefine the Scribe role, response structure, provenance, or authority.
+
+### Accepted product behavior
+
+- The existing AI settings area gains a distinct **Scribe** section or tab; do not create another top-level settings system.
+- The surface explains that Scribe may create zero, one, or multiple discrete Logged Items such as actions, decisions, open questions, reminders, and noteworthy facts, each linked to new source rows. It does not promise an item for every batch or a routine summary.
+- An editable **Additional Scribe guidance** field lets the user state priorities such as “Capture bugs and feature requests; ignore casual test chatter.” The protected system instruction and output contract are not directly editable.
+- Guidance is optional, locally persisted, non-secret, explicitly bounded, and counted inside the existing approximately 8,000-token total budget.
+- A session snapshots one exact guidance value before its first Scribe batch. Edits apply only to the next new session and never mutate a stopped/resumable or in-flight session.
+- The snapshot, its identity/fingerprint, and its retry/recovery path are durable so an application restart cannot silently substitute newer global guidance for an existing session.
+
+### Model-tiered execution checklist
+
+The three stages below are sequential and constitute the ticket's single authoritative checklist. At the end of Stages 1 and 2, send the required notification and pause. Do not continue until the user resumes the ticket after changing the model configuration.
+
+#### Stage 1 — Lower-cost model, low reasoning/effort: bounded preparation
+
+- [ ] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05A merge.
+- [ ] Read `contracts/scribe-contract-handoff.md`, this ticket, and only the protected instruction, Scribe policy/request/checkpoint path, settings persistence/bridge, existing AI settings drawer, and focused tests.
+- [ ] Map where guidance must be snapshotted, budgeted, fingerprinted, persisted, recovered, rendered, and transmitted without treating it as a provider credential or server-side conversation.
+- [ ] Identify the smallest compatible contract-minor additions needed; retain every older fixture and verify old messages still replay.
+- [ ] Record the exact current user-facing expectation gap and the proposed field label/help text before implementation.
+- [ ] Display this complete ticket-derived checklist in chat with Stage 1 progress recorded.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05B preparation is complete, then pause for the high-reasoning stage.
+
+#### Stage 2 — Stronger model, high reasoning/effort: governed guidance implementation
+
+- [ ] Add a versioned, bounded Scribe settings record separate from AI provider credentials, with load, save, validation, default, and reset behavior.
+- [ ] Add the Scribe settings section/tab to the existing AI settings drawer with concise expected-output text and an **Additional Scribe guidance** input. Make saved/applies-next-session state truthful and accessible.
+- [ ] Keep the protected Scribe instruction fixed. Treat user text only as an explicitly labeled guidance field whose precedence is below role, schema, evidence, provenance, safety, and ownership rules.
+- [ ] Snapshot guidance once per new session before its first batch. Prevent an edit from changing an existing session's pending, in-flight, stopped/resumable, retried, or recovered work.
+- [ ] Carry the exact guidance snapshot and stable identity/fingerprint through the governed policy, request, checkpoint/journal, retry, and recovery seams required to reproduce a batch exactly after restart.
+- [ ] Include serialized guidance in the approximately 8,000-token accounting and remove old background context first under the existing policy. Reject over-limit guidance visibly; never truncate it silently or truncate new evidence.
+- [ ] Ensure every stateless LM Studio request contains the protected instruction, the labeled optional guidance, the complete new evidence, and bounded background context. Do not rely on LM Studio conversation memory or configure prompting inside LM Studio.
+- [ ] Preserve zero/one/multiple-item validation, exact batch identity, provenance, deterministic draft identity, owner acknowledgement, and serial execution.
+- [ ] Add focused tests for blank/default guidance, custom guidance transmission, maximum/oversized input, next-session application, mid-session edit isolation, retry identity, restart recovery, token rollover, and older contract compatibility.
+- [ ] Review the diff for contract truthfulness, settings separation, boundedness, identity stability, recovery, and scope.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-05B implementation is ready for verification, then pause for the lower-tier verification stage.
+
+#### Stage 3 — Lower-cost model, low reasoning/effort: verification and delivery
+
+- [ ] Run focused Scribe guidance, settings, contract, model extraction, persistence/recovery, production integration, and UI suites plus the complete repository suite.
+- [ ] Run contract governance/docs, package graph generation/verification, production graph validation, syntax checks, and `git diff --check`.
+- [ ] Launch the real source Electron app with LM Studio; save recognizable guidance, begin a new real session, and confirm LM Studio receives that exact bounded guidance while the prior/current-session behavior remains correctly described.
+- [ ] Confirm the UI explains valid zero output and does not imply that every batch becomes a summary or Logged Item.
+- [ ] Confirm secrets remain redacted, guidance is not stored as a credential, ordinary startup stays quiet, and the installer is not rebuilt.
+- [ ] Update every checklist item truthfully, leaving no required item checked if its evidence is missing.
+- [ ] Commit and push the isolated branch, verify the worktree is clean and remote-aligned, send the required completion notification, and report the exact SHA, files, contract versions, checks, real-run evidence, and remaining user judgment. Do not merge `main`.
+
+### Exit gate
+
+- [ ] The user can see what Scribe may return and can save/reset bounded additional guidance without editing protected instructions or provider credentials.
+- [ ] A new session uses one immutable guidance snapshot across batches, retries, Stop/Resume, Close, and restart recovery; an existing session cannot silently change guidance.
+- [ ] Guidance is present in the real stateless LM Studio request, included in the total token budget, and unable to weaken schema, provenance, or authority rules.
+- [ ] Default/blank and customized guidance both preserve valid zero, one, and multiple Logged Item outcomes.
+- [ ] All focused/full automated gates and a real LM Studio source launch pass.
+
+### Out of scope
+
+Arbitrary replacement of the protected system prompt, provider-side conversation persistence, per-batch prompt editing, prompt-template marketplaces, Assistant/Actor behavior, Whisper/audio changes, installer rebuild, and unrelated settings redesign.
+
+---
+
+## SCRIBE-06 — Regression, documentation, and real-runtime acceptance gate
+
+**Depends on:** SCRIBE-05B merged into `origin/main`
 **May run in parallel with:** Nothing
 **Suggested branch slug:** `scribe-acceptance`
 **Exclusive production ownership:** No production files unless acceptance exposes a defect and the coordinator approves an ownership revision; canonical Scribe evidence, README/TODO/pending-decision status, and new acceptance-only tests
@@ -468,7 +619,7 @@ The three stages below are sequential and constitute the ticket's single authori
 
 #### Stage 1 — Lower-cost model, low reasoning/effort: evidence preparation
 
-- [ ] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05 merge.
+- [ ] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05A and SCRIBE-05B merges.
 - [ ] Review the merged Scribe ticket history against the integration-wide definition of complete, using commit summaries and directly affected files rather than rereading unrelated project history.
 - [ ] Run the complete Argus suite, contract governance, generated contract documentation check, production graph validation, package graph generation/verification, syntax checks, and diff checks once from the joined baseline.
 - [ ] Create the focused Scribe validation artifact skeleton with an explicit user action and expected result for every acceptance scenario; do not mark evidence as passed yet.
@@ -479,7 +630,8 @@ The three stages below are sequential and constitute the ticket's single authori
 #### Stage 2 — Stronger model, high reasoning/effort: real acceptance and judgment
 
 - [ ] Launch the real source Electron application with LM Studio selected; do not simulate microphone, model, queue, or Logged Item behavior.
-- [ ] Evaluate three-row admission, partial idle admission, busy catch-up, zero output, multiple output, retry/failure visibility, Stop/Resume, Close, and restart recovery through the real production path.
+- [ ] Evaluate three-row admission, partial idle admission, slow-model busy catch-up across multiple requests, zero output, multiple output, retry/failure visibility, Stop/Resume, Close, and restart recovery through the real production path.
+- [ ] Confirm default and customized Scribe guidance both reach LM Studio as bounded stateless input, remain immutable within a session, and produce no promise that every batch yields an item.
 - [ ] Record the exact user action, expected result, and observed evidence for every scenario; distinguish automated, agent-observed, and user/physical-device evidence.
 - [ ] Confirm long-running transcription remains responsive while Scribe is delayed and that Scribe cannot block or mutate Whisper/transcript behavior.
 - [ ] Confirm background context influences interpretation without independently recreating old Logged Items and that every new item navigates to its triggering source rows.
@@ -503,13 +655,15 @@ The three stages below are sequential and constitute the ticket's single authori
 
 - [ ] All automated gates pass from the merged production baseline.
 - [ ] Real LM Studio source launch succeeds and its model receives the bounded Scribe request shape.
+- [ ] Consecutive real Scribe batches continue reaching LM Studio when an inference exceeds 15 seconds; no queue-admission receipt fails the wire and no checkpoint remains silently stuck.
+- [ ] The real request contains the selected session guidance, and the settings surface accurately explains valid zero, one, and multiple-item outcomes.
 - [ ] The user-validation artifact gives actionable action/result steps and identifies any physical-microphone or model-quality acceptance still pending.
 - [ ] No unresolved cursor gap, unacknowledged batch, duplicate Logged Item, silent failure, or unintended Assistant/Actor behavior remains in the accepted scenarios.
 - [ ] Canonical documents agree on what is implemented, deferred, and still awaiting user evidence.
 
 ### Out of scope
 
-New product behavior, optimization beyond measured need, installer rebuild, packaged release, Whisper tuning, prompt-management UI, Assistant implementation, and Actor integrations.
+New product behavior beyond the accepted Scribe guidance surface, optimization beyond measured need, installer rebuild, packaged release, Whisper tuning, arbitrary system-prompt replacement, Assistant implementation, and Actor integrations.
 
 ---
 
@@ -521,15 +675,17 @@ The Scribe integration is complete only when every applicable implementation, re
 - One durable cursor and one active batch describe Scribe progress for each session.
 - Three new rows run immediately; one or two run after 15 seconds idle or on Close; Stop remains resumable.
 - Busy model work causes bounded waiting, not concurrent requests, repeated polling, skipped rows, or transcript backpressure.
+- Model queue admission is acknowledged promptly and independently from inference completion, so a healthy request lasting longer than the ordinary graph operation deadline cannot fail the wire or strand every later batch.
 - Cursor advancement is acknowledgement-driven and crash-safe for zero, one, and multiple Logged Items.
 - LM Studio requests are stateless, bounded to the governed approximately 8,000-token total, and reconstructed by Argus.
 - Background context supports interpretation and duplicate suppression; only new evidence triggers Logged Items.
 - Every item is discrete, meaningful, non-duplicate, bounded, and linked to exact source transcript rows.
 - Scribe may return no item and does not generate a routine summary for every batch.
+- The user can see Scribe's expected zero/one/multiple-item behavior and provide bounded additional guidance that is immutable for one session, included in the stateless request budget, and subordinate to the protected Scribe contract.
 - Provider settings remain provider neutral; LM Studio works without making Ollama a prerequisite.
 - Whisper, transcript ownership, Logged Item ownership/history, service isolation, explicit wires, and recovery rules remain intact.
 - Assistant and Actor remain documented future roles with no current runtime, model, tool, permission, or side effect.
 
 ## Next dispatch
 
-Assign **SCRIBE-05 Stage 1 only** using `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md` plus the complete SCRIBE-05 ticket above. Start from the current `origin/main`, complete the lower-cost preparation checklist, send the required notification, and pause. Resume the same ticket and branch for Stage 2 only after the user switches to the stronger high-reasoning configuration.
+Assign **SCRIBE-05A Stage 1 only** using `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md` plus the complete SCRIBE-05A ticket above. Start from the current `origin/main`, complete the lower-cost preparation checklist, send the required notification, and pause. Resume the same ticket and branch for Stage 2 only after the user switches to the stronger high-reasoning configuration. Review and merge SCRIBE-05A before dispatching SCRIBE-05B.
