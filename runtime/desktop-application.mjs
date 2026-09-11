@@ -10,6 +10,7 @@ import { calculateRecordingDurationMs } from './session-lifecycle.mjs';
 import { createDiagnosticLogger } from './diagnostics.mjs';
 import { createAudioPreviewScheduler } from './audio-preview-scheduler.mjs';
 import { canonicalJson } from './message-identity.mjs';
+import { SCRIBE_GUIDANCE_INSTRUCTION_VERSION } from '../contracts/scribe-instruction.mjs';
 import {
   DEFAULT_MODEL_PROVIDER_SETTINGS,
   createMemoryCredentialStore,
@@ -340,20 +341,33 @@ export class DesktopApplication {
     // immutable guidance of a stopped or recovered session with today's global setting.
     let snapshot = await this.storage.readScribeGuidance(sessionId);
     if (!snapshot) {
-      const saved = (await this.scribeGuidanceStore?.load()) || DEFAULT_SCRIBE_GUIDANCE_SETTINGS;
+      // A durable session without a guidance snapshot predates SCRIBE-05B. It must finish under
+      // the instruction its retained batch was admitted with; applying today's saved guidance or
+      // the new instruction would strand recovery and prevent the session from closing.
+      const metadata = await this.storage.readMetadata(sessionId);
+      const checkpoint = metadata ? await this.storage.readScribeCheckpoint(sessionId) : undefined;
+      const legacyInstruction = checkpoint?.in_flight_batch?.batch_identity?.instruction_version
+        || checkpoint?.last_evaluated_batch?.batch_identity?.instruction_version
+        || (metadata ? '1.0.0' : undefined);
+      const saved = legacyInstruction ? DEFAULT_SCRIBE_GUIDANCE_SETTINGS : (await this.scribeGuidanceStore?.load()) || DEFAULT_SCRIBE_GUIDANCE_SETTINGS;
       snapshot = {
         schema_version: SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION,
         session_id: sessionId,
         saved_at: new Date().toISOString(),
         additional_guidance: saved.additional_guidance,
-        guidance_fingerprint: scribeGuidanceFingerprint(saved.additional_guidance)
+        guidance_fingerprint: scribeGuidanceFingerprint(saved.additional_guidance),
+        instruction_version: legacyInstruction || SCRIBE_GUIDANCE_INSTRUCTION_VERSION
       };
+      await this.storage.writeScribeGuidance(sessionId, snapshot);
+    } else if (snapshot.schema_version === '1.0.0') {
+      snapshot = { ...snapshot, schema_version: SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION, instruction_version: SCRIBE_GUIDANCE_INSTRUCTION_VERSION };
       await this.storage.writeScribeGuidance(sessionId, snapshot);
     }
     await this.graph.dispatchFrom('@desktop-controller', 'control', 'scribe.guidance-configure', sessionId, {
       session_id: sessionId,
       additional_guidance: snapshot.additional_guidance,
-      guidance_fingerprint: snapshot.guidance_fingerprint
+      guidance_fingerprint: snapshot.guidance_fingerprint,
+      instruction_version: snapshot.instruction_version
     }, `scribe-guidance-configure:${sessionId}:${snapshot.guidance_fingerprint.slice(7, 19)}`);
     return snapshot;
   }
@@ -581,7 +595,12 @@ export class DesktopApplication {
         this.setCapability('stt', 'unavailable', `Final audio flush failed during shutdown: ${error.message}`, false);
       }
     }
-    if (payload.command === 'session.close') await this.flushScribeBeforeClose(payload.session_id);
+    if (payload.command === 'session.close') {
+      // A stopped session may be opened in a fresh process with no in-memory coordinator state.
+      // Publishing its pinned policy first drives governed recovery before Close asks for a flush.
+      await this.configureScribeGuidance(payload.session_id);
+      await this.flushScribeBeforeClose(payload.session_id);
+    }
     // The policy source publishes this session's policy in response to the lifecycle outcome, so
     // its guidance snapshot has to be in place before the command is dispatched, not after.
     if (payload.command === 'session.record' || payload.command === 'session.resume') await this.configureScribeGuidance(payload.session_id);

@@ -353,6 +353,64 @@ test('a crash before model completion replays the exact in-flight batch after re
   }
 });
 
+test('a stopped legacy session recovers its 1.0 batch on Close and then exposes a durable closed state', { timeout: 60000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'scribe-legacy-close-'));
+  let sessionId;
+  try {
+    const first = await startHarness({
+      idleTimeoutMs: 1000,
+      instructionVersion: '1.0.0',
+      directory,
+      reply: () => ({ delayMs: 60000 })
+    });
+    try {
+      await first.record();
+      for (let sequence = 0; sequence < 3; sequence += 1) await first.finalizeRow(sequence);
+      await first.waitFor(() => first.admitted.length >= 1, 'legacy batch admitted');
+      sessionId = first.sessionId;
+      const checkpoint = await first.checkpoint();
+      assert.equal(checkpoint.in_flight_batch.batch_identity.instruction_version, '1.0.0');
+      await first.graph.dispatchFrom('@desktop-controller', 'control', 'session.stop', sessionId, {
+        operation_id: `stop-${sessionId}`, session_id: sessionId, requested_at: new Date().toISOString()
+      }, `stop:${sessionId}`);
+      await first.graph.waitForIdle();
+      assert.equal((await first.metadata()).state, 'stopped');
+    } finally {
+      await first.crash();
+    }
+
+    const second = await startHarness({ idleTimeoutMs: 1000, directory, sessionId, reply: (request) => ({ items: itemsFor(request) }) });
+    try {
+      const application = new DesktopApplication({
+        root,
+        graphFile: productionGraphFile,
+        sessionRoot: second.sessionRoot,
+        scribeGuidanceStore: { load: async () => ({ version: 1, additional_guidance: 'Use the new guidance.' }) }
+      });
+      application.graph = second.graph;
+      application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+      application.started = true;
+      application.sessionId = sessionId;
+      second.observe = (message) => application.handleGraphMessage(message);
+      await application.loadLatestSession(sessionId);
+
+      const result = await application.sessionCommand({ command: 'session.close', command_id: `close-${sessionId}`, session_id: sessionId });
+      assert.equal(result.status, 'accepted');
+      assert.equal((await second.metadata()).state, 'closed');
+      const snapshot = await second.storage.readScribeGuidance(sessionId);
+      assert.equal(snapshot.instruction_version, '1.0.0');
+      assert.equal(snapshot.additional_guidance, '', 'new saved guidance must not be substituted into a legacy session');
+      assert.equal(second.endpoint.calls.length, 1);
+      assert.equal(second.endpoint.calls[0].modelRequest.instruction_version, '1.0.0');
+      assert.equal(Object.hasOwn(second.endpoint.calls[0].modelRequest, 'additional_guidance'), false);
+    } finally {
+      await second.stop();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('a crash after model completion but before item acknowledgement re-evaluates without duplicating items', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'scribe-recovery-b-'));
   try {
@@ -850,11 +908,11 @@ function itemsFor(request, count = 1) {
   }));
 }
 
-async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, directory, sessionId, admissionTimeoutMs, providerTimeoutMs = 5000 } = {}) {
+async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, directory, sessionId, admissionTimeoutMs, providerTimeoutMs = 5000, instructionVersion } = {}) {
   const base = directory || await mkdtemp(path.join(os.tmpdir(), 'scribe-integration-'));
   const sessionRoot = path.join(base, 'sessions');
   const graphFile = path.join(base, `graph-${Math.random().toString(36).slice(2)}.json`);
-  await writeGraph(graphFile, { idleTimeoutMs, admissionTimeoutMs });
+  await writeGraph(graphFile, { idleTimeoutMs, admissionTimeoutMs, instructionVersion });
   const endpoint = await startScribeBatchModelEndpoint({
     reply: (request, call) => {
       const answer = reply ? reply(request, call) : { items: [] };
@@ -1033,7 +1091,7 @@ async function waitFor(condition, label, timeoutMs, harness) {
 // The graph under test is the production graph with Whisper replaced by injected evidence. Every
 // other service, wire, and durable owner is exactly what production runs, so the derivation is
 // asserted rather than hand-maintained.
-async function writeGraph(graphFile, { idleTimeoutMs, admissionTimeoutMs }) {
+async function writeGraph(graphFile, { idleTimeoutMs, admissionTimeoutMs, instructionVersion }) {
   const definition = JSON.parse(await readFile(productionGraphFile, 'utf8'));
   definition.name = 'argus-scribe-integration';
   definition.contracts = path.join(root, 'contracts', 'catalog.json');
@@ -1051,6 +1109,7 @@ async function writeGraph(graphFile, { idleTimeoutMs, admissionTimeoutMs }) {
     { from: '@desktop-controller', contract: 'transcript.utterance-boundary', to: 'active-transcript' }
   );
   definition.run.configuration.scribe_policy.admission.idle_timeout_ms = idleTimeoutMs;
+  if (instructionVersion) definition.run.configuration.scribe_policy.generation.instruction_version = instructionVersion;
   // Scales the real 15,000 ms admission deadline down so a test can outlast it with a model delay
   // measured in hundreds of milliseconds instead of seconds. Only this wire is narrowed.
   if (admissionTimeoutMs) {

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.19.0",
+  "schema_version": "1.20.0",
   "governance": {
     "compatibility_policy": "backward-compatible-minor",
     "plane_change": "breaking",
@@ -175,7 +175,7 @@
     },
     "scribe.guidance-configure": {
       "plane": "control",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "owner": "runtime/scribe-guidance-settings",
       "schema": "scribe-guidance-configure.schema.json",
       "max_payload_bytes": 8192,

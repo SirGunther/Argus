@@ -334,7 +334,7 @@ test('a configured session publishes its guidance, and a resume republishes the 
   const sessionId = 'guidance-publish-session';
   const result = await runServiceBatches(POLICY_SOURCE_MANIFEST, [
     { inputs: [lifecycleStart()], expectedOutputCount: 1 },
-    { inputs: [guidanceConfigure(sessionId, GUIDANCE)], expectedOutputCount: 1 },
+    { inputs: [guidanceConfigure(sessionId, GUIDANCE)], expectedOutputCount: 2 },
     { inputs: [sessionOutcome('session.recorded', sessionId)], expectedOutputCount: 2 },
     { inputs: [sessionOutcome('session.resumed', sessionId)], expectedOutputCount: 2 }
   ], 8000);
@@ -364,13 +364,44 @@ test('a session with no configured guidance publishes the protected instruction 
   assert.deepEqual(registry.validateEnvelope(published), []);
 });
 
+test('a legacy stopped session can republish blank guidance under its original instruction', async () => {
+  const sessionId = 'guidance-legacy-close-session';
+  const legacy = guidanceConfigure(sessionId, '');
+  legacy.payload.instruction_version = '1.0.0';
+  const result = await runServiceBatches(POLICY_SOURCE_MANIFEST, [
+    { inputs: [lifecycleStart()], expectedOutputCount: 1 },
+    { inputs: [legacy], expectedOutputCount: 2 }
+  ], 8000);
+  const policy = result.batchOutputs[1][0];
+  assert.equal(policy.message_type, 'scribe.batch-policy');
+  assert.equal(policy.payload.generation.instruction_version, '1.0.0');
+  assert.equal(Object.hasOwn(policy.payload.generation, 'additional_guidance'), false);
+  assert.deepEqual(registry.validateEnvelope(policy), []);
+});
+
+test('the 1.0 guidance carrier remains compatible by using the governed graph instruction', async () => {
+  const sessionId = 'guidance-legacy-carrier-session';
+  const legacyCarrier = guidanceConfigure(sessionId, GUIDANCE);
+  legacyCarrier.schema_version = '1.0.0';
+  delete legacyCarrier.payload.instruction_version;
+  const result = await runServiceBatches(POLICY_SOURCE_MANIFEST, [
+    { inputs: [lifecycleStart()], expectedOutputCount: 1 },
+    { inputs: [legacyCarrier], expectedOutputCount: 2 }
+  ], 8000);
+  const policy = result.batchOutputs[1][0];
+  assert.equal(policy.message_type, 'scribe.batch-policy');
+  assert.equal(policy.payload.generation.instruction_version, '1.1.0');
+  assert.equal(policy.payload.generation.additional_guidance, GUIDANCE);
+  assert.deepEqual(registry.validateEnvelope(policy), []);
+});
+
 test('re-sending the identical snapshot is idempotent but a different one is a visible conflict', async () => {
   const sessionId = 'guidance-conflict-session';
   const result = await runServiceBatches(POLICY_SOURCE_MANIFEST, [
     { inputs: [lifecycleStart()], expectedOutputCount: 1 },
-    { inputs: [guidanceConfigure(sessionId, GUIDANCE)], expectedOutputCount: 1 },
+    { inputs: [guidanceConfigure(sessionId, GUIDANCE)], expectedOutputCount: 2 },
     // The same value again - a restart re-asserting what the session already runs under.
-    { inputs: [guidanceConfigure(sessionId, GUIDANCE)], expectedOutputCount: 1 },
+    { inputs: [guidanceConfigure(sessionId, GUIDANCE)], expectedOutputCount: 2 },
     // A different value for a session already snapshotted is the substitution this forbids.
     { inputs: [guidanceConfigure(sessionId, 'Capture everything, including chatter.')], expectedOutputCount: 1 },
     { inputs: [sessionOutcome('session.recorded', sessionId)], expectedOutputCount: 2 }
@@ -402,10 +433,10 @@ test('two sessions in one run carry their own guidance', async () => {
   const next = 'Capture only decisions.';
   const result = await runServiceBatches(POLICY_SOURCE_MANIFEST, [
     { inputs: [lifecycleStart()], expectedOutputCount: 1 },
-    { inputs: [guidanceConfigure(first, GUIDANCE)], expectedOutputCount: 1 },
+    { inputs: [guidanceConfigure(first, GUIDANCE)], expectedOutputCount: 2 },
     { inputs: [sessionOutcome('session.recorded', first)], expectedOutputCount: 2 },
     // The user edits guidance; the next new session picks it up while the first keeps its own.
-    { inputs: [guidanceConfigure(second, next)], expectedOutputCount: 1 },
+    { inputs: [guidanceConfigure(second, next)], expectedOutputCount: 2 },
     { inputs: [sessionOutcome('session.recorded', second)], expectedOutputCount: 2 },
     { inputs: [sessionOutcome('session.resumed', first)], expectedOutputCount: 2 }
   ], 8000);
@@ -433,7 +464,7 @@ test('the policy source refuses guidance beyond the governed bound', async () =>
 test('the guidance carrier is governed, bounded, and carries no credential or provider field', async () => {
   const definition = registry.catalog.messages['scribe.guidance-configure'];
   assert.equal(definition.plane, 'control');
-  assert.equal(definition.version, '1.0.0');
+  assert.equal(definition.version, '1.1.0');
   const schema = JSON.parse(await readFile(path.join(root, 'contracts', 'scribe-guidance-configure.schema.json'), 'utf8'));
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.properties.additional_guidance.maxLength, SCRIBE_GUIDANCE_LIMITS.max_chars);
@@ -504,7 +535,7 @@ function guidanceConfigure(sessionId, guidance) {
     messageType: 'scribe.guidance-configure',
     producer: 'guidance-test',
     correlationId: sessionId,
-    payload: { session_id: sessionId, additional_guidance: guidance, guidance_fingerprint: scribeGuidanceFingerprint(guidance) }
+    payload: { session_id: sessionId, additional_guidance: guidance, guidance_fingerprint: scribeGuidanceFingerprint(guidance), instruction_version: '1.1.0' }
   });
 }
 

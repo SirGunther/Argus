@@ -33,7 +33,8 @@ const RECOVERY_BACKUP_FILE_NAMES = Object.freeze([
   'scribeGuidance',
   'scribeBatchJournal'
 ]);
-export const SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION = '1.0.0';
+export const SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION = '1.1.0';
+const SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSIONS = new Set(['1.0.0', SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION]);
 const SCRIBE_GUIDANCE_SNAPSHOT_MAX_CHARS = 2000;
 const SCRIBE_ITEM_KIND_VALUES = new Set(['action', 'decision', 'open-question', 'reminder', 'other']);
 const SCRIBE_ADMISSION_REASON_VALUES = new Set(['batch-complete', 'idle-timeout']);
@@ -639,9 +640,9 @@ export function assertGovernedScribeCheckpointShape(sessionId, checkpoint) {
 
 export function assertGovernedScribeGuidanceShape(sessionId, snapshot) {
   if (!snapshot || typeof snapshot !== 'object') throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot must be an object');
-  const allowed = new Set(['schema_version', 'session_id', 'saved_at', 'additional_guidance', 'guidance_fingerprint']);
+  const allowed = new Set(['schema_version', 'session_id', 'saved_at', 'additional_guidance', 'guidance_fingerprint', 'instruction_version']);
   if (Object.keys(snapshot).some((key) => !allowed.has(key))) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot has an undeclared field');
-  if (snapshot.schema_version !== SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', `Scribe guidance snapshot schema_version must be ${SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION}`);
+  if (!SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSIONS.has(snapshot.schema_version)) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', `Scribe guidance snapshot.schema_version must be one of: ${[...SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSIONS].join(', ')}`);
   if (snapshot.session_id !== sessionId) throw new SessionStorageError('SCRIBE_GUIDANCE_SESSION_CONFLICT', 'Scribe guidance snapshot targets a different session', { details: { session_id: snapshot.session_id } });
   if (!isNonEmptyString(snapshot.saved_at)) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot.saved_at is required');
   if (typeof snapshot.additional_guidance !== 'string' || snapshot.additional_guidance.length > SCRIBE_GUIDANCE_SNAPSHOT_MAX_CHARS) {
@@ -650,6 +651,9 @@ export function assertGovernedScribeGuidanceShape(sessionId, snapshot) {
   if (!/^sha256:[0-9a-f]{64}$/.test(snapshot.guidance_fingerprint || '')) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot.guidance_fingerprint is invalid');
   if (snapshot.guidance_fingerprint !== fingerprintScribeGuidance(snapshot.additional_guidance)) {
     throw new SessionStorageError('SCRIBE_GUIDANCE_FINGERPRINT_CONFLICT', 'Scribe guidance snapshot fingerprint does not match its guidance text');
+  }
+  if (snapshot.schema_version === SCRIBE_GUIDANCE_SNAPSHOT_SCHEMA_VERSION && !isNonEmptyString(snapshot.instruction_version)) {
+    throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot.instruction_version is required');
   }
 }
 

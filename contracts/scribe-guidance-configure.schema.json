@@ -5,7 +5,8 @@
   "properties": {
     "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
     "additional_guidance": { "type": "string", "maxLength": 2000 },
-    "guidance_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    "guidance_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "instruction_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
   },
   "additionalProperties": false
 }

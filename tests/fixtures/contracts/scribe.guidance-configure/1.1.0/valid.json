@@ -1,0 +1,16 @@
+{
+  "message_id": "msg-scribe-guidance-configure-v1-1-valid",
+  "message_type": "scribe.guidance-configure",
+  "schema_version": "1.1.0",
+  "timestamp": "2026-09-11T18:00:00.000Z",
+  "producer": "runtime/scribe-guidance-settings",
+  "plane": "control",
+  "correlation_id": "session-guidance-v1-1",
+  "idempotency_key": "scribe-guidance-configure:session-guidance-v1-1",
+  "payload": {
+    "session_id": "session-guidance-v1-1",
+    "additional_guidance": "Capture decisions.",
+    "guidance_fingerprint": "sha256:f3ce00c9d879f26d85b93a240f3d2f0e7c127efa6720cfdb4df8f8c846b883cf",
+    "instruction_version": "1.1.0"
+  }
+}
