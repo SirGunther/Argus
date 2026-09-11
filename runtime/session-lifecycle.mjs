@@ -4,6 +4,10 @@ export const SESSION_METADATA_VERSION = '1.0.0';
 const ACTIVE_CACHE_LIMIT = 32;
 const TRANSCRIPT_HISTORY_PAYLOAD_LIMIT_BYTES = 65536;
 const SCRIBE_RECOVERY_BACKGROUND_SEGMENTS_MAX = 48;
+// One page of rebuilt pending evidence, matching `scribe.recovery-restored.pending_segments`.
+// A larger backlog is not truncated: the coordinator drains a page, its durable cursor advances,
+// and the next recovery request returns the rows that now sit after it.
+const SCRIBE_RECOVERY_PENDING_PAGE = 16;
 const SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX = 64;
 
 export function calculateRecordingDurationMs(metadata, nowMs = Date.now()) {
@@ -315,13 +319,17 @@ export class SessionLifecycle {
       // authoritative evidence, so recovery hands them back as pending instead of starting empty
       // and skipping them forever.
       const untouched = await this.storage.readActiveSnapshot(sessionId, 'transcript');
-      const pendingSegments = (untouched?.segments || [])
+      const outstanding = (untouched?.segments || [])
         .filter((segment) => Number.isInteger(segment.sequence))
-        .sort((left, right) => left.sequence - right.sequence)
-        .map((segment) => hydrateScribeSegment(sessionId, { segment_id: segment.segment_id, sequence: segment.sequence, revision: segment.revision ?? 0 }, new Map((untouched?.segments || []).map((item) => [item.segment_id, item])), 'pending'));
+        .sort((left, right) => left.sequence - right.sequence);
+      const byUntouchedId = new Map((untouched?.segments || []).map((item) => [item.segment_id, item]));
+      const pendingSegments = outstanding
+        .slice(0, SCRIBE_RECOVERY_PENDING_PAGE)
+        .map((segment) => hydrateScribeSegment(sessionId, { segment_id: segment.segment_id, sequence: segment.sequence, revision: segment.revision ?? 0 }, byUntouchedId, 'pending'));
       return {
         session_id: sessionId, policy_id: policyId, policy_version: policyVersion, recovered_at: recoveredAt,
-        checkpoint: null, pending_segments: pendingSegments, in_flight_segments: [], background_transcript_segments: []
+        checkpoint: null, pending_segments: pendingSegments, pending_complete: pendingSegments.length === outstanding.length,
+        in_flight_segments: [], background_transcript_segments: []
       };
     }
     if (checkpoint.policy_id !== policyId || checkpoint.policy_version !== policyVersion) {
@@ -345,9 +353,11 @@ export class SessionLifecycle {
     // of being silently skipped once the cursor moves past them.
     const admittedThrough = Number.isInteger(checkpoint.admitted_through.last_sequence) ? checkpoint.admitted_through.last_sequence : -1;
     const retainedThrough = inFlightReferences.length ? inFlightReferences.at(-1).sequence : admittedThrough;
-    const pendingSegments = transcript.segments
+    const outstanding = transcript.segments
       .filter((segment) => Number.isInteger(segment.sequence) && segment.sequence > retainedThrough && !inFlightIds.has(segment.segment_id))
-      .sort((left, right) => left.sequence - right.sequence)
+      .sort((left, right) => left.sequence - right.sequence);
+    const pendingSegments = outstanding
+      .slice(0, SCRIBE_RECOVERY_PENDING_PAGE)
       .map((segment) => hydrateScribeSegment(sessionId, { segment_id: segment.segment_id, sequence: segment.sequence, revision: segment.revision ?? 0 }, byId, 'pending'));
     for (const reference of checkpoint.pending_partial.segments) {
       if (!pendingSegments.some((segment) => segment.segment_id === reference.segment_id && segment.sequence === reference.sequence && segment.revision === reference.revision)) {
@@ -366,6 +376,7 @@ export class SessionLifecycle {
       recovered_at: recoveredAt,
       checkpoint: structuredClone(checkpoint),
       pending_segments: pendingSegments,
+      pending_complete: pendingSegments.length === outstanding.length,
       in_flight_segments: inFlightSegments,
       background_transcript_segments: backgroundTranscriptSegments
     };

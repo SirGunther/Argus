@@ -526,6 +526,7 @@
 | `pending_segments` | yes | array<value> | — |
 | `in_flight_segments` | yes | array<value> | — |
 | `background_transcript_segments` | yes | array<value> | — |
+| `pending_complete` | no | boolean | — |
 
 ## `scribe.checkpoint-persist`
 
@@ -552,6 +553,7 @@
 | --- | --- | --- | --- |
 | `session_id` | yes | string | min length 1 |
 | `requested_at` | yes | string | min length 1 |
+| `request_id` | yes | string | min length 1 |
 
 ## `scribe.session-flushed`
 
@@ -565,6 +567,7 @@
 | Field | Required | Type | Constraint |
 | --- | --- | --- | --- |
 | `session_id` | yes | string | min length 1 |
+| `request_id` | yes | string | min length 1 |
 | `flushed_at` | yes | string | min length 1 |
 | `accepted` | yes | boolean | — |
 | `admitted_through` | yes | object | requires `last_segment_id`, `last_sequence`, `last_revision` |

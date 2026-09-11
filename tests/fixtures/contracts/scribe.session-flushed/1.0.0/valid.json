@@ -8,6 +8,7 @@
   "schema_version": "1.0.0",
   "payload": {
     "session_id": "fixture-scribe-session",
+    "request_id": "fixture-close-request-1",
     "flushed_at": "2026-09-10T12:00:02.000Z",
     "accepted": true,
     "admitted_through": {

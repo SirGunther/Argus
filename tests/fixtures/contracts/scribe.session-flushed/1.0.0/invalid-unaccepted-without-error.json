@@ -8,9 +8,14 @@
   "schema_version": "1.0.0",
   "payload": {
     "session_id": "fixture-scribe-session",
+    "request_id": "fixture-close-request-3",
     "flushed_at": "2026-09-10T12:00:02.000Z",
     "accepted": false,
-    "admitted_through": { "last_segment_id": null, "last_sequence": -1, "last_revision": 0 },
+    "admitted_through": {
+      "last_segment_id": null,
+      "last_sequence": -1,
+      "last_revision": 0
+    },
     "pending_rows": 2
   }
 }

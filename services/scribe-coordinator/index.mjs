@@ -7,10 +7,11 @@ const SERVICE = 'scribe-coordinator';
 const INSTANCE = process.env.ARGUS_SERVICE_INSTANCE_ID || SERVICE;
 const BOOT_ID = randomUUID();
 const FLUSH_ERROR_CATEGORIES = new Set(['validation', 'conflict', 'dependency', 'timeout', 'unavailable', 'internal', 'capacity']);
+const MAX_REMEMBERED_CLOSE_REQUESTS = 32;
 const knownSessionIds = new Set();
-// Sessions that already own an outstanding Close acknowledgement. Bounded by the same session
-// set the coordinator already tracks; a repeated request never starts a second flush.
-const closingSessions = new Set();
+// Close requests already answered, so a redelivery of the exact same request stays idempotent
+// while a genuinely new attempt is not suppressed. Bounded, oldest evicted first.
+const answeredCloseRequests = new Set();
 
 const coordinator = createScribeCoordinator({
   requireRecovery: true,
@@ -55,17 +56,21 @@ runLineService({
     // checkpointed, or with the exact failure that must leave the session unsealed.
     'scribe.session-closing': { name: 'flush-scribe-session', handle(message) {
       const sessionId = message.payload?.session_id;
-      if (!sessionId) throw new ServiceOperationError('scribe.session-closing must carry a session_id', { code: 'INVALID_INPUT', category: 'validation' });
+      const requestId = message.payload?.request_id;
+      if (!sessionId || !requestId) throw new ServiceOperationError('scribe.session-closing must carry a session_id and request_id', { code: 'INVALID_INPUT', category: 'validation' });
       knownSessionIds.add(sessionId);
-      if (closingSessions.has(sessionId)) return [];
-      closingSessions.add(sessionId);
+      // Only the identical request is suppressed. A new request id is a new Close attempt, so a
+      // Close that failed - a stalled batch, a model outage since resolved - can be retried
+      // instead of being silently ignored for the rest of the session.
+      if (answeredCloseRequests.has(requestId)) return [];
+      rememberCloseRequest(requestId);
       const { outputs, settled } = coordinator.close(sessionId, { waitForRecovery: true });
       settled.then(
-        () => emitEnvelope(sessionFlushedOutput(sessionId)),
-        (error) => emitEnvelope(sessionFlushedOutput(sessionId, error))
+        () => emitEnvelope(sessionFlushedOutput(sessionId, requestId)),
+        (error) => emitEnvelope(sessionFlushedOutput(sessionId, requestId, error))
       );
       return toWireOutputs(outputs);
-    }, traceDetail: (message) => ({ session_id: message.payload?.session_id }) }
+    }, traceDetail: (message) => ({ session_id: message.payload?.session_id, request_id: message.payload?.request_id }) }
   },
   onDrain() {
     const outputs = [];
@@ -93,7 +98,7 @@ function toWireOutputs(pumpResults) {
 function recoveryRequestOutput(result) {
   return {
     plane: 'control', messageType: 'scribe.recovery-request', schemaVersion: '1.0.0',
-    identityKey: `${INSTANCE}:scribe.recovery-request:${BOOT_ID}:${result.sessionId}:${result.policyId}:${result.policyVersion}`,
+    identityKey: `${INSTANCE}:scribe.recovery-request:${BOOT_ID}:${result.sessionId}:${result.policyId}:${result.policyVersion}${Number.isInteger(result.afterSequence) ? `:after${result.afterSequence}` : ''}`,
     payload: { session_id: result.sessionId, policy_id: result.policyId, policy_version: result.policyVersion }
   };
 }
@@ -113,7 +118,14 @@ function checkpointPersistOutput(result) {
   };
 }
 
-function sessionFlushedOutput(sessionId, error) {
+function rememberCloseRequest(requestId) {
+  answeredCloseRequests.add(requestId);
+  while (answeredCloseRequests.size > MAX_REMEMBERED_CLOSE_REQUESTS) {
+    answeredCloseRequests.delete(answeredCloseRequests.values().next().value);
+  }
+}
+
+function sessionFlushedOutput(sessionId, requestId, error) {
   const status = coordinator.status(sessionId);
   // Rows still pending after a settled flush would mean unacknowledged evidence, so the
   // acknowledgement fails closed rather than reporting a Close the session cannot honour.
@@ -124,9 +136,10 @@ function sessionFlushedOutput(sessionId, error) {
     : undefined);
   return {
     plane: 'control', messageType: 'scribe.session-flushed', schemaVersion: '1.0.0',
-    identityKey: `${INSTANCE}:scribe.session-flushed:${sessionId}:${accepted ? 'accepted' : 'failed'}`,
+    identityKey: `${INSTANCE}:scribe.session-flushed:${requestId}`,
     payload: {
       session_id: sessionId,
+      request_id: requestId,
       flushed_at: new Date().toISOString(),
       accepted,
       admitted_through: { ...status.cursor },

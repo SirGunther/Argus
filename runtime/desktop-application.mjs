@@ -529,27 +529,30 @@ export class DesktopApplication {
   // leaves the session open with a visible error rather than discarding the outstanding rows.
   async flushScribeBeforeClose(sessionId) {
     if (!this.graph || this.graph.closed) return;
-    const settled = new Promise((resolve, reject) => { this.scribeFlushWaiters.set(sessionId, { resolve, reject }); });
+    // Every attempt carries its own request id: a retried Close must reach the coordinator as new
+    // work rather than colliding with the previous attempt's identity, and its acknowledgement
+    // must be matched to the attempt that is actually waiting.
+    const requestId = randomUUID();
+    const settled = new Promise((resolve, reject) => { this.scribeFlushWaiters.set(requestId, { resolve, reject, sessionId }); });
     const timer = setTimeout(() => {
-      this.scribeFlushWaiters.delete(sessionId);
-      settled.catch(() => {});
-      this.rejectScribeFlush(sessionId, Object.assign(new Error(`Scribe did not finish processing this session within ${SCRIBE_CLOSE_FLUSH_TIMEOUT_MS} ms; the session stays open so no finalized row is lost.`), { code: 'SCRIBE_CLOSE_FLUSH_TIMEOUT', retryable: true }));
+      this.rejectScribeFlush(requestId, Object.assign(new Error(`Scribe did not finish processing this session within ${SCRIBE_CLOSE_FLUSH_TIMEOUT_MS} ms; the session stays open so no finalized row is lost.`), { code: 'SCRIBE_CLOSE_FLUSH_TIMEOUT', retryable: true }));
     }, SCRIBE_CLOSE_FLUSH_TIMEOUT_MS);
     timer.unref?.();
     try {
       await this.graph.dispatchFrom('@desktop-controller', 'control', 'scribe.session-closing', sessionId, {
         session_id: sessionId,
+        request_id: requestId,
         requested_at: new Date().toISOString()
-      }, `scribe-session-closing:${sessionId}`);
+      }, `scribe-session-closing:${sessionId}:${requestId}`);
       await settled;
     } finally {
       clearTimeout(timer);
-      this.scribeFlushWaiters.delete(sessionId);
+      this.scribeFlushWaiters.delete(requestId);
     }
   }
 
   resolveScribeFlush(payload) {
-    const waiter = this.scribeFlushWaiters.get(payload.session_id);
+    const waiter = this.scribeFlushWaiters.get(payload.request_id);
     this.diagnostics.log('scribe.session-flushed', {
       session_id: payload.session_id,
       correlation_id: payload.session_id,
@@ -567,13 +570,13 @@ export class DesktopApplication {
     }
     this.scribeFailure = { code: payload.error?.code || 'SCRIBE_SESSION_FLUSH_FAILED', message: payload.error?.message || 'Scribe could not finish processing this session.' };
     this.updateScribeProcessing();
-    this.rejectScribeFlush(payload.session_id, Object.assign(new Error(payload.error?.message || 'Scribe could not finish processing this session.'), { code: payload.error?.code || 'SCRIBE_SESSION_FLUSH_FAILED', retryable: Boolean(payload.error?.retryable) }));
+    this.rejectScribeFlush(payload.request_id, Object.assign(new Error(payload.error?.message || 'Scribe could not finish processing this session.'), { code: payload.error?.code || 'SCRIBE_SESSION_FLUSH_FAILED', retryable: Boolean(payload.error?.retryable) }));
   }
 
-  rejectScribeFlush(sessionId, error) {
-    const waiter = this.scribeFlushWaiters.get(sessionId);
+  rejectScribeFlush(requestId, error) {
+    const waiter = this.scribeFlushWaiters.get(requestId);
     if (!waiter) return;
-    this.scribeFlushWaiters.delete(sessionId);
+    this.scribeFlushWaiters.delete(requestId);
     waiter.reject(error);
   }
 
@@ -941,8 +944,8 @@ export class DesktopApplication {
     };
     // A Close waiting on the flush must fail immediately on a Scribe failure rather than sit out
     // the deadline; the session stays open either way.
-    for (const sessionId of [...this.scribeFlushWaiters.keys()]) {
-      this.rejectScribeFlush(sessionId, Object.assign(new Error(this.scribeFailure.message), { code: this.scribeFailure.code, retryable: Boolean(payload.error?.retryable) }));
+    for (const requestId of [...this.scribeFlushWaiters.keys()]) {
+      this.rejectScribeFlush(requestId, Object.assign(new Error(this.scribeFailure.message), { code: this.scribeFailure.code, retryable: Boolean(payload.error?.retryable) }));
     }
     this.updateScribeProcessing();
   }

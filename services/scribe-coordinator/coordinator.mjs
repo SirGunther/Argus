@@ -74,6 +74,8 @@ export function createScribeCoordinator({
         pendingPersistence: undefined,
         lastPersistence: undefined,
         recovered: !requireRecovery,
+        pendingComplete: true,
+        awaitingContinuation: false,
         settleWaiters: undefined
       };
       sessions.set(sessionId, state);
@@ -195,7 +197,12 @@ export function createScribeCoordinator({
   function acceptRecoveryRestored(payload) {
     if (!payload || typeof payload !== 'object' || !payload.session_id) throw invalid('scribe.recovery-restored must carry a session_id');
     const state = stateFor(payload.session_id);
-    if (state.recovered) throw rejected('SCRIBE_RECOVERY_CONFLICT', `Scribe recovery already completed for session ${payload.session_id}`);
+    if (state.recovered) {
+      // Recovery is paged: a backlog larger than one page is drained by asking again once the
+      // cursor has advanced. Only a continuation this coordinator actually asked for is accepted.
+      if (state.awaitingContinuation) return continuePendingRecovery(state, payload);
+      throw rejected('SCRIBE_RECOVERY_CONFLICT', `Scribe recovery already completed for session ${payload.session_id}`);
+    }
     const policy = policyFor(state, payload.session_id);
     if (!state.policy || payload.policy_id !== policy.policy_id || payload.policy_version !== policy.policy_version) {
       throw conflict('SCRIBE_RECOVERY_POLICY_CONFLICT', 'Recovered Scribe policy identity does not match the configured policy');
@@ -211,7 +218,7 @@ export function createScribeCoordinator({
       }
       const untouchedPending = requireRecoverySegments(payload.pending_segments || [], 'pending');
       assertRecoveredPendingEvidence({ admitted_through: { last_sequence: -1 } }, untouchedPending, []);
-      return restoreState(payload.session_id, { ...emptyRecoverySnapshot(), pendingSegments: untouchedPending });
+      return restoreState(payload.session_id, { ...emptyRecoverySnapshot(), pendingSegments: untouchedPending, pendingComplete: payload.pending_complete !== false });
     }
     if (!checkpoint || checkpoint.session_id !== payload.session_id) throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Recovered Scribe checkpoint targets a different session');
     if (checkpoint.policy_id !== policy.policy_id || checkpoint.policy_version !== policy.policy_version) throw conflict('SCRIBE_RECOVERY_POLICY_CONFLICT', 'Recovered Scribe checkpoint policy identity does not match the configured policy');
@@ -230,6 +237,7 @@ export function createScribeCoordinator({
     return restoreState(payload.session_id, {
       cursor: structuredClone(checkpoint.admitted_through),
       pendingSegments,
+      pendingComplete: payload.pending_complete !== false,
       accumulatedSinceMs,
       backgroundContext: {
         transcript_segments: structuredClone(payload.background_transcript_segments || []),
@@ -281,7 +289,10 @@ export function createScribeCoordinator({
       return { outputs: [], settled };
     }
     const outputs = pump(sessionId);
-    return { outputs, settled: whenSettled(sessionId) };
+    // Closing a session whose recovered backlog is still paged must pull the remaining rows in
+    // rather than wait for a settlement that has nothing left to trigger it.
+    const continuation = continuationRequest(sessionId, state);
+    return { outputs: [...outputs, ...continuation], settled: whenSettled(sessionId) };
   }
 
   function stop(sessionId) {
@@ -301,6 +312,7 @@ export function createScribeCoordinator({
       retainedSegmentFingerprints: state.acceptedFingerprints.size,
       backgroundTranscriptCount: state.backgroundContext.transcript_segments.length,
       backgroundItemCount: state.backgroundContext.prior_logged_items.length,
+      pendingComplete: state.pendingComplete,
       inFlight: state.inFlight ? { batchAttempt: state.inFlight.batchAttempt, requestId: state.inFlight.batchIdentity.request_id } : undefined
     };
   }
@@ -318,6 +330,8 @@ export function createScribeCoordinator({
     }
     state.cursor = { ...snapshot.cursor };
     state.recovered = true;
+    state.pendingComplete = snapshot.pendingComplete !== false;
+    state.awaitingContinuation = false;
     state.backgroundContext = normalizeBackgroundContext(snapshot.backgroundContext);
     for (const segment of snapshot.pendingSegments) rememberRecoveredSegment(state, segment);
     state.accumulatedSinceMs = state.pendingSegments.length ? (snapshot.accumulatedSinceMs ?? now()) : null;
@@ -361,6 +375,45 @@ export function createScribeCoordinator({
       () => { for (const waiter of waiters) waiter.resolve(); },
       (error) => { for (const waiter of waiters) waiter.reject(error); }
     );
+  }
+
+  /** Append the next page of rebuilt pending evidence to an already recovered session. */
+  function continuePendingRecovery(state, payload) {
+    const sessionId = payload.session_id;
+    const policy = policyFor(state, sessionId);
+    if (payload.policy_id !== policy.policy_id || payload.policy_version !== policy.policy_version) {
+      throw conflict('SCRIBE_RECOVERY_POLICY_CONFLICT', 'Continued Scribe recovery policy identity does not match the configured policy');
+    }
+    if ((payload.in_flight_segments?.length || 0)) {
+      throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'A Scribe recovery continuation cannot carry in-flight evidence');
+    }
+    const page = requireRecoverySegments(payload.pending_segments || [], 'pending');
+    let previous = Math.max(state.cursor.last_sequence, state.pendingSegments.at(-1)?.sequence ?? -1);
+    for (const segment of page) {
+      if (segment.sequence <= previous) throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Continued Scribe recovery evidence must be ordered and ahead of the acknowledged cursor');
+      previous = segment.sequence;
+    }
+    state.awaitingContinuation = false;
+    state.pendingComplete = payload.pending_complete !== false;
+    for (const segment of page) rememberRecoveredSegment(state, segment);
+    if (page.length) {
+      state.accumulatedSinceMs ??= now();
+      ordering.seed(sessionId, previous + 1);
+    }
+    const outputs = pump(sessionId);
+    if (!state.inFlight && state.pendingComplete) resolveSettleWaiters(state);
+    scheduleIdleTimer(sessionId);
+    return outputs;
+  }
+
+  /** Ask for the next page once this one is drained, so no row is left behind. */
+  function continuationRequest(sessionId, state) {
+    if (state.inFlight || state.pendingSegments.length || state.pendingComplete || state.awaitingContinuation) return [];
+    state.awaitingContinuation = true;
+    const policy = policyFor(state, sessionId);
+    // The cursor distinguishes one page request from the next: the payload is identical, so
+    // without it every continuation would reuse the first request's message identity.
+    return [{ type: 'recovery-request', sessionId, policyId: policy.policy_id, policyVersion: policy.policy_version, afterSequence: state.cursor.last_sequence }];
   }
 
   function rememberRecoveredSegment(state, segment) {
@@ -444,9 +497,12 @@ export function createScribeCoordinator({
     trimRememberedSegments(state);
     const settledOutput = { type: 'settled', sessionId, batch: structuredClone(batch), batchAttempt: payload.batch_attempt };
     const dispatchOutputs = pump(sessionId);
-    if (!state.inFlight) resolveSettleWaiters(state);
+    const continuation = continuationRequest(sessionId, state);
+    // An outstanding backlog page means this session is not caught up yet, so Close must keep
+    // waiting rather than being told the flush is complete.
+    if (!state.inFlight && state.pendingComplete) resolveSettleWaiters(state);
     scheduleIdleTimer(sessionId);
-    return [settledOutput, ...dispatchOutputs];
+    return [settledOutput, ...dispatchOutputs, ...continuation];
   }
 
   function updateBackgroundContext(state, admittedSegments, items) {
@@ -491,7 +547,7 @@ export function createScribeCoordinator({
   function whenSettled(sessionId) {
     const state = stateFor(sessionId);
     if (state.stalledRequestId && state.inFlight) return Promise.reject(new ScribeBatchStalledError(sessionId, state.inFlight.batchIdentity, state.inFlight.terminalFailure));
-    if (!state.inFlight) return Promise.resolve();
+    if (!state.inFlight && state.pendingComplete && !state.pendingSegments.length) return Promise.resolve();
     if ((state.settleWaiters?.length || 0) >= MAX_SETTLE_WAITERS) return Promise.reject(new ServiceOperationError(`Scribe Close waiter capacity reached: ${MAX_SETTLE_WAITERS}`, { code: 'SCRIBE_CLOSE_WAITER_CAPACITY_FULL', category: 'unavailable', retryable: true }));
     return new Promise((resolve, reject) => {
       state.settleWaiters ||= [];

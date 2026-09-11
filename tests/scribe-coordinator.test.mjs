@@ -90,7 +90,7 @@ test('zero, partial-idle, and exactly-three admission are deterministic', () => 
   const time = createFakeClock();
   const spontaneous = [];
   const coordinator = createScribeCoordinator({ clock: time.clock, onSpontaneousDispatch: (_session, outputs) => spontaneous.push(...outputs) });
-  assert.deepEqual(coordinator.status('s0'), { busy: false, pendingCount: 0, cursor: { last_segment_id: null, last_sequence: -1, last_revision: 0 }, idleTimerActive: false, closing: false, stalled: false, retainedSegmentFingerprints: 0, backgroundTranscriptCount: 0, backgroundItemCount: 0, inFlight: undefined });
+  assert.deepEqual(coordinator.status('s0'), { busy: false, pendingCount: 0, cursor: { last_segment_id: null, last_sequence: -1, last_revision: 0 }, idleTimerActive: false, closing: false, stalled: false, retainedSegmentFingerprints: 0, backgroundTranscriptCount: 0, backgroundItemCount: 0, pendingComplete: true, inFlight: undefined });
   coordinator.configurePolicy(policy('s1'));
   assert.deepEqual(coordinator.acceptFinalizedSegment(segment('s1', 0)), []);
   time.advance(14999);

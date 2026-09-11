@@ -470,6 +470,110 @@ test('rows finalized below the batch threshold survive a crash through authorita
   }
 });
 
+test('the host Close deadline rejects visibly instead of hanging when Scribe never answers', { timeout: 15000 }, async () => {
+  const application = new DesktopApplication({ root, graphFile: productionGraphFile, sessionRoot: path.join(os.tmpdir(), `argus-flush-timeout-${Date.now()}`) });
+  application.sessionId = 'flush-timeout-session';
+  application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+  const dispatched = [];
+  // A graph that accepts the request and never acknowledges it - the exact shape of a coordinator
+  // that dies mid-flush. The deadline must reject; it must not leave Close awaiting forever.
+  application.graph = { closed: false, async dispatchFrom(_from, _plane, type, _session, payload) { dispatched.push({ type, payload }); } };
+  const originalTimeout = application.constructor;
+  const flush = withShortFlushDeadline(application, 120, () => application.flushScribeBeforeClose(application.sessionId));
+  await assert.rejects(flush, (error) => {
+    assert.equal(error.code, 'SCRIBE_CLOSE_FLUSH_TIMEOUT');
+    assert.match(error.message, /stays open/);
+    return true;
+  });
+  assert.equal(dispatched.length, 1);
+  assert.equal(dispatched[0].type, 'scribe.session-closing');
+  assert.ok(dispatched[0].payload.request_id, 'every attempt carries its own request id');
+  assert.equal(application.scribeFlushWaiters.size, 0, 'the waiter is released so a retry is possible');
+  assert.equal(originalTimeout, application.constructor);
+});
+
+test('a failed Close can be retried with a new request identity and then succeeds', { timeout: 15000 }, async () => {
+  const application = new DesktopApplication({ root, graphFile: productionGraphFile, sessionRoot: path.join(os.tmpdir(), `argus-flush-retry-${Date.now()}`) });
+  application.sessionId = 'flush-retry-session';
+  application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+  const requests = [];
+  let answer = 'fail';
+  application.graph = {
+    closed: false,
+    async dispatchFrom(_from, _plane, type, sessionId, payload) {
+      if (type !== 'scribe.session-closing') return;
+      requests.push(payload.request_id);
+      const accepted = answer === 'accept';
+      application.handleGraphMessage({
+        message_id: `flushed-${payload.request_id}`, message_type: 'scribe.session-flushed', plane: 'control', correlation_id: sessionId,
+        payload: {
+          session_id: sessionId, request_id: payload.request_id, flushed_at: new Date().toISOString(), accepted,
+          admitted_through: { last_segment_id: null, last_sequence: accepted ? 2 : -1, last_revision: 0 },
+          pending_rows: accepted ? 0 : 2,
+          ...(accepted ? {} : { error: { code: 'SCRIBE_BATCH_STALLED', category: 'conflict', message: 'the model was unavailable', retryable: true } })
+        }
+      });
+    }
+  };
+
+  await assert.rejects(() => application.flushScribeBeforeClose(application.sessionId), (error) => {
+    assert.equal(error.code, 'SCRIBE_BATCH_STALLED');
+    return true;
+  });
+  answer = 'accept';
+  await application.flushScribeBeforeClose(application.sessionId);
+
+  assert.equal(requests.length, 2, 'the retry reached the coordinator as a second request');
+  assert.notEqual(requests[0], requests[1], 'a retry never reuses the failed attempt identity');
+  assert.equal(new Set(requests).size, 2);
+  assert.equal(application.scribeFlushWaiters.size, 0);
+});
+
+test('a recovered backlog larger than one page drains completely without truncating rows', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'scribe-paged-backlog-'));
+  const backlog = 20; // one in-flight batch plus 17 queued rows - more than the 16-row page
+  try {
+    // The model fails, so the first batch stalls in flight and every later row queues in
+    // coordinator memory. The crash therefore leaves a durable in-flight batch and a backlog that
+    // cannot fit in a single `scribe.recovery-restored` message.
+    const first = await startHarness({ idleTimeoutMs: 300000, directory, reply: () => ({ status: 503, raw: 'model unavailable' }) });
+    let sessionId;
+    try {
+      await first.record();
+      for (let sequence = 0; sequence < backlog; sequence += 1) await first.finalizeRow(sequence);
+      await first.waitFor(() => first.segments.length >= backlog, 'every row finalized');
+      await first.waitFor(() => first.admitted.length >= 1, 'the first batch is in flight');
+      sessionId = first.sessionId;
+      const checkpoint = await first.checkpoint();
+      assert.ok(checkpoint.in_flight_batch, 'the crash leaves a batch in flight');
+      assert.equal(checkpoint.admitted_through.last_sequence, -1, 'nothing was acknowledged before the crash');
+    } finally {
+      await first.crash();
+    }
+    const storage = new SessionStorage({ root: path.join(directory, 'sessions') });
+    assert.equal((await storage.readActiveSnapshot(sessionId, 'transcript')).segments.length, backlog);
+
+    const second = await startHarness({ idleTimeoutMs: 300000, directory, sessionId, reply: (request) => ({ items: itemsFor(request) }) });
+    try {
+      await second.resume();
+      const { sealed, acknowledgement } = await second.close();
+      assert.equal(sealed, true);
+      assert.equal(acknowledgement.accepted, true);
+      assert.equal(acknowledgement.admitted_through.last_sequence, backlog - 1, 'every backlog row was acknowledged, not just the first page');
+      const checkpoint = await second.checkpoint();
+      assert.equal(checkpoint.admitted_through.last_sequence, backlog - 1);
+      const admittedSequences = second.admitted.flatMap((message) => sequencesOf(message));
+      assert.deepEqual(admittedSequences, Array.from({ length: backlog }, (_, index) => index), 'the paged backlog is admitted exactly once, in order, including the rows beyond the first page');
+      const items = (await second.storage.readActiveSnapshot(sessionId, 'logged-item')).items;
+      assert.equal(new Set(items.map((item) => item.item_id)).size, items.length, 'no row produced a duplicate Logged Item');
+    } finally {
+      await second.stop();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('the desktop host projects bounded Scribe states from governed traffic alone', async () => {
   const sessionId = 'scribe-status-session';
   const application = new DesktopApplication({ root, graphFile: productionGraphFile, sessionRoot: path.join(os.tmpdir(), `argus-scribe-status-${Date.now()}`) });
@@ -560,6 +664,13 @@ function evaluatedMessage(sessionId, identity, { itemIds = [], failed = false } 
     message_id: `evaluated-${identity.request_id}-${failed ? 'failed' : 'accepted'}`, message_type: 'scribe.batch-evaluated', plane: 'domain', correlation_id: sessionId,
     payload: { batch_attempt: 1, batch }
   };
+}
+
+// Exercises the real host deadline without waiting out the production timeout.
+function withShortFlushDeadline(application, deadlineMs, run) {
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, ms, ...rest) => realSetTimeout(callback, ms > deadlineMs ? deadlineMs : ms, ...rest);
+  try { return run(); } finally { globalThis.setTimeout = realSetTimeout; }
 }
 
 function sequencesOf(admitted) {
@@ -673,11 +784,12 @@ async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, dir
   // The governed Close the desktop host performs: ask Scribe to flush, wait for its terminal
   // acknowledgement, and only then seal the session through the lifecycle owner.
   harness.close = async () => {
+    const requestId = `close-${Math.random().toString(36).slice(2, 10)}`;
     await harness.graph.dispatchFrom('@desktop-controller', 'control', 'scribe.session-closing', harness.sessionId, {
-      session_id: harness.sessionId, requested_at: new Date().toISOString()
-    }, `scribe-session-closing:${harness.sessionId}`);
-    await harness.waitFor(() => harness.flushed.length >= 1, 'Scribe acknowledged the Close flush');
-    const acknowledgement = harness.flushed.at(-1).payload;
+      session_id: harness.sessionId, request_id: requestId, requested_at: new Date().toISOString()
+    }, `scribe-session-closing:${harness.sessionId}:${requestId}`);
+    await harness.waitFor(() => harness.flushed.some((message) => message.payload.request_id === requestId), 'Scribe acknowledged the Close flush');
+    const acknowledgement = harness.flushed.find((message) => message.payload.request_id === requestId).payload;
     if (!acknowledgement.accepted) return { sealed: false, acknowledgement };
     await harness.graph.dispatchFrom('@desktop-controller', 'control', 'session.close', harness.sessionId, {
       operation_id: `close-${harness.sessionId}`, session_id: harness.sessionId, requested_at: new Date().toISOString()
@@ -713,7 +825,9 @@ async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, dir
     harness.graph.draining = true;
     harness.graph.stopProcesses();
     await new Promise((resolve) => setTimeout(resolve, 750));
-    await endpoint.close();
+    // A crash can happen while a model request is still open, and `server.close()` waits for
+    // in-flight connections - so the endpoint is released without awaiting it.
+    endpoint.close().catch(() => {});
   };
   harness.stop = async () => {
     await harness.graph.close().catch(() => {});
