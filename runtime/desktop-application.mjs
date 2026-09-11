@@ -1024,6 +1024,10 @@ export class DesktopApplication {
     this.scribeCursorSequence = -1;
     this.scribeEvidenceSequence = -1;
     this.scribeInFlight = undefined;
+    // Durable progress is session-scoped. Retaining the prior session's cursor here could make a
+    // newly evaluated batch appear persisted before its own checkpoint acknowledgement arrives.
+    this.scribeDurableSequence = -1;
+    this.scribeDurableInFlight = false;
     this.scribeFailure = undefined;
     this.scribeProcessingLast = undefined;
   }
@@ -1265,7 +1269,9 @@ export class DesktopApplication {
     const checkpoint = await this.storage.readScribeCheckpoint(sessionId).catch(() => undefined);
     const acknowledged = checkpoint?.admitted_through?.last_sequence;
     if (Number.isInteger(acknowledged) && acknowledged > this.scribeCursorSequence) this.scribeCursorSequence = acknowledged;
+    if (Number.isInteger(acknowledged) && acknowledged > this.scribeDurableSequence) this.scribeDurableSequence = acknowledged;
     const inFlight = checkpoint?.in_flight_batch;
+    this.scribeDurableInFlight = Boolean(inFlight);
     if (inFlight && !this.scribeInFlight) {
       const identity = inFlight.batch_identity || {};
       this.scribeInFlight = {

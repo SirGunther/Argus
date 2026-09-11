@@ -137,6 +137,33 @@ test('application shutdown settles an in-flight batch before any service drains,
   }
 });
 
+test('a new session cannot inherit durable Scribe progress from the previous session', () => {
+  const application = new DesktopApplication({
+    root,
+    graphFile: productionGraphFile,
+    sessionRoot: path.join(os.tmpdir(), `argus-scribe-session-scope-${Date.now()}`)
+  });
+  application.sessionId = 'session-previous';
+  application.scribeCursorSequence = 20;
+  application.scribeDurableSequence = 20;
+
+  application.resetScribeState();
+  application.sessionId = 'session-next';
+  const identity = batchIdentity('session-next', [0, 1, 2]);
+  application.observeScribeBatch('scribe.batch-admitted', admittedMessage('session-next', identity).payload);
+  application.observeScribeBatch('scribe.batch-evaluated', evaluatedMessage('session-next', identity).payload);
+
+  assert.equal(application.scribeCursorSequence, 2);
+  assert.equal(application.scribeDurableSequence, -1);
+  assert.equal(application.scribeSettledDurably(), false, 'model evaluation alone is not durable settlement in the new session');
+
+  application.observeScribeCheckpointPersisted({
+    session_id: 'session-next',
+    checkpoint: { admitted_through: { last_sequence: 2 } }
+  });
+  assert.equal(application.scribeSettledDurably(), true);
+});
+
 test('finalized rows accumulate 3 + 3 + 1 across a busy model lane, and only the remainder waits for idle', async () => {
   const harness = await startHarness({
     idleTimeoutMs: 1000,
