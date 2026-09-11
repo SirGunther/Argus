@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { access, appendFile, copyFile, mkdir, readFile, rename, writeFile, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { fingerprintScribeGuidance } from '../contracts/model-protocol.mjs';
 
 export const STORAGE_SCHEMA_VERSION = '1.0.0';
 export const SCRIBE_CHECKPOINT_SCHEMA_VERSION = '1.0.0';
@@ -647,6 +648,9 @@ export function assertGovernedScribeGuidanceShape(sessionId, snapshot) {
     throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', `Scribe guidance snapshot.additional_guidance must be text of at most ${SCRIBE_GUIDANCE_SNAPSHOT_MAX_CHARS} characters`);
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(snapshot.guidance_fingerprint || '')) throw new SessionStorageError('SCRIBE_GUIDANCE_INVALID', 'Scribe guidance snapshot.guidance_fingerprint is invalid');
+  if (snapshot.guidance_fingerprint !== fingerprintScribeGuidance(snapshot.additional_guidance)) {
+    throw new SessionStorageError('SCRIBE_GUIDANCE_FINGERPRINT_CONFLICT', 'Scribe guidance snapshot fingerprint does not match its guidance text');
+  }
 }
 
 function assertGovernedJournalEntryShape(sessionId, entry, lineNumber) {

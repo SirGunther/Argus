@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { SCRIBE_GUIDANCE_LIMITS } from '../contracts/model-protocol.mjs';
+import { SCRIBE_GUIDANCE_LIMITS, fingerprintScribeGuidance } from '../contracts/model-protocol.mjs';
 
 export const SCRIBE_GUIDANCE_SETTINGS_VERSION = 1;
 export const SCRIBE_GUIDANCE_MAX_CHARS = SCRIBE_GUIDANCE_LIMITS.max_chars;
@@ -34,6 +33,15 @@ export function scribeGuidanceError(message) { return new ScribeGuidanceConfigur
  */
 export function normalizeScribeGuidanceSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw scribeGuidanceError('Scribe guidance settings must be an object');
+  const keys = Object.keys(input);
+  if (keys.some((key) => /key|secret|token|password|credential/i.test(key))) {
+    throw scribeGuidanceError('Scribe guidance settings must not contain credential fields');
+  }
+  const allowed = new Set(['version', 'additional_guidance', 'additionalGuidance']);
+  if (keys.some((key) => !allowed.has(key))) throw scribeGuidanceError('Scribe guidance settings contain an undeclared field');
+  if (input.version !== undefined && input.version !== SCRIBE_GUIDANCE_SETTINGS_VERSION) {
+    throw scribeGuidanceError(`Scribe guidance settings version must be ${SCRIBE_GUIDANCE_SETTINGS_VERSION}`);
+  }
   const raw = input.additional_guidance ?? input.additionalGuidance ?? '';
   if (typeof raw !== 'string') throw scribeGuidanceError('Scribe guidance must be text');
   const guidance = raw.trim();
@@ -55,8 +63,7 @@ export function normalizeScribeGuidanceSettings(input = {}) {
  * global setting is visible as a different identity rather than an unnoticed substitution.
  */
 export function scribeGuidanceFingerprint(guidance) {
-  const value = typeof guidance === 'string' ? guidance.trim() : '';
-  return `sha256:${createHash('sha256').update(`v${SCRIBE_GUIDANCE_SETTINGS_VERSION}:${value}`).digest('hex')}`;
+  return fingerprintScribeGuidance(guidance);
 }
 
 /** Ordinary JSON store for the non-secret Scribe guidance record. It refuses credential-shaped fields. */

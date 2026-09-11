@@ -18,6 +18,7 @@ import { SessionStorage } from '../runtime/session-storage.mjs';
 import { loadContractRegistry } from '../runtime/contract-registry.mjs';
 import { createEnvelope } from '../runtime/orchestrator.mjs';
 import { runServiceBatches } from './helpers/process-harness.mjs';
+import { DesktopApplication } from '../runtime/desktop-application.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const registry = await loadContractRegistry(path.join(root, 'contracts', 'catalog.json'));
@@ -115,6 +116,11 @@ test('a stored guidance file carrying a credential-shaped field fails closed', a
   const { writeFile } = await import('node:fs/promises');
   await writeFile(filePath, JSON.stringify({ version: 1, additional_guidance: GUIDANCE, api_key: 'sk-forged' }), 'utf8');
   await assert.rejects(() => store.load(), /forbidden credential field/);
+});
+
+test('the settings boundary refuses credential and undeclared fields before persistence', () => {
+  assert.throws(() => normalizeScribeGuidanceSettings({ additional_guidance: GUIDANCE, api_key: 'sk-forged' }), /must not contain credential fields/);
+  assert.throws(() => normalizeScribeGuidanceSettings({ additional_guidance: GUIDANCE, unrelated: true }), /undeclared field/);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -273,8 +279,32 @@ test('the durable snapshot refuses another session, a bad fingerprint, and overs
   const { storage } = await temporaryStorage(t);
   await assert.rejects(() => storage.writeScribeGuidance(session, guidanceSnapshot('a-different-session', GUIDANCE)), /targets a different session/);
   await assert.rejects(() => storage.writeScribeGuidance(session, { ...guidanceSnapshot(session, GUIDANCE), guidance_fingerprint: 'not-a-fingerprint' }), /guidance_fingerprint is invalid/);
+  await assert.rejects(() => storage.writeScribeGuidance(session, { ...guidanceSnapshot(session, GUIDANCE), guidance_fingerprint: scribeGuidanceFingerprint('different guidance') }), /fingerprint does not match/);
   await assert.rejects(() => storage.writeScribeGuidance(session, { ...guidanceSnapshot(session, GUIDANCE), additional_guidance: 'a'.repeat(2001) }), /at most 2000 characters/);
   await assert.rejects(() => storage.writeScribeGuidance(session, { ...guidanceSnapshot(session, GUIDANCE), smuggled: true }), /undeclared field/);
+});
+
+test('a corrupt session snapshot fails closed instead of being replaced from global settings', async () => {
+  const application = new DesktopApplication({
+    root,
+    graphFile: path.join(root, 'wiring', 'production-electron.json'),
+    sessionRoot: path.join(os.tmpdir(), `argus-guidance-corrupt-${Date.now()}`),
+    scribeGuidanceStore: { load: async () => ({ version: 1, additional_guidance: GUIDANCE }) }
+  });
+  application.graph = { closed: false, dispatchFrom: async () => { throw new Error('must not dispatch'); } };
+  application.storage = { readScribeGuidance: async () => { throw new Error('corrupt snapshot'); } };
+  await assert.rejects(() => application.configureScribeGuidance(session), /corrupt snapshot/);
+});
+
+test('settings with no active session snapshot truthfully report that they apply next session', async () => {
+  const application = new DesktopApplication({
+    root,
+    graphFile: path.join(root, 'wiring', 'production-electron.json'),
+    sessionRoot: path.join(os.tmpdir(), `argus-guidance-status-${Date.now()}`),
+    scribeGuidanceStore: { load: async () => ({ version: 1, additional_guidance: GUIDANCE }) }
+  });
+  application.storage = { readScribeGuidance: async () => undefined };
+  assert.equal((await application.scribeGuidanceSettings()).applies_next_session, true);
 });
 
 test('an edit after a session pinned its guidance does not change that session', async (t) => {
@@ -352,6 +382,18 @@ test('re-sending the identical snapshot is idempotent but a different one is a v
   assert.deepEqual(registry.validateEnvelope(rejection), []);
   // The original snapshot survived the rejected replacement.
   assert.equal(result.batchOutputs[4][0].payload.generation.additional_guidance, GUIDANCE);
+});
+
+test('the policy source rejects a fingerprint that does not bind the offered guidance', async () => {
+  const sessionId = 'guidance-fingerprint-conflict-session';
+  const forged = guidanceConfigure(sessionId, GUIDANCE);
+  forged.payload.guidance_fingerprint = scribeGuidanceFingerprint('different guidance');
+  const result = await runServiceBatches(POLICY_SOURCE_MANIFEST, [
+    { inputs: [lifecycleStart()], expectedOutputCount: 1 },
+    { inputs: [forged], expectedOutputCount: 1 }
+  ], 8000);
+  assert.equal(result.batchOutputs[1][0].message_type, 'service.failure');
+  assert.equal(result.batchOutputs[1][0].payload.error.code, 'SCRIBE_GUIDANCE_FINGERPRINT_CONFLICT');
 });
 
 test('two sessions in one run carry their own guidance', async () => {

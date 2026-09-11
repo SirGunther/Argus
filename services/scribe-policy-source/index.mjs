@@ -1,4 +1,5 @@
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
+import { fingerprintScribeGuidance } from '../../contracts/model-protocol.mjs';
 
 // The governed Scribe policy is published per real recording session, not per graph run.
 // `lifecycle.start` carries the run configuration but its session is the graph bootstrap
@@ -28,6 +29,11 @@ runLineService({ service: SERVICE, operations: {
     if (typeof guidance !== 'string') throw invalid('scribe.guidance-configure requires additional_guidance text');
     if (guidance.length > SCRIBE_GUIDANCE_MAX_CHARS) throw invalid(`scribe.guidance-configure additional_guidance exceeds ${SCRIBE_GUIDANCE_MAX_CHARS} characters`);
     if (typeof fingerprint !== 'string' || !fingerprint) throw invalid('scribe.guidance-configure requires a guidance_fingerprint');
+    if (fingerprint !== fingerprintScribeGuidance(guidance)) {
+      throw new ServiceOperationError('Scribe guidance fingerprint does not match its guidance text', {
+        code: 'SCRIBE_GUIDANCE_FINGERPRINT_CONFLICT', category: 'conflict', details: { session_id: sessionId }
+      });
+    }
     const retained = sessionGuidance.get(sessionId);
     if (retained) {
       // A session's guidance is snapshotted once. A second value for the same session is the

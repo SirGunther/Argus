@@ -32,6 +32,12 @@ export const EXTRACTION_BATCH_OUTPUT_LIMITS = Object.freeze({
 // fails visibly at the extraction boundary instead of silently prompting under shortened wording.
 export const SCRIBE_GUIDANCE_LIMITS = Object.freeze({ max_chars: 2000 });
 
+/** Stable governed identity for the normalized text of one Scribe guidance setting. */
+export function fingerprintScribeGuidance(guidance) {
+  const value = typeof guidance === 'string' ? guidance.trim() : '';
+  return `sha256:${createHash('sha256').update(`v1:${value}`).digest('hex')}`;
+}
+
 export function fingerprintModelRequest(request) {
   return `sha256:${createHash('sha256').update(JSON.stringify(request)).digest('hex')}`;
 }

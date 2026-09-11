@@ -310,11 +310,11 @@ export class DesktopApplication {
    */
   async scribeGuidanceSettings() {
     const saved = (await this.scribeGuidanceStore?.load()) || DEFAULT_SCRIBE_GUIDANCE_SETTINGS;
-    const active = this.sessionId ? await this.storage.readScribeGuidance(this.sessionId).catch(() => undefined) : undefined;
+    const active = this.sessionId ? await this.storage.readScribeGuidance(this.sessionId) : undefined;
     return {
       ...saved,
       max_chars: SCRIBE_GUIDANCE_MAX_CHARS,
-      applies_next_session: Boolean(active) && active.guidance_fingerprint !== scribeGuidanceFingerprint(saved.additional_guidance),
+      applies_next_session: !active || active.guidance_fingerprint !== scribeGuidanceFingerprint(saved.additional_guidance),
       ...(active ? { active_session_guidance: active.additional_guidance } : {})
     };
   }
@@ -335,7 +335,10 @@ export class DesktopApplication {
    */
   async configureScribeGuidance(sessionId) {
     if (!sessionId || !this.graph || this.graph.closed) return undefined;
-    let snapshot = await this.storage.readScribeGuidance(sessionId).catch(() => undefined);
+    // readScribeGuidance already returns undefined when the file is absent. Integrity and parse
+    // failures must propagate: treating a corrupt snapshot as absent would silently replace the
+    // immutable guidance of a stopped or recovered session with today's global setting.
+    let snapshot = await this.storage.readScribeGuidance(sessionId);
     if (!snapshot) {
       const saved = (await this.scribeGuidanceStore?.load()) || DEFAULT_SCRIBE_GUIDANCE_SETTINGS;
       snapshot = {
