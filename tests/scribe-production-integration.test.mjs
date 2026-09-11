@@ -248,6 +248,7 @@ test('a crash after model completion but before item acknowledgement re-evaluate
       // The model has answered and the draft is with the owner, but the batch has not been
       // acknowledged as evaluated yet.
       await first.waitFor(() => first.stored.length >= 1, 'owner stored the draft');
+      await first.waitForCursor(2, 'the first run stored its item and settled');
       sessionId = first.sessionId;
       admitted = first.admitted[0].payload;
     } finally {
@@ -255,24 +256,45 @@ test('a crash after model completion but before item acknowledgement re-evaluate
     }
     const storage = new SessionStorage({ root: path.join(directory, 'sessions') });
     const itemsBefore = (await storage.readActiveSnapshot(sessionId, 'logged-item')).items.length;
-    assert.ok(itemsBefore >= 1);
+    assert.ok(itemsBefore >= 1, 'the real owner durably stored the Logged Item before the crash');
 
-    // The crash can legitimately land on either side of the extractor's final evaluation, so the
-    // durable cursor - not a message that may already have been emitted - is the terminal signal.
+    // Reproduce the boundary deterministically instead of racing it. Letting the crash fall
+    // wherever timing puts it made this test pass whenever settlement won the race, because
+    // recovery then rebuilds from the journal and never replays the draft to the owner - so the
+    // boundary the test claims to prove went unexercised. The Logged Item above was stored by the
+    // real owner; rewinding the durable Scribe state to its pre-acknowledgement form recreates
+    // exactly "the model answered and the item is stored, but the outcome was never acknowledged"
+    // on every run, and forces the replay path through the real ownership seam.
+    const settled = await storage.readScribeCheckpoint(sessionId);
+    await storage.writeScribeCheckpoint(sessionId, {
+      schema_version: settled.schema_version,
+      session_id: sessionId,
+      saved_at: settled.saved_at,
+      admitted_through: { last_segment_id: null, last_sequence: -1, last_revision: 0 },
+      pending_partial: { segments: [], accumulated_since: null },
+      background_context: { prior_logged_items: [] },
+      policy_id: settled.policy_id,
+      policy_version: settled.policy_version,
+      in_flight_batch: { batch_identity: admitted.batch_identity, attempt: admitted.batch_attempt, dispatched_at: settled.saved_at }
+    });
+    await rm(path.join(directory, 'sessions', sessionId, 'permanent', 'scribe.batch-journal.ndjson'), { force: true });
+    assert.deepEqual(await storage.readScribeBatchJournal(sessionId), [], 'the rewound state must carry no journaled outcome, or recovery would settle from the journal instead of replaying');
+
     const second = await startHarness({ idleTimeoutMs: 1000, directory, sessionId, reply: (request) => ({ items: itemsFor(request) }) });
     try {
       await second.resume();
-      await second.waitFor(async () => (await second.checkpoint())?.admitted_through.last_sequence === 2, 'the recovered batch settled its durable cursor');
+      await second.waitFor(() => second.admitted.length >= 1, 'the unacknowledged batch is replayed');
+      assert.deepEqual(second.admitted[0].payload.batch_identity, admitted.batch_identity, 'a replay uses the identical batch identity');
+      assert.equal(second.admitted[0].payload.batch_attempt, admitted.batch_attempt, 'a replay keeps the exact coordinator attempt');
+      await second.waitForCursor(2, 'the replayed batch settles its durable cursor through the real owner');
       const checkpoint = await second.checkpoint();
       assert.equal(checkpoint.in_flight_batch, undefined, 'settlement clears the in-flight batch');
       const journal = await second.journal();
-      assert.equal(journal.length, 1, 'the outcome is journaled exactly once across the crash');
+      assert.equal(journal.length, 1, 'the replayed outcome is journaled exactly once');
       assert.deepEqual(journal[0].batch.batch_identity, admitted.batch_identity, 'settlement keeps the exact pre-crash batch identity');
       assert.equal(journal[0].batch.attempt, admitted.batch_attempt, 'settlement keeps the exact pre-crash coordinator attempt');
-      if (second.admitted.length) {
-        assert.deepEqual(second.admitted[0].payload.batch_identity, admitted.batch_identity, 'a replay uses the identical batch identity');
-        assert.equal(second.admitted[0].payload.batch_attempt, admitted.batch_attempt);
-      }
+      // The owner must idempotently re-confirm the already-stored draft rather than reject it as a
+      // reused item id; a duplicate or a rejection here both fail the boundary.
       const items = (await second.storage.readActiveSnapshot(sessionId, 'logged-item')).items;
       assert.equal(new Set(items.map((item) => item.item_id)).size, items.length, 'deterministic draft identity prevents duplicate Logged Items');
       assert.equal(items.length, itemsBefore, 'a replayed batch stores no additional Logged Item');
@@ -344,6 +366,102 @@ test('a crash after item acknowledgement but before cursor persistence settles f
       assert.equal(second.endpoint.calls.length, 0, 'a journaled outcome is never re-sent to the model');
       const items = (await second.storage.readActiveSnapshot(sessionId, 'logged-item')).items;
       assert.equal(items.length, evaluatedBatch.items.length, 'recovery duplicates no Logged Item');
+    } finally {
+      await second.stop();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Close releases a sub-threshold remainder immediately and seals only after acknowledgement', async () => {
+  // The remainder is two rows - below the three-row batch threshold - and the idle timer is set far
+  // beyond the test, so nothing but the governed Close request can release it.
+  const harness = await startHarness({ idleTimeoutMs: 300000, reply: (request) => ({ items: itemsFor(request) }) });
+  try {
+    await harness.record();
+    for (let sequence = 0; sequence < 2; sequence += 1) await harness.finalizeRow(sequence);
+    await harness.waitFor(() => harness.segments.length >= 2, 'both rows finalized');
+    assert.equal(harness.admitted.length, 0, 'a sub-threshold remainder must not be admitted before Close');
+    assert.equal(await harness.checkpoint(), undefined, 'nothing durable records those rows yet');
+
+    const started = Date.now();
+    const { sealed, acknowledgement } = await harness.close();
+    assert.equal(sealed, true);
+    assert.equal(acknowledgement.accepted, true, 'Close is acknowledged only when Scribe is caught up');
+    assert.equal(acknowledgement.pending_rows, 0);
+    assert.equal(acknowledgement.admitted_through.last_sequence, 1);
+    assert.ok(Date.now() - started < 30000, 'Close must not wait out the admission policy idle timer');
+
+    assert.deepEqual(sequencesOf(harness.admitted[0]), [0, 1], 'Close forced the exact remainder');
+    assert.equal(harness.admitted[0].payload.batch_identity.admission_reason, 'idle-timeout');
+    const checkpoint = await harness.checkpoint();
+    assert.equal(checkpoint.admitted_through.last_sequence, 1, 'the durable cursor covers every finalized row');
+    assert.equal(checkpoint.in_flight_batch, undefined);
+    assert.equal((await harness.journal()).length, 1);
+    assert.equal((await harness.metadata()).state, 'closed', 'the session seals only after the acknowledgement');
+    const items = (await harness.storage.readActiveSnapshot(harness.sessionId, 'logged-item')).items;
+    assert.equal(items.length, 1, 'the remainder produced its Logged Item rather than being skipped');
+  } finally {
+    await harness.stop();
+  }
+});
+
+test('Close fails visibly and leaves the session unsealed when Scribe cannot finish', async () => {
+  const harness = await startHarness({ idleTimeoutMs: 300000, reply: () => ({ status: 503, raw: 'model unavailable' }) });
+  try {
+    await harness.record();
+    for (let sequence = 0; sequence < 2; sequence += 1) await harness.finalizeRow(sequence);
+    await harness.waitFor(() => harness.segments.length >= 2, 'both rows finalized');
+
+    const { sealed, acknowledgement } = await harness.close();
+    assert.equal(sealed, false, 'a session Scribe could not flush must not be sealed');
+    assert.equal(acknowledgement.accepted, false);
+    assert.ok(acknowledgement.error, 'the refusal names its exact cause');
+    assert.equal((await harness.metadata()).state, 'recording', 'the session stays open so no finalized row is lost');
+
+    // The durable boundary refuses the seal independently, so a caller that ignores the
+    // acknowledgement still cannot seal past the unacknowledged rows.
+    const refusal = await harness.sealDirectly();
+    assert.equal(refusal.refused, true, 'the lifecycle owner refuses to seal an unacknowledged Scribe gap');
+    assert.match(refusal.code, /SCRIBE_/);
+    assert.notEqual((await harness.metadata()).state, 'closed');
+    const checkpoint = await harness.checkpoint();
+    assert.ok(checkpoint.in_flight_batch, 'the exact failed batch stays retained');
+  } finally {
+    await harness.stop();
+  }
+});
+
+test('rows finalized below the batch threshold survive a crash through authoritative transcript history', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'scribe-subthreshold-'));
+  try {
+    const first = await startHarness({ idleTimeoutMs: 300000, directory, reply: (request) => ({ items: itemsFor(request) }) });
+    let sessionId;
+    try {
+      await first.record();
+      for (let sequence = 0; sequence < 2; sequence += 1) await first.finalizeRow(sequence);
+      await first.waitFor(() => first.segments.length >= 2, 'both rows finalized');
+      sessionId = first.sessionId;
+      // Nothing durable describes these rows as Scribe evidence: no checkpoint exists at all.
+      assert.equal(await first.checkpoint(), undefined);
+    } finally {
+      await first.crash();
+    }
+
+    const second = await startHarness({ idleTimeoutMs: 300000, directory, sessionId, reply: (request) => ({ items: itemsFor(request) }) });
+    try {
+      await second.resume();
+      // Recovery rebuilt them from authoritative transcript history, so Close can still flush them.
+      const { sealed, acknowledgement } = await second.close();
+      assert.equal(sealed, true);
+      assert.equal(acknowledgement.accepted, true);
+      assert.equal(acknowledgement.admitted_through.last_sequence, 1, 'both pre-crash rows were acknowledged');
+      assert.deepEqual(sequencesOf(second.admitted[0]), [0, 1], 'the recovered rows are the exact pre-crash evidence');
+      const checkpoint = await second.checkpoint();
+      assert.equal(checkpoint.admitted_through.last_sequence, 1);
+      const items = (await second.storage.readActiveSnapshot(sessionId, 'logged-item')).items;
+      assert.equal(items.length, 1, 'the recovered remainder produced its Logged Item');
     } finally {
       await second.stop();
     }
@@ -478,6 +596,7 @@ async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, dir
     admitted: [],
     evaluated: [],
     stored: [],
+    flushed: [],
     segments: [],
     historyAppended: [],
     failures: [],
@@ -498,6 +617,7 @@ async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, dir
       if (message.message_type === 'scribe.batch-admitted') harness.admitted.push(message);
       if (message.message_type === 'scribe.batch-evaluated') harness.evaluated.push(message);
       if (message.message_type === 'logged-item.stored') harness.stored.push(message);
+      if (message.message_type === 'scribe.session-flushed') harness.flushed.push(message);
       if (message.message_type === 'transcript.segment') harness.segments.push(message);
       if (message.message_type === 'logged-item.history-appended') harness.historyAppended.push(message);
       if (message.message_type === 'service.failure') harness.failures.push(message);
@@ -550,6 +670,35 @@ async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, dir
     }, `boundary:${harness.sessionId}:${sequence}`);
   };
 
+  // The governed Close the desktop host performs: ask Scribe to flush, wait for its terminal
+  // acknowledgement, and only then seal the session through the lifecycle owner.
+  harness.close = async () => {
+    await harness.graph.dispatchFrom('@desktop-controller', 'control', 'scribe.session-closing', harness.sessionId, {
+      session_id: harness.sessionId, requested_at: new Date().toISOString()
+    }, `scribe-session-closing:${harness.sessionId}`);
+    await harness.waitFor(() => harness.flushed.length >= 1, 'Scribe acknowledged the Close flush');
+    const acknowledgement = harness.flushed.at(-1).payload;
+    if (!acknowledgement.accepted) return { sealed: false, acknowledgement };
+    await harness.graph.dispatchFrom('@desktop-controller', 'control', 'session.close', harness.sessionId, {
+      operation_id: `close-${harness.sessionId}`, session_id: harness.sessionId, requested_at: new Date().toISOString()
+    }, `close:${harness.sessionId}`);
+    await harness.graph.waitForIdle();
+    return { sealed: true, acknowledgement };
+  };
+  // Sealing without the handshake, to prove the durable boundary refuses it independently. The
+  // lifecycle owner rejects the operation, so the dispatch itself rejects.
+  harness.sealDirectly = async () => {
+    try {
+      await harness.graph.dispatchFrom('@desktop-controller', 'control', 'session.close', harness.sessionId, {
+        operation_id: `direct-close-${harness.sessionId}`, session_id: harness.sessionId, requested_at: new Date().toISOString()
+      }, `direct-close:${harness.sessionId}`);
+      await harness.graph.waitForIdle();
+      return { refused: false };
+    } catch (error) {
+      return { refused: true, code: error.code, message: error.message };
+    }
+  };
+  harness.metadata = () => storage.readMetadata(harness.sessionId);
   harness.checkpoint = () => storage.readScribeCheckpoint(harness.sessionId);
   // Observing `scribe.batch-evaluated` is not durable settlement: the cursor advances only after
   // the coordinator's checkpoint-persist/checkpoint-persisted handshake completes. Every durable

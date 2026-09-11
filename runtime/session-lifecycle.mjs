@@ -310,9 +310,18 @@ export class SessionLifecycle {
     const journal = await this.storage.readScribeBatchJournal(sessionId);
     if (!checkpoint) {
       if (journal.length) throw conflict('SCRIBE_RECOVERY_JOURNAL_CONFLICT', `Session ${sessionId} has a Scribe journal but no checkpoint to identify its terminal outcomes`);
+      // No checkpoint means Scribe never admitted a batch for this session, but finalized rows may
+      // already exist - a session interrupted below the batch threshold. Those rows are still
+      // authoritative evidence, so recovery hands them back as pending instead of starting empty
+      // and skipping them forever.
+      const untouched = await this.storage.readActiveSnapshot(sessionId, 'transcript');
+      const pendingSegments = (untouched?.segments || [])
+        .filter((segment) => Number.isInteger(segment.sequence))
+        .sort((left, right) => left.sequence - right.sequence)
+        .map((segment) => hydrateScribeSegment(sessionId, { segment_id: segment.segment_id, sequence: segment.sequence, revision: segment.revision ?? 0 }, new Map((untouched?.segments || []).map((item) => [item.segment_id, item])), 'pending'));
       return {
         session_id: sessionId, policy_id: policyId, policy_version: policyVersion, recovered_at: recoveredAt,
-        checkpoint: null, pending_segments: [], in_flight_segments: [], background_transcript_segments: []
+        checkpoint: null, pending_segments: pendingSegments, in_flight_segments: [], background_transcript_segments: []
       };
     }
     if (checkpoint.policy_id !== policyId || checkpoint.policy_version !== policyVersion) {
@@ -326,11 +335,25 @@ export class SessionLifecycle {
       byId.set(segment.segment_id, segment);
     }
     checkpoint = await this.#reconcileJournaledScribeOutcome(sessionId, checkpoint, journal, byId);
-    const pendingSegments = checkpoint.pending_partial.segments.map((reference) => hydrateScribeSegment(sessionId, reference, byId, 'pending'));
     const inFlightReferences = checkpoint.in_flight_batch?.batch_identity.segments || [];
     const inFlightSegments = inFlightReferences.map((reference) => hydrateScribeSegment(sessionId, reference, byId, 'in-flight'));
     const inFlightIds = new Set(inFlightReferences.map((reference) => reference.segment_id));
-    if (pendingSegments.some((segment) => inFlightIds.has(segment.segment_id))) throw integrity('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', 'Pending and in-flight Scribe recovery evidence overlap');
+    // Pending evidence is rebuilt from authoritative transcript history rather than only from the
+    // checkpoint's references. A checkpoint is written at admission and evaluation, so rows that
+    // arrived after the last settlement and never reached the batch threshold appear nowhere in
+    // it; reading them back from the transcript is what makes those rows survive a crash instead
+    // of being silently skipped once the cursor moves past them.
+    const admittedThrough = Number.isInteger(checkpoint.admitted_through.last_sequence) ? checkpoint.admitted_through.last_sequence : -1;
+    const retainedThrough = inFlightReferences.length ? inFlightReferences.at(-1).sequence : admittedThrough;
+    const pendingSegments = transcript.segments
+      .filter((segment) => Number.isInteger(segment.sequence) && segment.sequence > retainedThrough && !inFlightIds.has(segment.segment_id))
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((segment) => hydrateScribeSegment(sessionId, { segment_id: segment.segment_id, sequence: segment.sequence, revision: segment.revision ?? 0 }, byId, 'pending'));
+    for (const reference of checkpoint.pending_partial.segments) {
+      if (!pendingSegments.some((segment) => segment.segment_id === reference.segment_id && segment.sequence === reference.sequence && segment.revision === reference.revision)) {
+        throw integrity('SCRIBE_RECOVERY_EVIDENCE_CONFLICT', `Checkpoint pending Scribe reference ${reference.segment_id} is missing from authoritative transcript evidence`);
+      }
+    }
     const backgroundTranscriptSegments = transcript.segments
       .filter((segment) => Number.isInteger(segment.sequence) && segment.sequence <= checkpoint.admitted_through.last_sequence)
       .sort((left, right) => left.sequence - right.sequence)
@@ -531,6 +554,31 @@ export class SessionLifecycle {
     if (checkpoint?.pending_partial?.segments?.length > 0) {
       throw conflict('SCRIBE_PENDING_EVIDENCE_UNACKNOWLEDGED', `Session ${sessionId} has ${checkpoint.pending_partial.segments.length} finalized Scribe row(s) admitted into the checkpoint but never batched`);
     }
+    // The checkpoint only records rows Scribe has already admitted or stranded, so it cannot see
+    // finalized rows still held in coordinator memory below the batch threshold. Comparing the
+    // acknowledged cursor against authoritative transcript evidence is what makes sealing past
+    // unprocessed rows impossible rather than merely unlikely.
+    //
+    // A checkpoint is the only durable evidence that Scribe governs this session at all: graphs
+    // without a Scribe coordinator, and sessions closed before Scribe ever admitted a batch, leave
+    // none. Refusing on its absence would block every non-Scribe session from ever closing, so the
+    // durable refusal covers governed sessions and the `scribe.session-closing` handshake covers
+    // the rest of the normal Close path.
+    if (!checkpoint) return;
+    const unacknowledged = await this.#unacknowledgedScribeRows(sessionId, checkpoint);
+    if (unacknowledged.length) {
+      throw conflict('SCRIBE_EVIDENCE_UNACKNOWLEDGED', `Session ${sessionId} has ${unacknowledged.length} finalized transcript row(s) after Scribe cursor ${checkpoint.admitted_through.last_sequence} that were never acknowledged`);
+    }
+  }
+
+  /** Authoritative finalized rows after the acknowledged Scribe cursor, in sequence order. */
+  async #unacknowledgedScribeRows(sessionId, checkpoint) {
+    const transcript = await this.storage.readActiveSnapshot(sessionId, 'transcript');
+    if (!transcript) return [];
+    const cursor = Number.isInteger(checkpoint?.admitted_through?.last_sequence) ? checkpoint.admitted_through.last_sequence : -1;
+    return transcript.segments
+      .filter((segment) => Number.isInteger(segment.sequence) && segment.sequence > cursor)
+      .sort((left, right) => left.sequence - right.sequence);
   }
 
   async #finalize(metadata, command, { failBeforePhase, failAfterPhase } = {}) {

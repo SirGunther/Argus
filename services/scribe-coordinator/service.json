@@ -27,12 +27,14 @@
         "scribe.batch-policy",
         "scribe.recovery-restored",
         "scribe.checkpoint-persisted",
+        "scribe.session-closing",
         "lifecycle.health-check",
         "lifecycle.drain"
       ],
       "emits": [
         "scribe.recovery-request",
         "scribe.checkpoint-persist",
+        "scribe.session-flushed",
         "service.failure",
         "service.health",
         "service.drained",

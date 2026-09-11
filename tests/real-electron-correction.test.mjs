@@ -278,7 +278,17 @@ test('Stop and Close complete after a finalization failure', async () => {
     const calls = [];
     application.graph = {
       closed: false,
-      async dispatchFrom(_from, plane, type) { calls.push(`${plane}:${type}`); },
+      async dispatchFrom(_from, plane, type, sessionId) {
+        calls.push(`${plane}:${type}`);
+        // Close asks Scribe to flush and seals only on its acknowledgement, so the double answers
+        // the governed request the way the coordinator does.
+        if (type === 'scribe.session-closing') {
+          application.handleGraphMessage({
+            message_id: `flushed-${sessionId}`, message_type: 'scribe.session-flushed', plane: 'control', correlation_id: sessionId,
+            payload: { session_id: sessionId, flushed_at: new Date().toISOString(), accepted: true, admitted_through: { last_segment_id: null, last_sequence: -1, last_revision: 0 }, pending_rows: 0 }
+          });
+        }
+      },
       async waitForIdle() { calls.push('waitForIdle'); }
     };
     application.loadLatestSession = async () => {};

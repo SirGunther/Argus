@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.16.0",
+  "schema_version": "1.17.0",
   "governance": {
     "compatibility_policy": "backward-compatible-minor",
     "plane_change": "breaking",
@@ -212,6 +212,22 @@
       "schema": "scribe-checkpoint-persist.schema.json",
       "max_payload_bytes": 262144,
       "changelog": "history/scribe.checkpoint-persist.md"
+    },
+    "scribe.session-closing": {
+      "plane": "control",
+      "version": "1.0.0",
+      "owner": "runtime/session-lifecycle",
+      "schema": "scribe-session-closing.schema.json",
+      "max_payload_bytes": 16384,
+      "changelog": "history/scribe.session-closing.md"
+    },
+    "scribe.session-flushed": {
+      "plane": "control",
+      "version": "1.0.0",
+      "owner": "logged-items/scribe-coordinator",
+      "schema": "scribe-session-flushed.schema.json",
+      "max_payload_bytes": 16384,
+      "changelog": "history/scribe.session-flushed.md"
     },
     "scribe.checkpoint-persisted": {
       "plane": "control",

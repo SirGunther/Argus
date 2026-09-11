@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.16.0`
+- Catalog version: `1.17.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -38,6 +38,8 @@
 | `scribe.recovery-request` | control | `1.0.0` | `logged-items/scribe-coordinator` | 16 KiB |
 | `scribe.recovery-restored` | control | `1.0.0` | `runtime/session-lifecycle` | 256 KiB |
 | `scribe.checkpoint-persist` | control | `1.0.0` | `logged-items/scribe-coordinator` | 256 KiB |
+| `scribe.session-closing` | control | `1.0.0` | `runtime/session-lifecycle` | 16 KiB |
+| `scribe.session-flushed` | control | `1.0.0` | `logged-items/scribe-coordinator` | 16 KiB |
 | `scribe.checkpoint-persisted` | control | `1.0.0` | `runtime/session-lifecycle` | 256 KiB |
 | `ai.provider-configure` | control | `1.0.0` | `runtime/ai-provider-settings` | 8 KiB |
 | `logged-item.update` | domain | `1.3.0` | `logged-items/active-owner` | 64 KiB |
@@ -536,6 +538,38 @@
 
 | Field | Required | Type | Constraint |
 | --- | --- | --- | --- |
+
+## `scribe.session-closing`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `runtime/session-lifecycle`
+- Schema: [`scribe-session-closing.schema.json`](../scribe-session-closing.schema.json)
+- History: [`history/scribe.session-closing.md`](../history/scribe.session-closing.md)
+- Maximum payload: 16 KiB (16384 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `session_id` | yes | string | min length 1 |
+| `requested_at` | yes | string | min length 1 |
+
+## `scribe.session-flushed`
+
+- Plane: `control`
+- Version: `1.0.0`
+- Owner: `logged-items/scribe-coordinator`
+- Schema: [`scribe-session-flushed.schema.json`](../scribe-session-flushed.schema.json)
+- History: [`history/scribe.session-flushed.md`](../history/scribe.session-flushed.md)
+- Maximum payload: 16 KiB (16384 bytes)
+
+| Field | Required | Type | Constraint |
+| --- | --- | --- | --- |
+| `session_id` | yes | string | min length 1 |
+| `flushed_at` | yes | string | min length 1 |
+| `accepted` | yes | boolean | — |
+| `admitted_through` | yes | object | requires `last_segment_id`, `last_sequence`, `last_revision` |
+| `pending_rows` | yes | integer | minimum 0 |
+| `error` | no | object | requires `code`, `category`, `message`, `retryable` |
 
 ## `scribe.checkpoint-persisted`
 

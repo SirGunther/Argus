@@ -1,0 +1,20 @@
+{
+  "message_id": "fixture-scribe-session-flushed",
+  "plane": "control",
+  "message_type": "scribe.session-flushed",
+  "timestamp": "2026-09-10T12:00:02.000Z",
+  "producer": "fixture-scribe-coordinator",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "session_id": "fixture-scribe-session",
+    "flushed_at": "2026-09-10T12:00:02.000Z",
+    "accepted": true,
+    "admitted_through": {
+      "last_segment_id": "fixture-scribe-session-segment-6",
+      "last_sequence": 6,
+      "last_revision": 0
+    },
+    "pending_rows": 0
+  }
+}

@@ -19,7 +19,11 @@ runLineService({ service: SERVICE, operations: {
     const fingerprint = fingerprintValue(draft);
     const current = items.get(draft.item_id);
     if (current) {
-      const knownFingerprint = drafts.get(draft.item_id) || fingerprintValue({ ...current, created_at: current.stored_at, ...removeStoredAt(current) });
+      // Rebuild the exact draft shape: every stored field except `stored_at`, with `created_at`
+      // restored from it. Spreading `current` first cannot remove `stored_at`, so the rebuilt
+      // value carried a key the original draft never had and no replayed draft could ever match
+      // once the in-memory fingerprint was lost to a restart.
+      const knownFingerprint = drafts.get(draft.item_id) || fingerprintValue({ ...removeStoredAt(current), created_at: current.stored_at });
       if (knownFingerprint !== fingerprint) throw conflict('ITEM_ID_CONFLICT', `Item id ${draft.item_id} was reused with different content`);
       return outputs(current);
     }

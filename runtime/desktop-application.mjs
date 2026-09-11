@@ -33,6 +33,11 @@ const PIPELINE_STALL_THRESHOLD_MS = 30000;
 // before the UI should say it is late; it is deliberately independent of the audio pipeline
 // stall threshold, which measures Whisper progress on a different path.
 const SCRIBE_DELAYED_BATCH_MS = 30000;
+// How long a governed Close waits for Scribe to flush before refusing to seal the session. It
+// covers one forced admission plus its model round trip and durable acknowledgement, and is
+// deliberately separate from the in-flight "delayed" threshold, which only changes how a still
+// healthy batch is described.
+const SCRIBE_CLOSE_FLUSH_TIMEOUT_MS = 180000;
 const SCRIBE_STATE_LABELS = Object.freeze({
   'caught-up': 'Caught up',
   pending: 'Pending rows',
@@ -103,6 +108,7 @@ export class DesktopApplication {
     this.scribeInFlight = undefined;
     this.scribeFailure = undefined;
     this.scribeProcessingLast = undefined;
+    this.scribeFlushWaiters = new Map();
     this.pipelinePreviewProgress = new Map();
     this.pipelineStallTimers = new Map();
     this.diagnosticStallThresholdMs = Math.max(1, Number(diagnosticStallThresholdMs) || PIPELINE_STALL_THRESHOLD_MS);
@@ -508,12 +514,67 @@ export class DesktopApplication {
         this.setCapability('stt', 'unavailable', `Final audio flush failed during shutdown: ${error.message}`, false);
       }
     }
+    if (payload.command === 'session.close') await this.flushScribeBeforeClose(payload.session_id);
     const output = await this.graph.dispatchFrom('@desktop-controller', 'control', payload.command, payload.session_id, { operation_id: payload.command_id, session_id: payload.session_id, requested_at: new Date().toISOString() }, payload.command_id);
     await this.graph.waitForIdle();
     await this.loadLatestSession(payload.session_id);
     this.emit('ui.session-status', this.sessionProjection());
     const state = this.metadata?.state || (payload.command === 'session.record' ? 'recording' : 'stopped');
     return this.accepted(payload, 'runtime/session-lifecycle', payload.session_id, this.metadata?.revision, `${payload.command} accepted by the session lifecycle owner (${state}).`);
+  }
+
+  // Close must not seal past finalized rows Scribe still holds. The coordinator releases its
+  // remainder on this governed request instead of waiting for the admission policy's idle timer,
+  // and only its terminal acknowledgement lets the session be sealed. A failure or a deadline
+  // leaves the session open with a visible error rather than discarding the outstanding rows.
+  async flushScribeBeforeClose(sessionId) {
+    if (!this.graph || this.graph.closed) return;
+    const settled = new Promise((resolve, reject) => { this.scribeFlushWaiters.set(sessionId, { resolve, reject }); });
+    const timer = setTimeout(() => {
+      this.scribeFlushWaiters.delete(sessionId);
+      settled.catch(() => {});
+      this.rejectScribeFlush(sessionId, Object.assign(new Error(`Scribe did not finish processing this session within ${SCRIBE_CLOSE_FLUSH_TIMEOUT_MS} ms; the session stays open so no finalized row is lost.`), { code: 'SCRIBE_CLOSE_FLUSH_TIMEOUT', retryable: true }));
+    }, SCRIBE_CLOSE_FLUSH_TIMEOUT_MS);
+    timer.unref?.();
+    try {
+      await this.graph.dispatchFrom('@desktop-controller', 'control', 'scribe.session-closing', sessionId, {
+        session_id: sessionId,
+        requested_at: new Date().toISOString()
+      }, `scribe-session-closing:${sessionId}`);
+      await settled;
+    } finally {
+      clearTimeout(timer);
+      this.scribeFlushWaiters.delete(sessionId);
+    }
+  }
+
+  resolveScribeFlush(payload) {
+    const waiter = this.scribeFlushWaiters.get(payload.session_id);
+    this.diagnostics.log('scribe.session-flushed', {
+      session_id: payload.session_id,
+      correlation_id: payload.session_id,
+      accepted: payload.accepted,
+      last_sequence: payload.admitted_through?.last_sequence,
+      pending_rows: payload.pending_rows,
+      error_code: payload.error?.code
+    });
+    if (payload.accepted) {
+      this.scribeCursorSequence = Math.max(this.scribeCursorSequence, payload.admitted_through?.last_sequence ?? -1);
+      this.scribeInFlight = undefined;
+      this.updateScribeProcessing();
+      waiter?.resolve();
+      return;
+    }
+    this.scribeFailure = { code: payload.error?.code || 'SCRIBE_SESSION_FLUSH_FAILED', message: payload.error?.message || 'Scribe could not finish processing this session.' };
+    this.updateScribeProcessing();
+    this.rejectScribeFlush(payload.session_id, Object.assign(new Error(payload.error?.message || 'Scribe could not finish processing this session.'), { code: payload.error?.code || 'SCRIBE_SESSION_FLUSH_FAILED', retryable: Boolean(payload.error?.retryable) }));
+  }
+
+  rejectScribeFlush(sessionId, error) {
+    const waiter = this.scribeFlushWaiters.get(sessionId);
+    if (!waiter) return;
+    this.scribeFlushWaiters.delete(sessionId);
+    waiter.reject(error);
   }
 
   async newSessionCommand(payload) {
@@ -878,6 +939,11 @@ export class DesktopApplication {
       message: payload.error?.message || 'The Scribe pipeline reported a failure.',
       ...(payload.error?.details?.batch_request_id ? { batch_request_id: payload.error.details.batch_request_id } : {})
     };
+    // A Close waiting on the flush must fail immediately on a Scribe failure rather than sit out
+    // the deadline; the session stays open either way.
+    for (const sessionId of [...this.scribeFlushWaiters.keys()]) {
+      this.rejectScribeFlush(sessionId, Object.assign(new Error(this.scribeFailure.message), { code: this.scribeFailure.code, retryable: Boolean(payload.error?.retryable) }));
+    }
     this.updateScribeProcessing();
   }
 
@@ -1227,6 +1293,10 @@ export class DesktopApplication {
     }
     if (message.message_type === 'scribe.batch-admitted' || message.message_type === 'scribe.batch-evaluated') {
       this.observeScribeBatch(message.message_type, payload);
+      return;
+    }
+    if (message.message_type === 'scribe.session-flushed') {
+      this.resolveScribeFlush(payload);
       return;
     }
     if (message.message_type === 'transcript.segment' || message.message_type === 'transcript.segment-stored') {

@@ -1,0 +1,13 @@
+{
+  "message_id": "fixture-scribe-session-closing",
+  "plane": "control",
+  "message_type": "scribe.session-closing",
+  "timestamp": "2026-09-10T12:00:00.000Z",
+  "producer": "fixture-desktop-controller",
+  "correlation_id": "fixture-scribe-session",
+  "schema_version": "1.0.0",
+  "payload": {
+    "session_id": "fixture-scribe-session",
+    "requested_at": "2026-09-10T12:00:00.000Z"
+  }
+}

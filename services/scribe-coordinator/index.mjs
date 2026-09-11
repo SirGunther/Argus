@@ -1,12 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { createMessageIdentity, fingerprintMessage } from '../../runtime/message-identity.mjs';
-import { runLineService } from '../../runtime/service-protocol.mjs';
+import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
 import { createScribeCoordinator } from './coordinator.mjs';
 
 const SERVICE = 'scribe-coordinator';
 const INSTANCE = process.env.ARGUS_SERVICE_INSTANCE_ID || SERVICE;
 const BOOT_ID = randomUUID();
+const FLUSH_ERROR_CATEGORIES = new Set(['validation', 'conflict', 'dependency', 'timeout', 'unavailable', 'internal', 'capacity']);
 const knownSessionIds = new Set();
+// Sessions that already own an outstanding Close acknowledgement. Bounded by the same session
+// set the coordinator already tracks; a repeated request never starts a second flush.
+const closingSessions = new Set();
 
 const coordinator = createScribeCoordinator({
   requireRecovery: true,
@@ -43,7 +47,25 @@ runLineService({
       const outputs = coordinator.acceptCheckpointPersisted(message.payload);
       knownSessionIds.add(message.payload.session_id);
       return toWireOutputs(outputs);
-    } }
+    } },
+    // Governed session Close. `lifecycle.drain` is application shutdown and ends the service, so it
+    // cannot answer a single session closing while the app keeps running. This releases the
+    // remainder immediately - independently of the admission policy's idle timer - and answers with
+    // one terminal `scribe.session-flushed` once the batch is acknowledged, journaled, and
+    // checkpointed, or with the exact failure that must leave the session unsealed.
+    'scribe.session-closing': { name: 'flush-scribe-session', handle(message) {
+      const sessionId = message.payload?.session_id;
+      if (!sessionId) throw new ServiceOperationError('scribe.session-closing must carry a session_id', { code: 'INVALID_INPUT', category: 'validation' });
+      knownSessionIds.add(sessionId);
+      if (closingSessions.has(sessionId)) return [];
+      closingSessions.add(sessionId);
+      const { outputs, settled } = coordinator.close(sessionId, { waitForRecovery: true });
+      settled.then(
+        () => emitEnvelope(sessionFlushedOutput(sessionId)),
+        (error) => emitEnvelope(sessionFlushedOutput(sessionId, error))
+      );
+      return toWireOutputs(outputs);
+    }, traceDetail: (message) => ({ session_id: message.payload?.session_id }) }
   },
   onDrain() {
     const outputs = [];
@@ -87,6 +109,34 @@ function checkpointPersistOutput(result) {
       transition: result.transition,
       checkpoint: result.checkpoint,
       ...(result.batch ? { batch: result.batch } : {})
+    }
+  };
+}
+
+function sessionFlushedOutput(sessionId, error) {
+  const status = coordinator.status(sessionId);
+  // Rows still pending after a settled flush would mean unacknowledged evidence, so the
+  // acknowledgement fails closed rather than reporting a Close the session cannot honour.
+  const strandedRows = !error && status.pendingCount > 0;
+  const accepted = !error && !strandedRows;
+  const failure = error || (strandedRows
+    ? { code: 'SCRIBE_SESSION_FLUSH_INCOMPLETE', category: 'conflict', message: `Scribe still holds ${status.pendingCount} unacknowledged finalized row(s) for session ${sessionId}`, retryable: true }
+    : undefined);
+  return {
+    plane: 'control', messageType: 'scribe.session-flushed', schemaVersion: '1.0.0',
+    identityKey: `${INSTANCE}:scribe.session-flushed:${sessionId}:${accepted ? 'accepted' : 'failed'}`,
+    payload: {
+      session_id: sessionId,
+      flushed_at: new Date().toISOString(),
+      accepted,
+      admitted_through: { ...status.cursor },
+      pending_rows: accepted ? 0 : status.pendingCount,
+      ...(accepted ? {} : { error: {
+        code: failure.code || 'SCRIBE_SESSION_FLUSH_FAILED',
+        category: FLUSH_ERROR_CATEGORIES.has(failure.category) ? failure.category : 'conflict',
+        message: failure.message || 'Scribe could not flush the session',
+        retryable: Boolean(failure.retryable)
+      } })
     }
   };
 }

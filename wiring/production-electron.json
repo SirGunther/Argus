@@ -9,12 +9,12 @@
     "queue": { "capacity": 32, "overflow": "fail" }
   },
   "runtime_components": [
-    { "id": "@desktop-controller", "kind": "input-source", "ports": { "domain": { "accepts": [], "emits": ["audio.chunk", "audio.flush", "audio.preview", "transcript.segment-update", "logged-item.update"] }, "control": { "accepts": [], "emits": ["session.record", "session.stop", "session.resume", "session.close", "ai.provider-configure"] } } },
+    { "id": "@desktop-controller", "kind": "input-source", "ports": { "domain": { "accepts": [], "emits": ["audio.chunk", "audio.flush", "audio.preview", "transcript.segment-update", "logged-item.update"] }, "control": { "accepts": [], "emits": ["session.record", "session.stop", "session.resume", "session.close", "ai.provider-configure", "scribe.session-closing"] } } },
     { "id": "@session-controller", "kind": "session-controller", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": [], "emits": ["lifecycle.start"] } } },
     { "id": "@supervisor", "kind": "supervisor", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": ["service.failure", "service.health", "service.drained", "operation.completed", "operation.rejected", "service.exited"], "emits": ["lifecycle.health-check", "lifecycle.drain", "dead-letter.message"] } } },
     { "id": "@runtime-provider", "kind": "runtime-provider", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": [], "emits": ["service.exited", "service.failure"] } } },
     { "id": "@dead-letter-collector", "kind": "dead-letter-collector", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": ["dead-letter.message"], "emits": [] } } },
-    { "id": "@projection-gateway", "kind": "result-collector", "ports": { "domain": { "accepts": ["transcript.partial", "transcript.empty", "transcript.segment", "transcript.segment-stored", "transcript.history-appended", "logged-item.stored", "logged-item.history-appended", "scribe.batch-admitted", "scribe.batch-evaluated"], "emits": [] }, "control": { "accepts": ["session.recorded", "session.stopped", "session.resumed", "session.closed", "service.failure"], "emits": ["workflow.completed"] } } },
+    { "id": "@projection-gateway", "kind": "result-collector", "ports": { "domain": { "accepts": ["transcript.partial", "transcript.empty", "transcript.segment", "transcript.segment-stored", "transcript.history-appended", "logged-item.stored", "logged-item.history-appended", "scribe.batch-admitted", "scribe.batch-evaluated"], "emits": [] }, "control": { "accepts": ["session.recorded", "session.stopped", "session.resumed", "session.closed", "service.failure", "scribe.session-flushed"], "emits": ["workflow.completed"] } } },
     { "id": "@run-controller", "kind": "run-controller", "ports": { "domain": { "accepts": [], "emits": [] }, "control": { "accepts": ["workflow.completed"], "emits": [] } } }
   ],
   "services": [
@@ -79,6 +79,8 @@
     { "from": "session-lifecycle", "contract": "scribe.recovery-restored", "to": "scribe-coordinator" },
     { "from": "scribe-coordinator", "contract": "scribe.checkpoint-persist", "to": "session-lifecycle" },
     { "from": "session-lifecycle", "contract": "scribe.checkpoint-persisted", "to": "scribe-coordinator" },
+    { "from": "@desktop-controller", "contract": "scribe.session-closing", "to": "scribe-coordinator" },
+    { "from": "scribe-coordinator", "contract": "scribe.session-flushed", "to": "@projection-gateway" },
     { "from": "active-logged-item", "contract": "operation.rejected", "to": "log-extractor" },
     { "from": "active-logged-item", "contract": "service.failure", "to": "log-extractor" },
     { "from": "scribe-coordinator", "contract": "service.failure", "to": "@projection-gateway" },

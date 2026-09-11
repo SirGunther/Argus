@@ -202,16 +202,27 @@ export function createScribeCoordinator({
     }
     const checkpoint = payload.checkpoint;
     if (checkpoint === null) {
-      if ((payload.pending_segments?.length || 0) || (payload.in_flight_segments?.length || 0) || (payload.background_transcript_segments?.length || 0)) {
-        throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Absent Scribe checkpoint cannot carry hydrated recovery state');
+      // No checkpoint means nothing was ever admitted, so there can be no in-flight batch and no
+      // background context. Finalized rows may still exist: a session interrupted below the batch
+      // threshold has authoritative evidence and an unset cursor, and dropping it here would skip
+      // those rows permanently.
+      if ((payload.in_flight_segments?.length || 0) || (payload.background_transcript_segments?.length || 0)) {
+        throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Absent Scribe checkpoint cannot carry in-flight or background recovery state');
       }
-      return restoreState(payload.session_id, emptyRecoverySnapshot());
+      const untouchedPending = requireRecoverySegments(payload.pending_segments || [], 'pending');
+      assertRecoveredPendingEvidence({ admitted_through: { last_sequence: -1 } }, untouchedPending, []);
+      return restoreState(payload.session_id, { ...emptyRecoverySnapshot(), pendingSegments: untouchedPending });
     }
     if (!checkpoint || checkpoint.session_id !== payload.session_id) throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Recovered Scribe checkpoint targets a different session');
     if (checkpoint.policy_id !== policy.policy_id || checkpoint.policy_version !== policy.policy_version) throw conflict('SCRIBE_RECOVERY_POLICY_CONFLICT', 'Recovered Scribe checkpoint policy identity does not match the configured policy');
     const pendingSegments = requireRecoverySegments(payload.pending_segments, 'pending');
     const inFlightSegments = requireRecoverySegments(payload.in_flight_segments, 'in-flight');
-    assertReferenceMatch(checkpoint.pending_partial?.segments || [], pendingSegments, 'pending');
+    // Pending evidence is rebuilt from authoritative transcript history, so it legitimately holds
+    // rows the checkpoint never recorded - those that arrived below the batch threshold after the
+    // last settlement. Every reference the checkpoint *did* record must still be present, and the
+    // rebuilt rows must stay ordered and strictly ahead of what is already acknowledged or in
+    // flight; the checkpoint's own two-row ceiling bounds the artifact, not the recovered backlog.
+    assertRecoveredPendingEvidence(checkpoint, pendingSegments, inFlightSegments);
     assertReferenceMatch(checkpoint.in_flight_batch?.batch_identity?.segments || [], inFlightSegments, 'in-flight');
     const accumulated = checkpoint.pending_partial?.accumulated_since;
     const accumulatedSinceMs = accumulated === null ? null : Date.parse(accumulated);
@@ -256,10 +267,19 @@ export function createScribeCoordinator({
     return completeBatch(payload.session_id, state, pending.payload, pending.key, pending.fingerprint);
   }
 
-  function close(sessionId) {
+  function close(sessionId, { waitForRecovery = false } = {}) {
     const state = stateFor(sessionId);
     state.closing = true;
     cancelIdleTimer(state);
+    // A governed Close cannot be answered before recovery hydrates this session's durable
+    // evidence: an unrecovered coordinator holds no rows yet and would report a clean flush while
+    // authoritative rows were still being read back, letting the session seal past them. Drain
+    // does not wait, because an unrecovered session has nothing in memory to lose and its rows
+    // stay in transcript history for the next start.
+    if (waitForRecovery && requireRecovery && !state.recovered) {
+      const settled = new Promise((resolve, reject) => { (state.closeWaiters ||= []).push({ resolve, reject }); });
+      return { outputs: [], settled };
+    }
     const outputs = pump(sessionId);
     return { outputs, settled: whenSettled(sessionId) };
   }
@@ -318,14 +338,29 @@ export function createScribeCoordinator({
       state.inFlight.admissionPersisted = true;
       assertInFlightEvidence(state.inFlight);
       trimRememberedSegments(state);
-      return [dispatchDescriptor(sessionId, state, state.inFlight)];
+      const replay = [dispatchDescriptor(sessionId, state, state.inFlight)];
+      releaseDeferredClose(sessionId, state);
+      return replay;
     }
     if (snapshot.lastEvaluatedBatch) {
       const batch = snapshot.lastEvaluatedBatch;
       state.lastEvaluatedBatch = structuredClone(batch);
       state.lastSettled = { key: `${batch.batch_identity.request_id}:${batch.attempt}`, fingerprint: fingerprintValue({ batch_attempt: batch.attempt, batch }) };
     }
-    return pump(sessionId);
+    const outputs = pump(sessionId);
+    releaseDeferredClose(sessionId, state);
+    return outputs;
+  }
+
+  /** Answer a Close that arrived before this session finished recovering. */
+  function releaseDeferredClose(sessionId, state) {
+    const waiters = state.closeWaiters;
+    if (!waiters) return;
+    state.closeWaiters = undefined;
+    whenSettled(sessionId).then(
+      () => { for (const waiter of waiters) waiter.resolve(); },
+      (error) => { for (const waiter of waiters) waiter.reject(error); }
+    );
   }
 
   function rememberRecoveredSegment(state, segment) {
@@ -531,6 +566,25 @@ function requireRecoverySegments(value, label) {
   return value.map((segment) => structuredClone(segment));
 }
 
+function assertRecoveredPendingEvidence(checkpoint, pendingSegments, inFlightSegments) {
+  const admittedThrough = Number.isInteger(checkpoint.admitted_through?.last_sequence) ? checkpoint.admitted_through.last_sequence : -1;
+  const retainedThrough = inFlightSegments.length ? inFlightSegments.at(-1).sequence : admittedThrough;
+  let previous = retainedThrough;
+  for (const segment of pendingSegments) {
+    if (segment.sequence <= previous) {
+      throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Recovered pending Scribe evidence must be ordered and ahead of acknowledged and in-flight evidence');
+    }
+    previous = segment.sequence;
+  }
+  const pendingById = new Map(pendingSegments.map((segment) => [segment.segment_id, segment]));
+  for (const reference of checkpoint.pending_partial?.segments || []) {
+    const segment = pendingById.get(reference.segment_id);
+    if (!segment || segment.revision !== reference.revision || segment.sequence !== reference.sequence) {
+      throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Recovered pending Scribe evidence does not contain its exact checkpoint references');
+    }
+  }
+}
+
 function assertReferenceMatch(references, segments, label) {
   if (references.length !== segments.length) throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', `Recovered ${label} evidence count does not match its checkpoint references`);
   references.forEach((reference, index) => {
@@ -592,7 +646,6 @@ function validateRecoverySnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') throw invalid('a Scribe recovery snapshot is required');
   if (!snapshot.cursor || !Number.isInteger(snapshot.cursor.last_sequence)) throw invalid('recovery cursor with a last_sequence is required');
   if (!Array.isArray(snapshot.pendingSegments)) throw invalid('recovery pendingSegments must be an array');
-  if (snapshot.pendingSegments.length > 2) throw invalid('recovery pendingSegments cannot exceed the two-row bounded partial remainder');
   if (snapshot.inFlightBatch) {
     const { batchIdentity, admittedSegments, attempt } = snapshot.inFlightBatch;
     if (!batchIdentity?.request_id || !Array.isArray(admittedSegments) || !admittedSegments.length || !Number.isInteger(attempt) || attempt < 1) throw invalid('recovery inFlightBatch must carry a complete batch identity, admitted segments, and a positive coordinator attempt');

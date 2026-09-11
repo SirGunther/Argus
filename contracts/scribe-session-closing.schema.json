@@ -1,0 +1,10 @@
+{
+  "$id": "argus.scribe-session-closing.v1",
+  "type": "object",
+  "required": ["session_id", "requested_at"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "requested_at": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}
