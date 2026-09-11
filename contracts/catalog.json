@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.17.0",
+  "schema_version": "1.18.0",
   "governance": {
     "compatibility_policy": "backward-compatible-minor",
     "plane_change": "breaking",
@@ -199,7 +199,7 @@
     },
     "scribe.recovery-restored": {
       "plane": "control",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "owner": "runtime/session-lifecycle",
       "schema": "scribe-recovery-restored.schema.json",
       "max_payload_bytes": 262144,

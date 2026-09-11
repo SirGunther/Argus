@@ -289,7 +289,10 @@ test('catalog registers provider-neutral Scribe recovery and checkpoint persiste
   for (const messageType of messageTypes) {
     const definition = registry.catalog.messages[messageType];
     assert.ok(definition, `${messageType} must be registered`);
-    assert.equal(definition.version, '1.0.0');
+    // `scribe.recovery-restored` took an additive minor bump when recovery began returning a paged
+    // pending backlog; the rest stay at 1.0.0. Either way the 1.0.0 payload below must still
+    // replay, which is the compatibility guarantee that matters here.
+    assert.equal(definition.version, messageType === 'scribe.recovery-restored' ? '1.1.0' : '1.0.0');
     assert.equal(definition.plane, 'control');
     assert.ok(definition.owner);
     const fixture = await loadMessageFixture(messageType, '1.0.0', 'valid.json');

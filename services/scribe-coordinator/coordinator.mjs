@@ -388,11 +388,9 @@ export function createScribeCoordinator({
       throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'A Scribe recovery continuation cannot carry in-flight evidence');
     }
     const page = requireRecoverySegments(payload.pending_segments || [], 'pending');
-    let previous = Math.max(state.cursor.last_sequence, state.pendingSegments.at(-1)?.sequence ?? -1);
-    for (const segment of page) {
-      if (segment.sequence <= previous) throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Continued Scribe recovery evidence must be ordered and ahead of the acknowledged cursor');
-      previous = segment.sequence;
-    }
+    const resumeAfter = Math.max(state.cursor.last_sequence, state.pendingSegments.at(-1)?.sequence ?? -1);
+    assertContiguousFrom(page, resumeAfter, 'Continued Scribe recovery evidence');
+    const previous = page.length ? page.at(-1).sequence : resumeAfter;
     state.awaitingContinuation = false;
     state.pendingComplete = payload.pending_complete !== false;
     for (const segment of page) rememberRecoveredSegment(state, segment);
@@ -625,19 +623,29 @@ function requireRecoverySegments(value, label) {
 function assertRecoveredPendingEvidence(checkpoint, pendingSegments, inFlightSegments) {
   const admittedThrough = Number.isInteger(checkpoint.admitted_through?.last_sequence) ? checkpoint.admitted_through.last_sequence : -1;
   const retainedThrough = inFlightSegments.length ? inFlightSegments.at(-1).sequence : admittedThrough;
-  let previous = retainedThrough;
-  for (const segment of pendingSegments) {
-    if (segment.sequence <= previous) {
-      throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Recovered pending Scribe evidence must be ordered and ahead of acknowledged and in-flight evidence');
-    }
-    previous = segment.sequence;
-  }
+  assertContiguousFrom(pendingSegments, retainedThrough, 'Recovered pending Scribe evidence');
   const pendingById = new Map(pendingSegments.map((segment) => [segment.segment_id, segment]));
   for (const reference of checkpoint.pending_partial?.segments || []) {
     const segment = pendingById.get(reference.segment_id);
     if (!segment || segment.revision !== reference.revision || segment.sequence !== reference.sequence) {
       throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', 'Recovered pending Scribe evidence does not contain its exact checkpoint references');
     }
+  }
+}
+
+/**
+ * Recovered evidence is read back from authoritative transcript history, whose sequences are
+ * contiguous per session. Requiring only "increasing" would let a faulty or truncated page skip
+ * rows, and the cursor would then advance past evidence that was never evaluated - silent loss of
+ * exactly the kind this recovery path exists to prevent.
+ */
+function assertContiguousFrom(segments, afterSequence, label) {
+  let expected = afterSequence + 1;
+  for (const segment of segments) {
+    if (segment.sequence !== expected) {
+      throw conflict('SCRIBE_RECOVERY_STATE_CONFLICT', `${label} must be contiguous from sequence ${afterSequence + 1}; expected ${expected} and received ${segment.sequence}`);
+    }
+    expected += 1;
   }
 }
 

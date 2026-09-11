@@ -420,3 +420,50 @@ function persistenceAckEnvelope(request) {
     schemaVersion: '1.0.0', payload: structuredClone(request.payload)
   });
 }
+
+test('a recovery page with a gap or a reordering is rejected instead of advancing past skipped rows', () => {
+  const sessionId = 'paged-recovery-guard';
+  const policy = {
+    policy_id: 'paged', policy_version: '1.0.0', session_id: sessionId,
+    admission: { rows_per_batch: 3, idle_timeout_ms: 15000 },
+    context: { max_total_context_tokens: 8000 },
+    generation: { policy_profile: 'neutral-contextual-log', instruction_version: '1.0.0' }
+  };
+  const row = (sequence) => ({
+    segment_id: `${sessionId}-segment-${sequence}`, revision: 0, session_id: sessionId, sequence,
+    start_time: '00:00:00.000', end_time: '00:00:01.000', text: `evidence ${sequence}`, boundary: 'pause'
+  });
+  const restored = (pendingSegments, pendingComplete = true) => ({
+    session_id: sessionId, policy_id: 'paged', policy_version: '1.0.0', recovered_at: '2026-09-11T00:00:00.000Z',
+    checkpoint: null, pending_segments: pendingSegments, pending_complete: pendingComplete,
+    in_flight_segments: [], background_transcript_segments: []
+  });
+
+  // A first page that skips sequence 1 must not be accepted: the cursor would later advance past
+  // a finalized row that was never evaluated.
+  const gapped = createScribeCoordinator({ requireRecovery: true });
+  gapped.configurePolicy(policy);
+  assert.throws(() => gapped.acceptRecoveryRestored(restored([row(0), row(2)])), /contiguous/);
+
+  const reordered = createScribeCoordinator({ requireRecovery: true });
+  reordered.configurePolicy(policy);
+  assert.throws(() => reordered.acceptRecoveryRestored(restored([row(1), row(0)])), /contiguous/);
+
+  // The same guard applies to a continuation page. A continuation is only accepted once the
+  // coordinator has asked for one, so Close drives it the way production does.
+  const continued = createScribeCoordinator({ requireRecovery: true });
+  continued.configurePolicy(policy);
+  continued.acceptRecoveryRestored(restored([], false));
+  assert.equal(continued.status(sessionId).pendingComplete, false);
+  const asked = continued.close(sessionId).outputs;
+  assert.equal(asked.filter((output) => output.type === 'recovery-request').length, 1, 'an incomplete backlog asks for its next page');
+  assert.throws(() => continued.acceptRecoveryRestored(restored([row(4)], true)), /contiguous/);
+
+  // A contiguous continuation is accepted and leaves the backlog complete.
+  const accepted = createScribeCoordinator({ requireRecovery: true });
+  accepted.configurePolicy(policy);
+  accepted.acceptRecoveryRestored(restored([], false));
+  accepted.close(sessionId);
+  accepted.acceptRecoveryRestored(restored([row(0), row(1)], true));
+  assert.equal(accepted.status(sessionId).pendingComplete, true);
+});

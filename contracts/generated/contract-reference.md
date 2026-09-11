@@ -4,7 +4,7 @@
 
 ## Governance
 
-- Catalog version: `1.17.0`
+- Catalog version: `1.18.0`
 - Compatibility: `backward-compatible-minor`
 - Plane changes: `breaking`
 - Validator: `ajv-draft-07-runtime-boundary`
@@ -36,7 +36,7 @@
 | `scribe.batch-admitted` | domain | `1.0.0` | `logged-items/scribe-coordinator` | 256 KiB |
 | `scribe.batch-evaluated` | domain | `1.0.0` | `logged-items/extraction` | 64 KiB |
 | `scribe.recovery-request` | control | `1.0.0` | `logged-items/scribe-coordinator` | 16 KiB |
-| `scribe.recovery-restored` | control | `1.0.0` | `runtime/session-lifecycle` | 256 KiB |
+| `scribe.recovery-restored` | control | `1.1.0` | `runtime/session-lifecycle` | 256 KiB |
 | `scribe.checkpoint-persist` | control | `1.0.0` | `logged-items/scribe-coordinator` | 256 KiB |
 | `scribe.session-closing` | control | `1.0.0` | `runtime/session-lifecycle` | 16 KiB |
 | `scribe.session-flushed` | control | `1.0.0` | `logged-items/scribe-coordinator` | 16 KiB |
@@ -510,7 +510,7 @@
 ## `scribe.recovery-restored`
 
 - Plane: `control`
-- Version: `1.0.0`
+- Version: `1.1.0`
 - Owner: `runtime/session-lifecycle`
 - Schema: [`scribe-recovery-restored.schema.json`](../scribe-recovery-restored.schema.json)
 - History: [`history/scribe.recovery-restored.md`](../history/scribe.recovery-restored.md)

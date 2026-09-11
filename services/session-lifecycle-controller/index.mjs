@@ -4,6 +4,9 @@ import { SessionStorage } from '../../runtime/session-storage.mjs';
 
 const SERVICE = 'session-lifecycle-controller';
 const lifecycle = new SessionLifecycle({ storage: new SessionStorage() });
+// Recovery carries a paged pending backlog, which a 1.0.0 consumer would reject; the version
+// states that boundary rather than letting a wider page fail at validation.
+const SCRIBE_OUTPUT_VERSIONS = { 'scribe.recovery-restored': '1.1.0' };
 
 runLineService({ service: SERVICE, operations: {
   'session.record': operation('record-session', 'session.recorded', (payload) => lifecycle.record(payload)),
@@ -36,7 +39,7 @@ function operation(name, outputType, handler, identityFor = (payload) => payload
     async handle(message) {
       try {
         const payload = await handler(message.payload);
-        return [{ plane: 'control', messageType: outputType, schemaVersion: outputType.startsWith('scribe.') ? '1.0.0' : '1.2.0', identityKey: `${SERVICE}:${outputType}:${identityFor(payload)}`, payload }];
+        return [{ plane: 'control', messageType: outputType, schemaVersion: SCRIBE_OUTPUT_VERSIONS[outputType] || (outputType.startsWith('scribe.') ? '1.0.0' : '1.2.0'), identityKey: `${SERVICE}:${outputType}:${identityFor(payload)}`, payload }];
       } catch (error) {
         if (error instanceof SessionLifecycleError) {
           throw new ServiceOperationError(error.message, {

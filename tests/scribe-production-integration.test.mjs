@@ -492,7 +492,10 @@ test('the host Close deadline rejects visibly instead of hanging when Scribe nev
   assert.equal(originalTimeout, application.constructor);
 });
 
-test('a failed Close can be retried with a new request identity and then succeeds', { timeout: 15000 }, async () => {
+// This covers the host half only: a fresh identity per attempt, correct correlation of each
+// answer, and a released waiter. Whether a retry can actually succeed depends on coordinator
+// state, which the real-coordinator test below establishes.
+test('the host gives every Close attempt its own identity and surfaces each answer', { timeout: 15000 }, async () => {
   const application = new DesktopApplication({ root, graphFile: productionGraphFile, sessionRoot: path.join(os.tmpdir(), `argus-flush-retry-${Date.now()}`) });
   application.sessionId = 'flush-retry-session';
   application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
@@ -527,6 +530,50 @@ test('a failed Close can be retried with a new request identity and then succeed
   assert.notEqual(requests[0], requests[1], 'a retry never reuses the failed attempt identity');
   assert.equal(new Set(requests).size, 2);
   assert.equal(application.scribeFlushWaiters.size, 0);
+});
+
+test('a Close retried after a terminal Scribe failure never seals, and only a restart clears the stall', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'scribe-close-retry-'));
+  try {
+    const failing = await startHarness({ idleTimeoutMs: 300000, directory, reply: () => ({ status: 503, raw: 'model unavailable' }) });
+    let sessionId;
+    try {
+      await failing.record();
+      for (let sequence = 0; sequence < 2; sequence += 1) await failing.finalizeRow(sequence);
+      await failing.waitFor(() => failing.segments.length >= 2, 'both rows finalized');
+      sessionId = failing.sessionId;
+
+      const first = await failing.closeAttempt();
+      assert.equal(first.delivered ? first.acknowledgement.accepted : false, false, 'a stalled Scribe never acknowledges a clean flush');
+
+      // Retrying is visible either way and never seals: the coordinator answers with the exact
+      // failure, or - once its inbound wires have failed with the terminal batch - the attempt is
+      // refused at delivery. What it cannot do is clear the stall.
+      const second = await failing.closeAttempt();
+      assert.notEqual(second.requestId, first.requestId, 'each attempt is a distinct governed request');
+      if (second.delivered) assert.equal(second.acknowledgement.accepted, false);
+      else assert.ok(second.code, 'an undeliverable retry fails visibly rather than silently');
+      assert.equal((await failing.metadata()).state, 'recording', 'a stalled session is never sealed');
+    } finally {
+      await failing.crash();
+    }
+
+    // Restart is the path that actually clears it: recovery replays the exact stalled batch, and
+    // with the model answering the session reaches a clean Close.
+    const recovered = await startHarness({ idleTimeoutMs: 300000, directory, sessionId, reply: (request) => ({ items: itemsFor(request) }) });
+    try {
+      await recovered.resume();
+      const { sealed, acknowledgement } = await recovered.close();
+      assert.equal(sealed, true, 'restart recovery clears a stall that retrying Close cannot');
+      assert.equal(acknowledgement.accepted, true);
+      assert.equal(acknowledgement.admitted_through.last_sequence, 1);
+      assert.equal((await recovered.metadata()).state, 'closed');
+    } finally {
+      await recovered.stop();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('a recovered backlog larger than one page drains completely without truncating rows', async () => {
@@ -783,6 +830,21 @@ async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, dir
 
   // The governed Close the desktop host performs: ask Scribe to flush, wait for its terminal
   // acknowledgement, and only then seal the session through the lifecycle owner.
+  // A Close attempt that may not even reach the coordinator: once a terminal Scribe failure has
+  // failed the wires into it, delivery itself is refused, which is a distinct visible outcome
+  // from an acknowledgement that says the flush could not complete.
+  harness.closeAttempt = async () => {
+    const requestId = `close-${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      await harness.graph.dispatchFrom('@desktop-controller', 'control', 'scribe.session-closing', harness.sessionId, {
+        session_id: harness.sessionId, request_id: requestId, requested_at: new Date().toISOString()
+      }, `scribe-session-closing:${harness.sessionId}:${requestId}`);
+    } catch (error) {
+      return { delivered: false, requestId, code: error.code, message: error.message };
+    }
+    await harness.waitFor(() => harness.flushed.some((message) => message.payload.request_id === requestId), 'Scribe acknowledged the Close flush');
+    return { delivered: true, requestId, acknowledgement: harness.flushed.find((message) => message.payload.request_id === requestId).payload };
+  };
   harness.close = async () => {
     const requestId = `close-${Math.random().toString(36).slice(2, 10)}`;
     await harness.graph.dispatchFrom('@desktop-controller', 'control', 'scribe.session-closing', harness.sessionId, {
