@@ -52,6 +52,34 @@ test('production graph configures the governed Scribe defaults without coupling 
   assert.ok(demo.services.some((service) => service.manifest.includes('transcript-window-selector')));
 });
 
+// The reproduction of session-4c87d452-f960-41b8-8b00-5818f8e9e435, scaled down in time: LM Studio
+// answered the first batch correctly after 14,665 ms against a 15,000 ms admission deadline, the
+// wire was marked failed, and no later batch ever reached the provider again. Here each inference
+// (900 ms) outlasts the admission deadline for its wire (400 ms) by the same relationship.
+test('an inference longer than the wire admission deadline neither fails the wire nor strands the next batch', async () => {
+  const harness = await startHarness({ idleTimeoutMs: 1000, admissionTimeoutMs: 400, modelDelayMs: 900, reply: () => ({ items: [] }) });
+  try {
+    await harness.record();
+    for (let sequence = 0; sequence < 3; sequence += 1) await harness.finalizeRow(sequence);
+    await harness.waitFor(() => harness.evaluated.length >= 1, 'the first slow batch settles');
+    for (let sequence = 3; sequence < 6; sequence += 1) await harness.finalizeRow(sequence);
+    await harness.waitFor(() => harness.evaluated.length >= 2, 'the second slow batch also reaches the provider');
+    // The durable cursor follows both batches instead of stalling in flight at the first one; the
+    // acknowledgement handshake settles the checkpoint asynchronously after `evaluated` observes it.
+    await harness.waitForCursor(5, 'the durable cursor reaches the last finalized row');
+
+    assert.equal(harness.endpoint.calls.length, 2, 'both batches reach the provider exactly once');
+    assert.deepEqual(harness.evaluated.map((message) => message.payload.batch.outcome), ['empty-evaluated', 'empty-evaluated']);
+    assert.deepEqual(harness.admitted.map((message) => sequencesOf(message)), [[0, 1, 2], [3, 4, 5]]);
+    assert.deepEqual(harness.failures.map((message) => message.payload?.error?.code || message.message), [], 'a slow but healthy inference must not fail any wire');
+    const checkpoint = await harness.checkpoint();
+    assert.equal(checkpoint.admitted_through.last_sequence, 5);
+    assert.equal(checkpoint.in_flight_batch, undefined);
+  } finally {
+    await harness.stop();
+  }
+});
+
 test('finalized rows accumulate 3 + 3 + 1 across a busy model lane, and only the remainder waits for idle', async () => {
   const harness = await startHarness({
     idleTimeoutMs: 1000,
@@ -733,11 +761,11 @@ function itemsFor(request, count = 1) {
   }));
 }
 
-async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, directory, sessionId } = {}) {
+async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, directory, sessionId, admissionTimeoutMs } = {}) {
   const base = directory || await mkdtemp(path.join(os.tmpdir(), 'scribe-integration-'));
   const sessionRoot = path.join(base, 'sessions');
   const graphFile = path.join(base, `graph-${Math.random().toString(36).slice(2)}.json`);
-  await writeGraph(graphFile, { idleTimeoutMs });
+  await writeGraph(graphFile, { idleTimeoutMs, admissionTimeoutMs });
   const endpoint = await startScribeBatchModelEndpoint({
     reply: (request, call) => {
       const answer = reply ? reply(request, call) : { items: [] };
@@ -913,7 +941,7 @@ async function waitFor(condition, label, timeoutMs, harness) {
 // The graph under test is the production graph with Whisper replaced by injected evidence. Every
 // other service, wire, and durable owner is exactly what production runs, so the derivation is
 // asserted rather than hand-maintained.
-async function writeGraph(graphFile, { idleTimeoutMs }) {
+async function writeGraph(graphFile, { idleTimeoutMs, admissionTimeoutMs }) {
   const definition = JSON.parse(await readFile(productionGraphFile, 'utf8'));
   definition.name = 'argus-scribe-integration';
   definition.contracts = path.join(root, 'contracts', 'catalog.json');
@@ -931,6 +959,12 @@ async function writeGraph(graphFile, { idleTimeoutMs }) {
     { from: '@desktop-controller', contract: 'transcript.utterance-boundary', to: 'active-transcript' }
   );
   definition.run.configuration.scribe_policy.admission.idle_timeout_ms = idleTimeoutMs;
+  // Scales the real 15,000 ms admission deadline down so a test can outlast it with a model delay
+  // measured in hundreds of milliseconds instead of seconds. Only this wire is narrowed.
+  if (admissionTimeoutMs) {
+    const workWire = definition.control_wires.find((wire) => wire.from === 'log-extractor' && wire.to === 'model-lane' && wire.contract === 'ai.work-request');
+    workWire.delivery = { ...workWire.delivery, operation_timeout_ms: admissionTimeoutMs };
+  }
   definition.run.timeout_ms = 600000;
   await writeFile(graphFile, JSON.stringify(definition, null, 2), 'utf8');
   return definition;

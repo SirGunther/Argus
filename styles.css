@@ -198,6 +198,13 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .pane-title-line { gap: 9px; margin-top: 8px; }
 .pane-title-line h2 { min-width: 0; margin: 0; overflow: hidden; font-size: 16px; line-height: 1; letter-spacing: -.015em; text-overflow: ellipsis; white-space: nowrap; }
 .count-badge { flex: 0 0 auto; padding: 3px 6px; border: 1px solid var(--line); border-radius: 10px; color: var(--text-muted); font: 400 8px/1 var(--mono); }
+.scribe-status { display: inline-flex; align-items: center; flex: 0 1 auto; gap: 5px; min-width: 0; padding: 3px 7px; border: 1px solid var(--line); border-radius: 10px; color: var(--text-muted); font: 400 8px/1 var(--mono); }
+.scribe-status > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-status-dot { width: 5px; height: 5px; flex: none; border-radius: 50%; background: currentColor; }
+.scribe-status.caught-up { color: var(--text-muted); }
+.scribe-status.pending, .scribe-status.queued, .scribe-status.delayed { color: var(--amber); }
+.scribe-status.processing { color: #b9d5ff; }
+.scribe-status.failed, .scribe-status.unavailable { color: #f19a93; }
 .pane-actions { flex: 0 0 auto; gap: 8px; min-width: max-content; }
 .text-button { padding: 4px; border: 0; background: none; color: var(--text-muted); font-size: 10px; cursor: pointer; }
 .text-button:hover { color: var(--text); }

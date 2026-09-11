@@ -68,7 +68,7 @@
     { "from": "@desktop-controller", "contract": "session.resume", "to": "session-lifecycle" },
     { "from": "@desktop-controller", "contract": "session.close", "to": "session-lifecycle" },
     { "from": "@desktop-controller", "contract": "ai.provider-configure", "to": "model-lane" },
-    { "from": "log-extractor", "contract": "ai.work-request", "to": "model-lane" },
+    { "from": "log-extractor", "contract": "ai.work-request", "to": "model-lane", "delivery": { "operation_timeout_ms": 5000 } },
     { "from": "model-lane", "contract": "ai.work-completed", "to": "log-extractor" },
     { "from": "@session-controller", "contract": "lifecycle.start", "to": "scribe-policy" },
     { "from": "session-lifecycle", "contract": "session.recorded", "to": "scribe-policy" },

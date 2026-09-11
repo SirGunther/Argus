@@ -20,6 +20,9 @@ export async function startDeterministicLocalModelEndpoint({ scenario = 'valid',
     if (scenario === 'invalid-output' || (scenario === 'invalid-extraction-output' && purpose === 'logged-item-extraction')) return sendJson(response, { protocol_version: '1.0.0', purpose, text: '', item_id: 'forged-by-model' });
     if (scenario === 'classification-failure' && purpose === 'classification-enrichment') return sendRaw(response, 503, 'classification unavailable');
     if (scenario === 'failure') return sendRaw(response, 503, 'model unavailable');
+    // A healthy but slow inference: the provider answers correctly, only later than a caller that
+    // conflates queue admission with model completion can tolerate.
+    if (scenario === 'slow') await new Promise((resolve) => setTimeout(resolve, delayMs));
     return sendJson(response, modelResponse(purpose, extractionText));
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });

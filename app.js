@@ -24,7 +24,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
 
   const els = {
     template: document.querySelector('#rowTemplate'), transcriptList: document.querySelector('#transcriptList'), derivedList: document.querySelector('#derivedList'), liveTranscript: document.querySelector('#liveTranscript'), liveTranscriptText: document.querySelector('#liveTranscriptText'),
-    transcriptScroll: document.querySelector('#transcriptScroll'), derivedScroll: document.querySelector('#derivedScroll'), transcriptCount: document.querySelector('#transcriptCount'), derivedCount: document.querySelector('#derivedCount'),
+    transcriptScroll: document.querySelector('#transcriptScroll'), derivedScroll: document.querySelector('#derivedScroll'), transcriptCount: document.querySelector('#transcriptCount'), derivedCount: document.querySelector('#derivedCount'), scribeStatus: document.querySelector('#scribeStatus'), scribeStatusText: document.querySelector('#scribeStatusText'),
     recordButton: document.querySelector('#recordButton'), stopButton: document.querySelector('#stopButton'), closeSessionButton: document.querySelector('#closeSessionButton'), captureStatus: document.querySelector('#captureStatus'), captureStatusText: document.querySelector('#captureStatusText'), transcriptionStatus: document.querySelector('#transcriptionStatus'), transcriptionStatusText: document.querySelector('#transcriptionStatusText'), sessionStateDot: document.querySelector('#sessionStateDot'), elapsedTime: document.querySelector('#elapsedTime'), sessionIdentity: document.querySelector('#sessionIdentity'),
     saveStatus: document.querySelector('#saveStatus'), saveStatusText: document.querySelector('#saveStatusText'), transcriptJump: document.querySelector('#transcriptJump'), derivedJump: document.querySelector('#derivedJump'), transcriptNewCount: document.querySelector('#transcriptNewCount'), derivedNewCount: document.querySelector('#derivedNewCount'),
     sessionDrawer: document.querySelector('#sessionDrawer'), closeModal: document.querySelector('#closeModal'), drawerState: document.querySelector('#drawerState'), drawerDuration: document.querySelector('#drawerDuration'), drawerEntries: document.querySelector('#drawerEntries'), finalTranscriptCount: document.querySelector('#finalTranscriptCount'), finalDerivedCount: document.querySelector('#finalDerivedCount'), toastRegion: document.querySelector('#toastRegion'), serviceStatusList: document.querySelector('#serviceStatusList'), systemStatusSummary: document.querySelector('#systemStatusSummary'), systemStatusIndicator: document.querySelector('#systemStatusIndicator'),
@@ -581,7 +581,25 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     const elapsed = timer.current();
     els.elapsedTime.textContent = formatElapsed(elapsed);
     els.drawerDuration.textContent = formatDuration(recording ? elapsed : state.session.duration_seconds);
+    renderScribeStatus(state.session.scribe_processing);
     renderAudioInput();
+  }
+
+  // Scribe is what fills this pane, so its real state belongs beside the Logged Items it produces.
+  // A stalled or failed batch must read as such here, not only as an "available" service chip.
+  function renderScribeStatus(processing) {
+    els.scribeStatus.className = `scribe-status ${processing?.state || 'caught-up'}`;
+    els.scribeStatusText.textContent = formatScribeProcessing(processing);
+    els.scribeStatus.title = processing?.detail || '';
+  }
+
+  function formatScribeProcessing(processing) {
+    const labels = { 'caught-up': 'caught up', pending: 'pending', queued: 'queued', processing: 'processing', delayed: 'delayed', unavailable: 'unavailable', failed: 'failed' };
+    const label = labels[processing?.state] || 'caught up';
+    const rows = Number(processing?.pending_rows) || 0;
+    if (processing?.state === 'failed' || processing?.state === 'unavailable') return `Scribe ${label} · ${processing.detail || 'needs attention'}`;
+    if (rows) return `Scribe ${label} · ${rows} row${rows === 1 ? '' : 's'} waiting`;
+    return `Scribe ${label}`;
   }
 
   function formatTranscriptionProcessing(processing) {

@@ -9,7 +9,7 @@ import { readModelConfig } from '../services/serial-ai-model-lane/model-config.m
 import { buildNodeEnvironment } from '../runtime/providers/node-process-provider.mjs';
 import { createEnvelope, loadGraphDefinition, prepareGraph, runGraph } from '../runtime/orchestrator.mjs';
 import { loadContractRegistry } from '../runtime/contract-registry.mjs';
-import { runService } from './helpers/process-harness.mjs';
+import { runService, runServiceBatches } from './helpers/process-harness.mjs';
 import { startDeterministicLocalModelEndpoint } from './helpers/deterministic-local-model-endpoint.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -93,12 +93,66 @@ test('shared lane retries with stable work and exact request identity', async ()
     const result = await runService(manifest('serial-ai-model-lane'), [createEnvelope({ plane: 'control', messageType: 'ai.work-request', producer: 'test', correlationId: 'retry-session', idempotencyKey: 'retry-work', schemaVersion: '1.4.0', payload: {
       work_id: workId, workload: 'logged-item-extraction', session_id: 'retry-session', sequence: 1, queued_at: '2026-08-19T00:00:00.000Z', input: { model_request: request }, recovery: { max_attempts: 2 }
     } })], 2);
-    assert.equal(result.outputs[0].message_type, 'ai.work-completed');
-    assert.equal(result.outputs[0].payload.attempt, 2);
+    // The receipt settles admission first; the terminal result follows once the lane finishes.
+    assert.deepEqual(result.outputs.map((message) => message.message_type), ['operation.completed', 'ai.work-completed']);
+    const completed = result.outputs.find((message) => message.message_type === 'ai.work-completed');
+    assert.equal(completed.payload.attempt, 2);
     assert.equal(endpoint.requests.length, 2);
     assert.deepEqual(endpoint.requests[0].body, endpoint.requests[1].body);
     assert.equal(endpoint.requests[0].body.identity.work_id, workId);
   });
+});
+
+test('admission is acknowledged while inference runs, so the next request still reaches the provider', async () => {
+  await withEndpoint({ scenario: 'slow', delayMs: 400 }, async (endpoint) => {
+    const result = await runServiceBatches(manifest('serial-ai-model-lane'), [
+      // The receipt for the first request settles while its inference is still running...
+      { inputs: [laneWorkRequest('window-slow-1', 1)], expectedOutputCount: 1 },
+      // ...which is the only reason this second request can be read from stdin and admitted at all.
+      { inputs: [laneWorkRequest('window-slow-2', 2)], expectedOutputCount: 1 },
+      { inputs: [], expectedOutputCount: 2 }
+    ], 20000);
+    // Both admissions are acknowledged before either inference completes. Under the defect this
+    // reads ['operation.completed', 'ai.work-completed', ...]: the second request could not be
+    // admitted until the first model call had already returned.
+    assert.deepEqual(result.outputs.map((message) => message.message_type), ['operation.completed', 'operation.completed', 'ai.work-completed', 'ai.work-completed']);
+    const completions = result.outputs.filter((message) => message.message_type === 'ai.work-completed');
+    assert.deepEqual(completions.map((message) => message.payload.work_id), ['logged-item-extraction:phase5b-test-session:window-slow-1', 'logged-item-extraction:phase5b-test-session:window-slow-2']);
+    assert.deepEqual(completions.map((message) => message.payload.result.status), ['succeeded', 'succeeded']);
+    assert.equal(endpoint.requests.length, 2, 'both admitted batches reach the provider exactly once');
+  }, '5000');
+});
+
+test('drain waits for admitted model work and emits its completion before service.drained', async () => {
+  await withEndpoint({ scenario: 'slow', delayMs: 400 }, async (endpoint) => {
+    const result = await runServiceBatches(manifest('serial-ai-model-lane'), [
+      { inputs: [laneWorkRequest('window-drain-1', 1)], expectedOutputCount: 1 },
+      { inputs: [createEnvelope({ plane: 'control', messageType: 'lifecycle.drain', producer: 'test', correlationId: session, schemaVersion: '1.2.0', payload: { reason: 'completed', deadline_ms: 15000 } })], expectedOutputCount: 2 }
+    ], 20000);
+    assert.deepEqual(result.outputs.map((message) => message.message_type), ['operation.completed', 'ai.work-completed', 'service.drained']);
+    assert.equal(result.outputs[1].payload.result.status, 'succeeded');
+    assert.equal(endpoint.requests.length, 1);
+  }, '5000');
+});
+
+test('a draining lane still settles its own session tail but refuses another session terminally', async () => {
+  await withEndpoint({ scenario: 'slow', delayMs: 50 }, async (endpoint) => {
+    const drain = createEnvelope({ plane: 'control', messageType: 'lifecycle.drain', producer: 'test', correlationId: session, schemaVersion: '1.2.0', payload: { reason: 'completed', deadline_ms: 15000 } });
+    const result = await runServiceBatches(manifest('serial-ai-model-lane'), [
+      { inputs: [drain], expectedOutputCount: 1 },
+      // The draining session's own follow-on work is its drain tail and must still settle.
+      { inputs: [laneWorkRequest('window-drain-tail', 1)], expectedOutputCount: 2 },
+      // An unrelated session gets a terminal correlated refusal rather than silence.
+      { inputs: [laneWorkRequest('window-other-session', 1, 'phase5b-other-session')], expectedOutputCount: 2 }
+    ], 20000);
+    assert.deepEqual(result.outputs.map((message) => message.message_type), ['service.drained', 'operation.completed', 'ai.work-completed', 'ai.work-completed', 'operation.completed']);
+    assert.equal(result.outputs[2].payload.result.status, 'succeeded');
+    const refused = result.outputs[3].payload;
+    assert.equal(refused.result.status, 'failed');
+    assert.equal(refused.result.error.code, 'MODEL_LANE_DRAINING');
+    assert.equal(refused.work_id, 'logged-item-extraction:phase5b-other-session:window-other-session');
+    assert.equal(endpoint.requests.length, 1, 'only the drain tail reaches the provider');
+  }, '5000');
 });
 
 test('endpoint unavailable, timeout, malformed JSON, and invalid structured output create no item', async () => {
@@ -238,11 +292,21 @@ function modelCompletion({ workId, workload, request, response }) { return creat
 function extractionResponse(text) { return { protocol_version: '1.0.0', purpose: 'logged-item-extraction', text }; }
 function classificationResponse(suggested_classification, confidence) { return { protocol_version: '1.0.0', purpose: 'classification-enrichment', suggested_classification, confidence }; }
 
-async function withEndpoint(options, callback) {
+async function withEndpoint(options, callback, timeoutMs = '500') {
   const endpoint = await startDeterministicLocalModelEndpoint(options);
-  const previous = setModelEnv(endpoint.endpoint, '500');
+  const previous = setModelEnv(endpoint.endpoint, timeoutMs);
   try { return await callback(endpoint); }
   finally { restoreModelEnv(previous); await endpoint.close(); }
+}
+
+function laneWorkRequest(windowId, sequence, sessionId = session) {
+  const window = contextWindow({ sessionId, contextSegments: [] });
+  window.window_id = windowId;
+  const workId = `logged-item-extraction:${sessionId}:${windowId}`;
+  return createEnvelope({ plane: 'control', messageType: 'ai.work-request', producer: 'test', correlationId: sessionId, idempotencyKey: `work:${windowId}`, schemaVersion: '1.4.0', payload: {
+    work_id: workId, workload: 'logged-item-extraction', session_id: sessionId, sequence,
+    queued_at: '2026-08-19T00:00:00.000Z', input: { model_request: buildExtractionRequest(window, { workId, modelName: 'test-model' }) }, recovery: { max_attempts: 1 }
+  } });
 }
 function setModelEnv(endpoint, timeoutMs) { const previous = { endpoint: process.env.ARGUS_MODEL_ENDPOINT, model: process.env.ARGUS_MODEL_NAME, timeout: process.env.ARGUS_MODEL_TIMEOUT_MS }; process.env.ARGUS_MODEL_ENDPOINT = endpoint; process.env.ARGUS_MODEL_NAME = 'test-model'; process.env.ARGUS_MODEL_TIMEOUT_MS = String(timeoutMs); return previous; }
 function restoreModelEnv(previous) { if (previous.endpoint === undefined) delete process.env.ARGUS_MODEL_ENDPOINT; else process.env.ARGUS_MODEL_ENDPOINT = previous.endpoint; if (previous.model === undefined) delete process.env.ARGUS_MODEL_NAME; else process.env.ARGUS_MODEL_NAME = previous.model; if (previous.timeout === undefined) delete process.env.ARGUS_MODEL_TIMEOUT_MS; else process.env.ARGUS_MODEL_TIMEOUT_MS = previous.timeout; }

@@ -66,13 +66,20 @@ export class SerialAiScheduler {
     };
   }
 
-  async enqueue(work) {
+  /**
+   * Bounded queue admission. It resolves as soon as the work is durably queued and never waits for
+   * the executor, so a caller whose transport requires a prompt receipt can acknowledge admission
+   * while a long inference continues on this same serial lane. The terminal outcome is returned as
+   * a nested `settled` promise deliberately: awaiting admission must not flatten into awaiting
+   * completion, which is exactly what conflated the two boundaries before.
+   */
+  async admit(work) {
     validateWork(work);
     const fingerprint = fingerprintValue(work);
     const known = this.#known.get(work.work_id);
     if (known) {
       if (known.fingerprint !== fingerprint) throw new AiBacklogError('AI_WORK_ID_CONFLICT', `AI work id ${work.work_id} was reused with different content`);
-      return known.promise;
+      return { work_id: work.work_id, duplicate: true, settled: known.promise };
     }
     if (this.status.depth + (this.#active ? 1 : 0) + this.#reserved >= this.capacity) {
       throw new AiBacklogError('AI_BACKLOG_FULL', `AI backlog reached its declared capacity of ${this.capacity}; work was not dropped`);
@@ -91,7 +98,7 @@ export class SerialAiScheduler {
       queue.push(entry);
       queue.sort((left, right) => left.ordinal - right.ordinal);
       this.#kick();
-      return entry.promise;
+      return { work_id: work.work_id, duplicate: false, settled: entry.promise };
     } catch (error) {
       this.#known.delete(work.work_id);
       entry.reject(error);
@@ -103,6 +110,12 @@ export class SerialAiScheduler {
       this.#settleIdleWaiters();
       if (this.status.depth) this.#kick();
     }
+  }
+
+  /** Admission plus terminal settlement, for callers that legitimately wait for the outcome. */
+  async enqueue(work) {
+    const { settled } = await this.admit(work);
+    return settled;
   }
 
   async whenIdle() {

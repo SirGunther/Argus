@@ -5,6 +5,12 @@ import { scribeBatchInstruction } from '../../contracts/scribe-instruction.mjs';
 import { normalizeModelProviderSettings, readRuntimeModelConfig } from './model-config.mjs';
 
 const SERVICE = 'serial-ai-model-lane';
+/** Admitted work whose governed completion has not been emitted yet, keyed by work id. */
+const admitted = new Map();
+/** Sessions whose own drain is in progress; their remaining tail work still settles. */
+const drainingSessions = new Set();
+let draining = false;
+let drainWaiter;
 const journal = {
   events: [],
   async load() { return []; },
@@ -54,28 +60,103 @@ runLineService({ service: SERVICE, operations: {
       throw new ServiceOperationError(error.message, { code: error.cause?.code || error.code || 'INVALID_MODEL_PROVIDER_CONFIGURATION', category: error.cause?.category || 'validation' });
     }
   }, traceDetail: () => ({ configuration: 'redacted' }) },
-  'ai.work-request': { name: 'schedule-model-work', async handle(message) {
+  // `ai.work-request` is bounded queue admission, not the duration of inference. The receipt for
+  // this operation completes as soon as the scheduler has durably admitted the work; the terminal
+  // `ai.work-completed` is emitted separately once the serial lane finishes. Holding one receipt
+  // across both boundaries made a healthy inference slower than the wire's operation deadline look
+  // like a failed wire, which then refused every later batch.
+  'ai.work-request': { name: 'schedule-model-work', async handle(message, { emit }) {
     const work = normalizeWork(message.payload);
+    // Draining stops work from sessions that are not draining. A draining session's own remaining
+    // work is its drain tail — refusing that would lose work the drain is supposed to preserve.
+    if (draining && !admitted.has(work.work_id) && !drainingSessions.has(work.session_id)) {
+      return [completionOutput(work, failedResult(work, modelFailure('MODEL_LANE_DRAINING', 'the model lane is draining and cannot admit work for another session', 'conflict', true)))];
+    }
     try {
-      const result = await scheduler.enqueue(work);
-      return [{ plane: 'control', messageType: 'ai.work-completed', schemaVersion: completedSchemaVersion(work.input.model_request), identityKey: `${SERVICE}:ai.work-completed:${work.work_id}`, payload: {
-        work_id: work.work_id, workload: work.workload, session_id: work.session_id, sequence: work.sequence,
-        attempt: result.attempt, completed_at: new Date().toISOString(), result: {
-          status: result.status, work_id: work.work_id, request_fingerprint: fingerprintModelRequest(work.input.model_request), response: result.response
-        }
-      } }];
+      const { settled } = await scheduler.admit(work);
+      // One emitter per work id: a repeated admission of identical work resolves to the same
+      // scheduler entry, and its completion must still be emitted exactly once.
+      if (!admitted.has(work.work_id)) admitted.set(work.work_id, trackSettlement(work, settled, emit));
+      return [];
     } catch (error) {
-      const normalized = error instanceof ModelRequestError ? error : modelFailure(error.cause?.code || error.code || 'MODEL_REQUEST_FAILED', error.message, error.cause?.category || 'dependency', true);
-      return [{ plane: 'control', messageType: 'ai.work-completed', schemaVersion: completedSchemaVersion(work.input.model_request), identityKey: `${SERVICE}:ai.work-completed:${work.work_id}`, payload: {
-        work_id: work.work_id, workload: work.workload, session_id: work.session_id, sequence: work.sequence,
-        attempt: work.recovery.max_attempts, completed_at: new Date().toISOString(), result: {
-          status: 'failed', work_id: work.work_id, request_fingerprint: fingerprintModelRequest(work.input.model_request),
-          error: { code: normalized.code, category: normalized.category, message: normalized.message, retryable: normalized.retryable }
-        }
-      } }];
+      // Capacity, conflicting reuse, or a journal failure means admission never happened. The
+      // extractor correlates on the governed completion alone, so a terminal correlated result is
+      // the only answer that cannot leave its batch pending forever.
+      return [completionOutput(work, failedResult(work, normalizeModelError(error)))];
     }
   }, traceDetail: (message) => ({ workload: message.payload.workload, scheduler_concurrency: 1, scheduler_work_id: message.payload.work_id }) }
+}, onDrain(message) {
+  draining = true;
+  if (message?.correlation_id) drainingSessions.add(message.correlation_id);
+  if (!admitted.size) return [];
+  if (!drainWaiter) drainWaiter = createDrainWaiter(message?.payload?.deadline_ms);
+  return { outputs: [], whenDrained: drainWaiter.promise };
 } });
+
+/**
+ * Emits the one governed completion for admitted work after the serial lane settles it, then
+ * releases the drain. The stored promise never rejects to the caller: a failed settlement is
+ * already reported as a governed failed completion.
+ */
+function trackSettlement(work, settled, emit) {
+  const tracked = settled
+    .then((result) => ({ status: 'succeeded', attempt: result.attempt, response: result.response }))
+    .catch((error) => failedResult(work, normalizeModelError(error)))
+    .then((result) => { emit(completionOutput(work, result)); })
+    .finally(() => {
+      admitted.delete(work.work_id);
+      maybeFinishDrain();
+    });
+  tracked.catch(() => {});
+  return tracked;
+}
+
+function completionOutput(work, result) {
+  return { plane: 'control', messageType: 'ai.work-completed', schemaVersion: completedSchemaVersion(work.input.model_request), identityKey: `${SERVICE}:ai.work-completed:${work.work_id}`, payload: {
+    work_id: work.work_id, workload: work.workload, session_id: work.session_id, sequence: work.sequence,
+    attempt: result.attempt, completed_at: new Date().toISOString(), result: {
+      status: result.status, work_id: work.work_id, request_fingerprint: fingerprintModelRequest(work.input.model_request),
+      ...(result.status === 'succeeded' ? { response: result.response } : { error: result.error })
+    }
+  } };
+}
+
+function failedResult(work, error) {
+  return { status: 'failed', attempt: work.recovery.max_attempts, error: { code: error.code, category: error.category, message: error.message, retryable: error.retryable } };
+}
+
+function normalizeModelError(error) {
+  return error instanceof ModelRequestError ? error : modelFailure(error.cause?.code || error.code || 'MODEL_REQUEST_FAILED', error.message, error.cause?.category || 'dependency', true);
+}
+
+function createDrainWaiter(deadlineMs) {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+  const timeoutMs = Number.isInteger(deadlineMs) && deadlineMs > 0 ? deadlineMs : 120000;
+  const timer = setTimeout(() => {
+    const current = drainWaiter;
+    if (!current || current.promise !== promise) return;
+    drainWaiter = undefined;
+    // Reporting `service.drained` here would tell the supervisor that admitted model work settled
+    // when it did not. The provider timeout, not this deadline, governs the inference itself.
+    reject(new ServiceOperationError('model lane drain deadline elapsed before admitted work settled', {
+      code: 'MODEL_LANE_DRAIN_INCOMPLETE', category: 'timeout', retryable: true, details: { admitted_work: admitted.size }
+    }));
+  }, timeoutMs);
+  timer.unref?.();
+  return { promise, resolve, reject, timer };
+}
+
+function maybeFinishDrain() {
+  if (!draining || admitted.size) return;
+  const waiter = drainWaiter;
+  drainWaiter = undefined;
+  if (!waiter) return;
+  clearTimeout(waiter.timer);
+  // One turn later, so the completion this settlement just emitted is written before `service.drained`.
+  setImmediate(() => waiter.resolve());
+}
 
 async function requestConfiguredModel(runtime, request) {
   const config = runtime.configuration;
