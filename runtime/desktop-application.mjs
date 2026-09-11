@@ -38,6 +38,11 @@ const SCRIBE_DELAYED_BATCH_MS = 30000;
 // deliberately separate from the in-flight "delayed" threshold, which only changes how a still
 // healthy batch is described.
 const SCRIBE_CLOSE_FLUSH_TIMEOUT_MS = 180000;
+// How long application shutdown waits for an already-admitted Scribe batch to reach its durable
+// outcome before the graph-wide drain begins. It is much shorter than the Close flush because it
+// never forces new work — it only finishes one in-flight model round trip — and exceeding it stays
+// recoverable: the retained checkpoint replays that exact batch on the next start.
+const SCRIBE_SHUTDOWN_SETTLE_TIMEOUT_MS = 30000;
 const SCRIBE_STATE_LABELS = Object.freeze({
   'caught-up': 'Caught up',
   pending: 'Pending rows',
@@ -109,6 +114,9 @@ export class DesktopApplication {
     this.scribeFailure = undefined;
     this.scribeProcessingLast = undefined;
     this.scribeFlushWaiters = new Map();
+    this.scribeSettledWaiters = [];
+    this.scribeDurableSequence = -1;
+    this.scribeDurableInFlight = false;
     this.pipelinePreviewProgress = new Map();
     this.pipelineStallTimers = new Map();
     this.diagnosticStallThresholdMs = Math.max(1, Number(diagnosticStallThresholdMs) || PIPELINE_STALL_THRESHOLD_MS);
@@ -323,6 +331,9 @@ export class DesktopApplication {
             await this.graph.waitForIdle();
           }
           await this.audioPreviewScheduler.waitForIdle();
+          // Ordered drain: outstanding Scribe work settles here, while every service is still
+          // alive, rather than racing the graph's 5 s post-drain termination.
+          await this.waitForScribeSettledBeforeDrain();
           this.diagnostics.log('shutdown.graph-drained', { session_id: this.sessionId });
         }
       } finally {
@@ -578,6 +589,54 @@ export class DesktopApplication {
     if (!waiter) return;
     this.scribeFlushWaiters.delete(requestId);
     waiter.reject(error);
+  }
+
+  /**
+   * True when nothing is with the model lane and the durable checkpoint has caught up to the last
+   * acknowledged batch. Both halves matter: the evaluated message arrives before the session owner
+   * has journaled the outcome and replaced the checkpoint, so treating it as settled would let
+   * shutdown drain the graph while that write was still outstanding.
+   */
+  scribeSettledDurably() {
+    if (this.scribeInFlight || this.scribeDurableInFlight) return false;
+    return this.scribeDurableSequence >= this.scribeCursorSequence;
+  }
+
+  releaseScribeSettled() {
+    for (const resolve of this.scribeSettledWaiters.splice(0)) resolve();
+  }
+
+  /**
+   * Orders application shutdown so an admitted Scribe batch settles durably *before* the
+   * graph-wide drain begins. The graph terminates every service `drain_timeout_ms` (5 s) after it
+   * sends `lifecycle.drain`, and a real inference outlasts that, so draining first would kill the
+   * model round trip, its Logged Item acknowledgement, the batch journal append, and the cursor
+   * advance. This deliberately forces no new work: Stop stays resumable, so rows that were never
+   * admitted remain in authoritative transcript history for the next session.
+   */
+  async waitForScribeSettledBeforeDrain(timeoutMs = SCRIBE_SHUTDOWN_SETTLE_TIMEOUT_MS) {
+    if (!this.graph || this.graph.closed) return { settled: true, waited: false };
+    let timedOut = false;
+    if (!this.scribeSettledDurably() && !this.scribeFailure) {
+      const batchRequestId = this.scribeInFlight?.request_id;
+      this.diagnostics.log('shutdown.scribe-settle-waiting', { session_id: this.sessionId, batch_request_id: batchRequestId, timeout_ms: timeoutMs });
+      let timer;
+      const settled = new Promise((resolve) => this.scribeSettledWaiters.push(resolve)).then(() => 'settled');
+      const expired = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); timer.unref?.(); });
+      timedOut = (await Promise.race([settled, expired])) === 'timeout';
+      clearTimeout(timer);
+      if (timedOut) {
+        // Not a silent loss: the batch stays in the durable checkpoint and is replayed on the
+        // next start, which is the same recovery path an abrupt crash uses.
+        this.diagnostics.log('shutdown.scribe-settle-timeout', { session_id: this.sessionId, batch_request_id: batchRequestId, timeout_ms: timeoutMs });
+      }
+    }
+    // The evaluated message precedes the coordinator's durable cursor advance, so the
+    // acknowledgement, journal append, and checkpoint handshake still have to reach the session
+    // owner before any service is told to drain.
+    if (!this.graph.closed) await this.graph.waitForIdle();
+    this.diagnostics.log('shutdown.scribe-settled', { session_id: this.sessionId, settled: !timedOut, cursor_sequence: this.scribeCursorSequence });
+    return { settled: !timedOut, waited: true };
   }
 
   async newSessionCommand(payload) {
@@ -880,6 +939,17 @@ export class DesktopApplication {
     this.updateScribeProcessing();
   }
 
+  // The durable half of Scribe progress. `scribe.batch-evaluated` only says the extraction
+  // boundary finished; the cursor is not durable until the session owner has journaled the
+  // outcome and replaced the checkpoint, which is what this acknowledgement reports.
+  observeScribeCheckpointPersisted(payload) {
+    if (payload?.session_id !== this.sessionId) return;
+    const checkpoint = payload.checkpoint || {};
+    this.scribeDurableSequence = Math.max(this.scribeDurableSequence, checkpoint.admitted_through?.last_sequence ?? -1);
+    this.scribeDurableInFlight = Boolean(checkpoint.in_flight_batch);
+    this.updateScribeProcessing();
+  }
+
   observeScribeBatch(messageType, payload) {
     if (messageType === 'scribe.batch-admitted') {
       const identity = payload.batch_identity || {};
@@ -959,6 +1029,9 @@ export class DesktopApplication {
   }
 
   updateScribeProcessing() {
+    // Released before the change check: a shutdown waiting on the in-flight batch must be woken
+    // even when the resulting projection happens to be identical to the previous one.
+    if (this.scribeSettledDurably()) this.releaseScribeSettled();
     const next = this.scribeProcessingSnapshot();
     const changed = JSON.stringify(this.scribeProcessingLast) !== JSON.stringify(next);
     this.scribeProcessingLast = next;
@@ -1296,6 +1369,10 @@ export class DesktopApplication {
     }
     if (message.message_type === 'scribe.batch-admitted' || message.message_type === 'scribe.batch-evaluated') {
       this.observeScribeBatch(message.message_type, payload);
+      return;
+    }
+    if (message.message_type === 'scribe.checkpoint-persisted') {
+      this.observeScribeCheckpointPersisted(payload);
       return;
     }
     if (message.message_type === 'scribe.session-flushed') {

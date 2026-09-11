@@ -135,23 +135,26 @@ test('drain waits for admitted model work and emits its completion before servic
   }, '5000');
 });
 
-test('a draining lane still settles its own session tail but refuses another session terminally', async () => {
+// `service.drained` is a promise that the lane has no outstanding work and will do no more. Work
+// accepted after it would make that report false, so every request arriving once draining has
+// begun is refused terminally - including one for the session the drain itself names. Ordering
+// outstanding work ahead of the graph-wide drain belongs to the caller: the desktop host settles
+// Scribe before closing the graph (runtime/desktop-application.mjs).
+test('a drained lane accepts no further work and refuses it terminally rather than silently', async () => {
   await withEndpoint({ scenario: 'slow', delayMs: 50 }, async (endpoint) => {
     const drain = createEnvelope({ plane: 'control', messageType: 'lifecycle.drain', producer: 'test', correlationId: session, schemaVersion: '1.2.0', payload: { reason: 'completed', deadline_ms: 15000 } });
     const result = await runServiceBatches(manifest('serial-ai-model-lane'), [
       { inputs: [drain], expectedOutputCount: 1 },
-      // The draining session's own follow-on work is its drain tail and must still settle.
-      { inputs: [laneWorkRequest('window-drain-tail', 1)], expectedOutputCount: 2 },
-      // An unrelated session gets a terminal correlated refusal rather than silence.
-      { inputs: [laneWorkRequest('window-other-session', 1, 'phase5b-other-session')], expectedOutputCount: 2 }
+      // Same session as the drain correlation, which in production is the graph bootstrap id and
+      // never the recording session anyway: it is refused exactly like any other work.
+      { inputs: [laneWorkRequest('window-after-drained', 1)], expectedOutputCount: 2 }
     ], 20000);
-    assert.deepEqual(result.outputs.map((message) => message.message_type), ['service.drained', 'operation.completed', 'ai.work-completed', 'ai.work-completed', 'operation.completed']);
-    assert.equal(result.outputs[2].payload.result.status, 'succeeded');
-    const refused = result.outputs[3].payload;
+    assert.deepEqual(result.outputs.map((message) => message.message_type), ['service.drained', 'ai.work-completed', 'operation.completed']);
+    const refused = result.outputs[1].payload;
     assert.equal(refused.result.status, 'failed');
     assert.equal(refused.result.error.code, 'MODEL_LANE_DRAINING');
-    assert.equal(refused.work_id, 'logged-item-extraction:phase5b-other-session:window-other-session');
-    assert.equal(endpoint.requests.length, 1, 'only the drain tail reaches the provider');
+    assert.equal(refused.work_id, 'logged-item-extraction:phase5b-test-session:window-after-drained');
+    assert.equal(endpoint.requests.length, 0, 'a drained lane sends nothing further to the provider');
   }, '5000');
 });
 
@@ -195,7 +198,15 @@ test('classification is optional, revision-bound, lowest priority, and cannot mu
     const graph = await runGraph(path.join(root, 'wiring/demo.logged-item-model.json'));
     assert.ok(graph.completions.some((message) => message.message_type === 'logged-item.history-appended'));
     assert.equal(graph.completions.some((message) => message.message_type === 'classification.suggestion'), false);
-    assert.deepEqual(endpoint.requests.map(({ body }) => body.purpose), ['logged-item-extraction', 'classification-enrichment']);
+    // Extraction always outranks classification on the shared lane. Whether the classification
+    // request also reaches the provider depends on shutdown timing: this demo graph's run ends on
+    // the first `@result-collector` message (`logged-item.history-appended`, since the failure
+    // scenario emits no suggestion), so the classification request races `lifecycle.drain`. A
+    // drained lane now refuses work instead of serving it after reporting `service.drained`, so
+    // only the ordering claim is asserted here; the classification path itself is exercised
+    // deterministically by the `runService` call below.
+    assert.equal(endpoint.requests[0].body.purpose, 'logged-item-extraction');
+    assert.deepEqual([...new Set(endpoint.requests.map(({ body }) => body.purpose))].slice(1), endpoint.requests.length > 1 ? ['classification-enrichment'] : []);
     const item = { item_id: 'item-classify', session_id: session, stored_at: '2026-08-19T00:00:01.000Z', text: 'Schedule the review.', revision: 0, revision_id: 'item-classify:r0', source: { first_segment_id: 'segment-1', last_segment_id: 'segment-2', start_time: '00:00:01.000', end_time: '00:00:03.000' }, generator: { implementation: 'test', input_window_id: 'window-1' } };
     const workId = `classification-enrichment:${session}:${item.item_id}:r0`;
     const window = contextWindow({ contextSegments: [{ segment_id: 'lookback-0', sequence: 0, start_time: '00:00:00.000', end_time: '00:00:01.000', text: 'Earlier context.', relation: 'lookback' }] });
@@ -212,8 +223,12 @@ test('classification is optional, revision-bound, lowest priority, and cannot mu
     assert.deepEqual(request.source_transcript, window.segments);
     assert.deepEqual(request.lookback_context, window.context_segments);
     assert.deepEqual(request.forward_context, []);
-    const classificationRequest = endpoint.requests[1].body;
-    assert.equal(classificationRequest.source_transcript.length, 3);
+    // Read from the request the real classifier service emitted rather than from whatever the
+    // provider happened to receive before shutdown, so this proves the same thing without
+    // depending on a drained lane still serving work.
+    const classificationRequest = result.outputs.find((message) => message.message_type === 'ai.work-request').payload.input.model_request;
+    assert.equal(classificationRequest.purpose, 'classification-enrichment');
+    assert.equal(classificationRequest.source_transcript.length, window.segments.length);
     assert.ok(Array.isArray(classificationRequest.lookback_context));
     assert.ok(Array.isArray(classificationRequest.forward_context));
     assert.deepEqual(classificationRequest.evidence_segment_ids, [...classificationRequest.source_transcript, ...classificationRequest.lookback_context, ...classificationRequest.forward_context].map((segment) => segment.segment_id));

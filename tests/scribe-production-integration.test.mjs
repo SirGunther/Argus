@@ -80,6 +80,63 @@ test('an inference longer than the wire admission deadline neither fails the wir
   }
 });
 
+// The graph terminates every service `drain_timeout_ms` after it sends `lifecycle.drain`, and a
+// real inference outlasts that (measured >15 s against LM Studio). Draining first therefore kills
+// the model round trip, its Logged Item acknowledgement, the journal append, and the cursor
+// advance. Application shutdown must settle outstanding Scribe work *before* the graph-wide drain,
+// which is what `waitForScribeSettledBeforeDrain` orders. `lifecycle.drain` also carries the graph
+// bootstrap correlation id, never the recording session id, so no session-matching rule inside the
+// lane could have rescued this.
+test('application shutdown settles an in-flight batch before any service drains, though inference outlasts the drain deadline', { timeout: 60000 }, async () => {
+  const drainDeadlineMs = JSON.parse(await readFile(productionGraphFile, 'utf8')).supervision.drain_timeout_ms;
+  const modelDelayMs = drainDeadlineMs + 2500;
+  const harness = await startHarness({
+    idleTimeoutMs: 60000,
+    modelDelayMs,
+    // Production configures 120,000 ms, far above the drain deadline; the harness default is tight
+    // for speed, so it is raised here to let this deliberately slow inference finish normally.
+    providerTimeoutMs: modelDelayMs + 5000,
+    reply: (request) => ({ items: itemsFor(request) })
+  });
+  try {
+    // A real host observing the same governed traffic, so the in-flight view driving the ordered
+    // drain is the production one rather than a test double.
+    const application = new DesktopApplication({ root, graphFile: productionGraphFile, sessionRoot: harness.sessionRoot });
+    application.sessionId = harness.sessionId;
+    application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
+    application.graph = harness.graph;
+    harness.observe = (message) => application.handleGraphMessage(message);
+
+    await harness.record();
+    for (let sequence = 0; sequence < 3; sequence += 1) await harness.finalizeRow(sequence);
+    await harness.waitFor(() => harness.admitted.length >= 1, 'the batch reaches the model lane');
+    assert.ok(application.scribeInFlight, 'the host sees a batch still with the model lane');
+    assert.equal(harness.evaluated.length, 0, 'the model has not answered yet');
+
+    const startedAt = Date.now();
+    const outcome = await application.waitForScribeSettledBeforeDrain();
+    const waitedMs = Date.now() - startedAt;
+
+    assert.equal(outcome.settled, true);
+    assert.ok(waitedMs >= drainDeadlineMs, `shutdown held past the ${drainDeadlineMs} ms drain deadline instead of racing it (waited ${waitedMs} ms)`);
+    assert.equal(application.scribeInFlight, undefined, 'the in-flight batch reached a terminal outcome');
+
+    // Everything the drain would have destroyed is durable, and no service has drained yet.
+    assert.equal(harness.evaluated.length, 1);
+    assert.equal(harness.evaluated[0].payload.batch.outcome, 'items-recorded');
+    assert.equal(harness.stored.length, 1, 'the Logged Item was acknowledged by its owner');
+    const journal = await harness.journal();
+    assert.equal(journal.length, 1, 'the batch journal recorded the terminal outcome');
+    const checkpoint = await harness.checkpoint();
+    assert.equal(checkpoint.admitted_through.last_sequence, 2, 'the durable cursor advanced');
+    assert.equal(checkpoint.in_flight_batch, undefined);
+    assert.deepEqual(harness.drained, [], 'no service reported drained before the batch settled');
+    assert.deepEqual(harness.failures.map((message) => message.payload?.error?.code || message.message), []);
+  } finally {
+    await harness.stop();
+  }
+});
+
 test('finalized rows accumulate 3 + 3 + 1 across a busy model lane, and only the remainder waits for idle', async () => {
   const harness = await startHarness({
     idleTimeoutMs: 1000,
@@ -761,7 +818,7 @@ function itemsFor(request, count = 1) {
   }));
 }
 
-async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, directory, sessionId, admissionTimeoutMs } = {}) {
+async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, directory, sessionId, admissionTimeoutMs, providerTimeoutMs = 5000 } = {}) {
   const base = directory || await mkdtemp(path.join(os.tmpdir(), 'scribe-integration-'));
   const sessionRoot = path.join(base, 'sessions');
   const graphFile = path.join(base, `graph-${Math.random().toString(36).slice(2)}.json`);
@@ -785,6 +842,7 @@ async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, dir
     flushed: [],
     segments: [],
     historyAppended: [],
+    drained: [],
     failures: [],
     endpoint,
     storage,
@@ -806,13 +864,15 @@ async function startHarness({ idleTimeoutMs = 1000, reply, modelDelayMs = 0, dir
       if (message.message_type === 'scribe.session-flushed') harness.flushed.push(message);
       if (message.message_type === 'transcript.segment') harness.segments.push(message);
       if (message.message_type === 'logged-item.history-appended') harness.historyAppended.push(message);
+      if (message.message_type === 'service.drained') harness.drained.push(message);
       if (message.message_type === 'service.failure') harness.failures.push(message);
+      harness.observe?.(message);
     },
     onStatus: (status) => { if (status.type === 'service-failure' || status.type === 'graph-failure') harness.failures.push(status); }
   });
   await harness.graph.start();
   await harness.graph.dispatchFrom('@desktop-controller', 'control', 'ai.provider-configure', harness.sessionId, {
-    configuration: { version: 1, mode: 'local', provider: 'lm-studio', endpoint: endpoint.url, model: MODEL_NAME, protocol: 'openai-compatible', timeout_ms: 5000 },
+    configuration: { version: 1, mode: 'local', provider: 'lm-studio', endpoint: endpoint.url, model: MODEL_NAME, protocol: 'openai-compatible', timeout_ms: providerTimeoutMs },
     credential: { provided: false }
   }, `provider:${harness.sessionId}`);
 

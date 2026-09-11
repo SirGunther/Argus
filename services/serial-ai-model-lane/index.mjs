@@ -7,8 +7,6 @@ import { normalizeModelProviderSettings, readRuntimeModelConfig } from './model-
 const SERVICE = 'serial-ai-model-lane';
 /** Admitted work whose governed completion has not been emitted yet, keyed by work id. */
 const admitted = new Map();
-/** Sessions whose own drain is in progress; their remaining tail work still settles. */
-const drainingSessions = new Set();
 let draining = false;
 let drainWaiter;
 const journal = {
@@ -67,10 +65,12 @@ runLineService({ service: SERVICE, operations: {
   // like a failed wire, which then refused every later batch.
   'ai.work-request': { name: 'schedule-model-work', async handle(message, { emit }) {
     const work = normalizeWork(message.payload);
-    // Draining stops work from sessions that are not draining. A draining session's own remaining
-    // work is its drain tail — refusing that would lose work the drain is supposed to preserve.
-    if (draining && !admitted.has(work.work_id) && !drainingSessions.has(work.session_id)) {
-      return [completionOutput(work, failedResult(work, modelFailure('MODEL_LANE_DRAINING', 'the model lane is draining and cannot admit work for another session', 'conflict', true)))];
+    // Once draining begins this lane admits nothing new, so `service.drained` can never be
+    // followed by work it still had to do. Ordering outstanding work ahead of the graph-wide
+    // drain is the caller's responsibility: the desktop host settles Scribe before closing the
+    // graph, because the graph kills every service `drain_timeout_ms` after the drain starts.
+    if (draining && !admitted.has(work.work_id)) {
+      return [completionOutput(work, failedResult(work, modelFailure('MODEL_LANE_DRAINING', 'the model lane is draining and cannot admit new work', 'conflict', true)))];
     }
     try {
       const { settled } = await scheduler.admit(work);
@@ -87,7 +87,6 @@ runLineService({ service: SERVICE, operations: {
   }, traceDetail: (message) => ({ workload: message.payload.workload, scheduler_concurrency: 1, scheduler_work_id: message.payload.work_id }) }
 }, onDrain(message) {
   draining = true;
-  if (message?.correlation_id) drainingSessions.add(message.correlation_id);
   if (!admitted.size) return [];
   if (!drainWaiter) drainWaiter = createDrainWaiter(message?.payload?.deadline_ms);
   return { outputs: [], whenDrained: drainWaiter.promise };
