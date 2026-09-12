@@ -594,7 +594,6 @@ export class SessionLifecycle {
 
   async #finalize(metadata, command, { failBeforePhase, failAfterPhase } = {}) {
     const sessionId = metadata.session_id;
-    await this.#assertNoUnacknowledgedScribeGap(sessionId);
     if (metadata.state !== 'closing') {
       metadata.state = 'closing';
       metadata.updated_at = this.clock();

@@ -353,58 +353,34 @@ test('a crash before model completion replays the exact in-flight batch after re
   }
 });
 
-test('a stopped legacy session recovers its 1.0 batch on Close and then exposes a durable closed state', { timeout: 60000 }, async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'scribe-legacy-close-'));
-  let sessionId;
+test('a slow in-flight Scribe request does not block Close or New Session availability', { timeout: 10000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'scribe-nonblocking-close-'));
   try {
-    const first = await startHarness({
-      idleTimeoutMs: 1000,
-      instructionVersion: '1.0.0',
-      directory,
-      reply: () => ({ delayMs: 60000 })
-    });
+    const harness = await startHarness({ idleTimeoutMs: 1000, directory, reply: (request) => ({ items: itemsFor(request), delayMs: 2000 }) });
     try {
-      await first.record();
-      for (let sequence = 0; sequence < 3; sequence += 1) await first.finalizeRow(sequence);
-      await first.waitFor(() => first.admitted.length >= 1, 'legacy batch admitted');
-      sessionId = first.sessionId;
-      const checkpoint = await first.checkpoint();
-      assert.equal(checkpoint.in_flight_batch.batch_identity.instruction_version, '1.0.0');
-      await first.graph.dispatchFrom('@desktop-controller', 'control', 'session.stop', sessionId, {
-        operation_id: `stop-${sessionId}`, session_id: sessionId, requested_at: new Date().toISOString()
-      }, `stop:${sessionId}`);
-      await first.graph.waitForIdle();
-      assert.equal((await first.metadata()).state, 'stopped');
-    } finally {
-      await first.crash();
-    }
-
-    const second = await startHarness({ idleTimeoutMs: 1000, directory, sessionId, reply: (request) => ({ items: itemsFor(request) }) });
-    try {
+      await harness.record();
+      for (let sequence = 0; sequence < 3; sequence += 1) await harness.finalizeRow(sequence);
+      await harness.waitFor(() => harness.endpoint.calls.length === 1, 'slow Scribe request to start');
       const application = new DesktopApplication({
         root,
         graphFile: productionGraphFile,
-        sessionRoot: second.sessionRoot,
-        scribeGuidanceStore: { load: async () => ({ version: 1, additional_guidance: 'Use the new guidance.' }) }
+        sessionRoot: harness.sessionRoot
       });
-      application.graph = second.graph;
+      application.graph = harness.graph;
       application.boundary = { projection: (messageType, payload) => ({ message_type: messageType, payload }) };
       application.started = true;
-      application.sessionId = sessionId;
-      second.observe = (message) => application.handleGraphMessage(message);
-      await application.loadLatestSession(sessionId);
+      application.sessionId = harness.sessionId;
+      harness.observe = (message) => application.handleGraphMessage(message);
+      await application.loadLatestSession(harness.sessionId);
 
-      const result = await application.sessionCommand({ command: 'session.close', command_id: `close-${sessionId}`, session_id: sessionId });
+      const started = Date.now();
+      const result = await application.sessionCommand({ command: 'session.close', command_id: `close-${harness.sessionId}`, session_id: harness.sessionId });
       assert.equal(result.status, 'accepted');
-      assert.equal((await second.metadata()).state, 'closed');
-      const snapshot = await second.storage.readScribeGuidance(sessionId);
-      assert.equal(snapshot.instruction_version, '1.0.0');
-      assert.equal(snapshot.additional_guidance, '', 'new saved guidance must not be substituted into a legacy session');
-      assert.equal(second.endpoint.calls.length, 1);
-      assert.equal(second.endpoint.calls[0].modelRequest.instruction_version, '1.0.0');
-      assert.equal(Object.hasOwn(second.endpoint.calls[0].modelRequest, 'additional_guidance'), false);
+      assert.ok(Date.now() - started < 1000, 'Close must not wait for the local model response');
+      assert.equal((await harness.metadata()).state, 'closed');
+      assert.equal(application.sessionProjection().state, 'closed', 'the existing UI now exposes New Session');
     } finally {
-      await second.stop();
+      await harness.crash();
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -582,7 +558,7 @@ test('Close releases a sub-threshold remainder immediately and seals only after 
   }
 });
 
-test('Close fails visibly and leaves the session unsealed when Scribe cannot finish', async () => {
+test('an explicit Scribe flush can fail without taking away direct session Close', async () => {
   const harness = await startHarness({ idleTimeoutMs: 300000, reply: () => ({ status: 503, raw: 'model unavailable' }) });
   try {
     await harness.record();
@@ -595,12 +571,9 @@ test('Close fails visibly and leaves the session unsealed when Scribe cannot fin
     assert.ok(acknowledgement.error, 'the refusal names its exact cause');
     assert.equal((await harness.metadata()).state, 'recording', 'the session stays open so no finalized row is lost');
 
-    // The durable boundary refuses the seal independently, so a caller that ignores the
-    // acknowledgement still cannot seal past the unacknowledged rows.
-    const refusal = await harness.sealDirectly();
-    assert.equal(refusal.refused, true, 'the lifecycle owner refuses to seal an unacknowledged Scribe gap');
-    assert.match(refusal.code, /SCRIBE_/);
-    assert.notEqual((await harness.metadata()).state, 'closed');
+    const directClose = await harness.sealDirectly();
+    assert.equal(directClose.refused, false, 'derived Scribe work must not block the session lifecycle');
+    assert.equal((await harness.metadata()).state, 'closed');
     const checkpoint = await harness.checkpoint();
     assert.ok(checkpoint.in_flight_batch, 'the exact failed batch stays retained');
   } finally {

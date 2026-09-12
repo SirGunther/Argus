@@ -977,7 +977,7 @@ test('Scribe checkpoint refuses to clear an in-flight batch whose outcome was ne
   });
 });
 
-test('Close refuses to seal an unacknowledged in-flight Scribe batch, and Stop/Resume remain unaffected by the refusal', async () => {
+test('Close seals while retaining an unacknowledged in-flight Scribe batch', async () => {
   await withRoot(async (directory) => {
     const sessionId = 'scribe-close-gap';
     const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
@@ -985,18 +985,13 @@ test('Close refuses to seal an unacknowledged in-flight Scribe batch, and Stop/R
     const inFlight = { batch_identity: scribeBatchIdentity(sessionId, 'batch-close-gap'), attempt: 1, dispatched_at: '2026-08-19T00:06:00.000Z' };
     await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { in_flight_batch: inFlight }));
 
-    await assert.rejects(() => lifecycle.close(command('close-1', sessionId)), (error) => error.code === 'SCRIBE_BATCH_UNACKNOWLEDGED');
-
-    const resolvedBatch = scribeBatchEvaluated(sessionId, 'batch-close-gap', { attempt: 1 });
-    await lifecycle.recordScribeBatchOutcome(sessionId, resolvedBatch);
-    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { last_evaluated_batch: resolvedBatch }));
-
-    const closed = await lifecycle.close(command('close-2', sessionId));
+    const closed = await lifecycle.close(command('close-1', sessionId));
     assert.equal(closed.state, 'closed');
+    assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).in_flight_batch, inFlight);
   });
 });
 
-test('Close refuses to seal unacknowledged pending Scribe evidence that was never batched, and Stop remains unaffected', async () => {
+test('Close seals while retaining pending Scribe evidence that was never batched', async () => {
   await withRoot(async (directory) => {
     const sessionId = 'scribe-pending-gap';
     const lifecycle = new SessionLifecycle({ storage: new SessionStorage({ root: directory }) });
@@ -1007,15 +1002,11 @@ test('Close refuses to seal unacknowledged pending Scribe evidence that was neve
     };
     await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { pending_partial: pending }));
 
-    await assert.rejects(() => lifecycle.close(command('close-1', sessionId)), (error) => error.code === 'SCRIBE_PENDING_EVIDENCE_UNACKNOWLEDGED');
-
     await lifecycle.stop(command('stop-1', sessionId, '2026-08-19T00:06:30.000Z'));
     assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).pending_partial, pending);
-    await assert.rejects(() => lifecycle.close(command('close-2', sessionId)), (error) => error.code === 'SCRIBE_PENDING_EVIDENCE_UNACKNOWLEDGED');
-
-    await lifecycle.acceptScribeCheckpoint(sessionId, scribeCheckpoint(sessionId, { admitted_through: { last_segment_id: `${sessionId}-segment-0`, last_sequence: 0, last_revision: 0 } }));
-    const closed = await lifecycle.close(command('close-3', sessionId));
+    const closed = await lifecycle.close(command('close-1', sessionId));
     assert.equal(closed.state, 'closed');
+    assert.deepEqual((await lifecycle.getScribeCheckpoint(sessionId)).pending_partial, pending);
   });
 });
 

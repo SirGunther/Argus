@@ -595,12 +595,6 @@ export class DesktopApplication {
         this.setCapability('stt', 'unavailable', `Final audio flush failed during shutdown: ${error.message}`, false);
       }
     }
-    if (payload.command === 'session.close') {
-      // A stopped session may be opened in a fresh process with no in-memory coordinator state.
-      // Publishing its pinned policy first drives governed recovery before Close asks for a flush.
-      await this.configureScribeGuidance(payload.session_id);
-      await this.flushScribeBeforeClose(payload.session_id);
-    }
     // The policy source publishes this session's policy in response to the lifecycle outcome, so
     // its guidance snapshot has to be in place before the command is dispatched, not after.
     if (payload.command === 'session.record' || payload.command === 'session.resume') await this.configureScribeGuidance(payload.session_id);
