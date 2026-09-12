@@ -168,13 +168,21 @@ Phase 5 is intentionally split into two reviewable batches. Phase 5A proves logg
 Delivery and agent ownership are defined in `docs/plans/SCRIBE-PIPELINE-INTEGRATION-TODO.md`; isolated agents use `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md`.
 
 - [x] Define Scribe as the current evidence-recording role and reserve Assistant and Actor for future explicitly governed work.
-- [ ] Replace the current single-item model response with a governed zero-to-many Logged Item response.
-- [ ] Admit exactly three new finalized transcript rows per Scribe batch and add a decided idle trigger for a one- or two-row remainder.
-- [ ] Construct each LM Studio request statelessly within an approximately 8,000-token Argus-owned budget, including prior Logged Items needed for duplicate suppression.
-- [ ] Preserve exact transcript source ranges and stable batch/item identities through admission, retry, acknowledgement, persistence, and restart.
-- [ ] Keep the Scribe lane FIFO and concurrency-one with visible bounded queue state and no silent loss or duplication.
-- [ ] Prove zero-item, one-item, multiple-item, duplicate, malformed-response, timeout, retry, restart, and session-close outcomes against the provider-neutral boundary.
-- [ ] Keep Assistant reasoning and all Actor side effects out of this implementation slice.
+- [x] Replace the current single-item model response with a governed zero-to-many Logged Item response.
+- [x] Admit exactly three new finalized transcript rows per Scribe batch and add a decided idle trigger for a one- or two-row remainder.
+- [x] Construct each LM Studio request statelessly within an approximately 8,000-token Argus-owned budget, including prior Logged Items needed for duplicate suppression.
+- [x] Preserve exact transcript source ranges and stable batch/item identities through admission, retry, acknowledgement, persistence, and restart.
+- [x] Keep the Scribe lane FIFO and concurrency-one with visible bounded queue state and no silent loss or duplication.
+- [x] Prove zero-item, one-item, multiple-item, duplicate, malformed-response, timeout, retry, restart, and session-close outcomes against the provider-neutral boundary.
+- [x] Keep Assistant reasoning and all Actor side effects out of this implementation slice.
+
+The eight items above are implemented, and where a real provider can exercise them they are proven
+against one — see [`docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md`](docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md).
+They are checked because the behavior exists and is covered, **not** because the feature is currently
+deliverable. The two items below are what stands between that and a working product.
+
+- [ ] **Blocking defect.** Repair the session-start policy publication conflict that makes the desktop host produce zero Logged Items for every session. Root cause, bisection to `eebc74f`, and three candidate ownership revisions are in [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md). The executable expectation is carried as a `todo` in `tests/scribe-real-acceptance.test.mjs`.
+- [ ] **Pending user acceptance.** Physical-microphone Scribe evidence, and human judgement of Logged Item quality, guidance effect, and duplicate suppression across a real conversation. Neither is satisfiable by an agent; the exact steps are in the validation artifact. Both are gated behind the defect above.
 
 ## 6. Sessions and storage
 

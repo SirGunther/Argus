@@ -619,47 +619,54 @@ The three stages below are sequential and constitute the ticket's single authori
 
 #### Stage 1 — Lower-cost model, low reasoning/effort: evidence preparation
 
-- [ ] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05A and SCRIBE-05B merges.
-- [ ] Review the merged Scribe ticket history against the integration-wide definition of complete, using commit summaries and directly affected files rather than rereading unrelated project history.
-- [ ] Run the complete Argus suite, contract governance, generated contract documentation check, production graph validation, package graph generation/verification, syntax checks, and diff checks once from the joined baseline.
-- [ ] Create the focused Scribe validation artifact skeleton with an explicit user action and expected result for every acceptance scenario; do not mark evidence as passed yet.
-- [ ] Report any baseline failure, contract drift, production-file ownership need, or unavailable real dependency before editing.
-- [ ] Display this complete ticket-derived checklist in chat with Stage 1 progress recorded.
-- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-06 preparation is complete, then pause for the high-reasoning acceptance stage.
+- [x] Confirm the isolated worktree starts cleanly from the current `origin/main` and contains the reviewed SCRIBE-05A and SCRIBE-05B merges.
+- [x] Review the merged Scribe ticket history against the integration-wide definition of complete, using commit summaries and directly affected files rather than rereading unrelated project history.
+- [x] Run the complete Argus suite, contract governance, generated contract documentation check, production graph validation, package graph generation/verification, syntax checks, and diff checks once from the joined baseline.
+- [x] Create the focused Scribe validation artifact skeleton with an explicit user action and expected result for every acceptance scenario; do not mark evidence as passed yet.
+- [x] Report any baseline failure, contract drift, production-file ownership need, or unavailable real dependency before editing.
+- [x] Display this complete ticket-derived checklist in chat with Stage 1 progress recorded.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-06 preparation is complete, then pause for the high-reasoning acceptance stage. — **not done, by user direction.** The user ran all three stages in one session on one model and instructed the agent not to pause at stage boundaries. The notification duty was discharged instead at the point the ticket cares about: when a production defect was confirmed (Stage 2), and again at completion.
 
 #### Stage 2 — Stronger model, high reasoning/effort: real acceptance and judgment
 
-- [ ] Launch the real source Electron application with LM Studio selected; do not simulate microphone, model, queue, or Logged Item behavior.
-- [ ] Evaluate three-row admission, partial idle admission, slow-model busy catch-up across multiple requests, zero output, multiple output, retry/failure visibility, Stop/Resume, Close, and restart recovery through the real production path.
-- [ ] Confirm default and customized Scribe guidance both reach LM Studio as bounded stateless input, remain immutable within a session, and produce no promise that every batch yields an item.
-- [ ] Record the exact user action, expected result, and observed evidence for every scenario; distinguish automated, agent-observed, and user/physical-device evidence.
-- [ ] Confirm long-running transcription remains responsive while Scribe is delayed and that Scribe cannot block or mutate Whisper/transcript behavior.
-- [ ] Confirm background context influences interpretation without independently recreating old Logged Items and that every new item navigates to its triggering source rows.
-- [ ] Confirm secrets, transcript text, model context, and audio are absent from ordinary diagnostics beyond existing governed/redacted behavior.
-- [ ] Determine whether any failure is a product defect, environment limitation, model-quality result, or missing user acceptance; do not redefine accepted behavior to make a test pass.
-- [ ] If a production defect is confirmed, document the exact root cause and required ownership revision, send the required notification, and pause for coordinator approval before changing production code.
-- [ ] Decide from evidence whether `MOD-003` and `MOD-004` are resolved or require a precise remaining trigger.
-- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-06 acceptance analysis is complete, then pause for the lower-tier closure stage.
+- [x] Launch the real source Electron application with LM Studio selected; do not simulate microphone, model, queue, or Logged Item behavior. — `electron .` from source, 12 services healthy, `host.started`. The GUI could not be *operated* (no click automation available), so scenario evaluation ran through the real production graph and the real `DesktopApplication` instead; the microphone stays a user acceptance.
+- [x] Evaluate three-row admission, partial idle admission, slow-model busy catch-up across multiple requests, zero output, multiple output, retry/failure visibility, Stop/Resume, Close, and restart recovery through the real production path. — three-row, idle, catch-up, zero, multiple, and failure evaluated against real LM Studio; Stop/Resume, Close, and restart recovery evaluated against the production graph with a deterministic endpoint only.
+- [ ] Confirm default and customized Scribe guidance both reach LM Studio as bounded stateless input, remain immutable within a session, and produce no promise that every batch yields an item. — **default confirmed; customized blocked.** Immutability and the output-expectation surface confirmed. `scribe.guidance-configure` is the exact message that triggers the session-start defect, so no guided request can reach the provider on this baseline.
+- [x] Record the exact user action, expected result, and observed evidence for every scenario; distinguish automated, agent-observed, and user/physical-device evidence.
+- [x] Confirm long-running transcription remains responsive while Scribe is delayed and that Scribe cannot block or mutate Whisper/transcript behavior. — worst transcript row 79 ms while inference held 39 s.
+- [ ] Confirm background context influences interpretation without independently recreating old Logged Items and that every new item navigates to its triggering source rows. — **partially confirmed.** Provenance data verified: every stored item cited new-evidence segments, never background. Whether background *influences interpretation* without recreating items needs a multi-turn real conversation and human judgement.
+- [x] Confirm secrets, transcript text, model context, and audio are absent from ordinary diagnostics beyond existing governed/redacted behavior.
+- [x] Determine whether any failure is a product defect, environment limitation, model-quality result, or missing user acceptance; do not redefine accepted behavior to make a test pass. — one product defect (session-start recovery conflict), two environment limitations (CRLF contract-docs gate, symlink EPERM skip), no accepted behavior altered.
+- [x] If a production defect is confirmed, document the exact root cause and required ownership revision, send the required notification, and pause for coordinator approval before changing production code. — documented in `docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`, notification sent, **no production file changed**.
+- [x] Decide from evidence whether `MOD-003` and `MOD-004` are resolved or require a precise remaining trigger. — both stay **Open** with narrowed triggers recorded in `PENDING-DECISIONS.md`.
+- [ ] Send a 5–9 word notification containing `Codex`, stating that SCRIBE-06 acceptance analysis is complete, then pause for the lower-tier closure stage. — **not done, by user direction** (see the Stage 1 note). A notification was sent when the defect was confirmed.
 
 #### Stage 3 — Lower-cost model, low reasoning/effort: documentation and closure
 
-- [ ] Apply only the evidence-backed documentation decisions from Stage 2 to `Architecture/DesignDecisions.md`, `Architecture/OperationalAgentRoles.md`, `PENDING-DECISIONS.md`, `TODO.md`, `README.md`, and the focused Scribe validation artifact.
-- [ ] Mark `MOD-003` and `MOD-004` resolved only when Stage 2 supplied their required evidence; otherwise retain the precise unresolved trigger.
-- [ ] Rerun every automated gate affected by any approved correction or documentation update and confirm the merged production baseline remains green.
-- [ ] Verify the validation artifact contains actionable user actions and expected results and clearly identifies all pending physical-microphone, model-quality, or user acceptance.
-- [ ] Confirm the final diff contains no unrelated production changes and that the installer was not rebuilt.
-- [ ] Update every checklist item truthfully, leaving no required item checked if its evidence is missing.
-- [ ] Commit and push the isolated branch, verify the worktree is clean and remote-aligned, send the required completion notification, and report the exact SHA, files, checks, and remaining acceptance. Do not merge `main`.
+- [x] Apply only the evidence-backed documentation decisions from Stage 2 to `Architecture/DesignDecisions.md`, `Architecture/OperationalAgentRoles.md`, `PENDING-DECISIONS.md`, `TODO.md`, `README.md`, and the focused Scribe validation artifact.
+- [x] Mark `MOD-003` and `MOD-004` resolved only when Stage 2 supplied their required evidence; otherwise retain the precise unresolved trigger. — both retained as **Open** with narrowed triggers.
+- [x] Rerun every automated gate affected by any approved correction or documentation update and confirm the merged production baseline remains green.
+- [x] Verify the validation artifact contains actionable user actions and expected results and clearly identifies all pending physical-microphone, model-quality, or user acceptance.
+- [x] Confirm the final diff contains no unrelated production changes and that the installer was not rebuilt. — zero production files changed; `argus-electron-production` package digest `a648678204a65ea4` identical to baseline; `out/` untouched.
+- [x] Update every checklist item truthfully, leaving no required item checked if its evidence is missing.
+- [x] Commit and push the isolated branch, verify the worktree is clean and remote-aligned, send the required completion notification, and report the exact SHA, files, checks, and remaining acceptance. Do not merge `main`.
 
 ### Exit gate
 
-- [ ] All automated gates pass from the merged production baseline.
-- [ ] Real LM Studio source launch succeeds and its model receives the bounded Scribe request shape.
-- [ ] Consecutive real Scribe batches continue reaching LM Studio when an inference exceeds 15 seconds; no queue-admission receipt fails the wire and no checkpoint remains silently stuck.
-- [ ] The real request contains the selected session guidance, and the settings surface accurately explains valid zero, one, and multiple-item outcomes.
-- [ ] The user-validation artifact gives actionable action/result steps and identifies any physical-microphone or model-quality acceptance still pending.
-- [ ] No unresolved cursor gap, unacknowledged batch, duplicate Logged Item, silent failure, or unintended Assistant/Actor behavior remains in the accepted scenarios.
-- [ ] Canonical documents agree on what is implemented, deferred, and still awaiting user evidence.
+- [x] All automated gates pass from the merged production baseline. — with two recorded exceptions: the `contracts:docs:check` CRLF artifact and the symlink-privilege skip, both environment limitations, neither contract drift nor a Scribe defect.
+- [x] Real LM Studio source launch succeeds and its model receives the bounded Scribe request shape. — 5,997-byte request, governed `limits` with output reserve, protected instruction present, two stateless messages per call, no credential.
+- [x] Consecutive real Scribe batches continue reaching LM Studio when an inference exceeds 15 seconds; no queue-admission receipt fails the wire and no checkpoint remains silently stuck. — 38,825 ms and 38,976 ms inferences against a 5,000 ms admission deadline; zero wire failures; cursor reached the last row; no in-flight batch left behind.
+- [ ] The real request contains the selected session guidance, and the settings surface accurately explains valid zero, one, and multiple-item outcomes. — **half met.** The settings surface is correct and verified. The guided request cannot reach the provider on this baseline; blocked by the session-start defect.
+- [x] The user-validation artifact gives actionable action/result steps and identifies any physical-microphone or model-quality acceptance still pending.
+- [x] No unresolved cursor gap, unacknowledged batch, duplicate Logged Item, silent failure, or unintended Assistant/Actor behavior remains in the accepted scenarios. — within the scenarios that could run. The session-start defect is itself a silent failure and is recorded as the blocking item, not as an accepted scenario.
+- [x] Canonical documents agree on what is implemented, deferred, and still awaiting user evidence.
+
+**Gate verdict: the Scribe work breakdown is NOT complete.** This ticket is the only one authorized to
+mark it complete, and it does not. The pipeline is built and proven batch-for-batch against a real
+model, but the shipped desktop host produces zero Logged Items for every session. Completion requires
+the repair in `docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`, then the two
+blocked items above, then the physical-microphone and model-quality acceptance in
+`docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md`.
 
 ### Out of scope
 
@@ -688,4 +695,22 @@ The Scribe integration is complete only when every applicable implementation, re
 
 ## Next dispatch
 
-Assign **SCRIBE-05A Stage 1 only** using `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md` plus the complete SCRIBE-05A ticket above. Start from the current `origin/main`, complete the lower-cost preparation checklist, send the required notification, and pause. Resume the same ticket and branch for Stage 2 only after the user switches to the stronger high-reasoning configuration. Review and merge SCRIBE-05A before dispatching SCRIBE-05B.
+SCRIBE-01 through SCRIBE-06 have all run. SCRIBE-06 completed on `agent/scribe-acceptance` and
+**did not** mark the integration complete: acceptance found that the shipped desktop host produces
+zero Logged Items for every session.
+
+**Next is a new ticket, SCRIBE-07 — repair the session-start policy publication conflict.** It is the
+only thing standing between a built pipeline and a working one, and it is the one thing SCRIBE-06
+could not do, because SCRIBE-06 owns no production file.
+
+Dispatch it with `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md` plus
+`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`, which carries the mechanism,
+the bisection to `eebc74f`, and three candidate ownership revisions with their trade-offs. Start from
+the then-current `origin/main` after `agent/scribe-acceptance` is reviewed and merged.
+
+Its exit gate is already written and executable: remove the `todo` marker from *the host publishes
+one session-start recovery request, not two under one key* in `tests/scribe-real-acceptance.test.mjs`
+and make it pass. Then re-run `tests/scribe-real-acceptance.test.mjs` against real LM Studio to clear
+the two items SCRIBE-06 left blocked — the guided request reaching the provider, and background
+context influencing interpretation without recreating items — before handing the remaining
+physical-microphone and model-quality acceptance to the user.

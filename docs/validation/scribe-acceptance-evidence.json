@@ -1,0 +1,126 @@
+{
+  "provider": {
+    "endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+    "model": "google/gemma-4-e4b",
+    "available": true,
+    "reason": "ok"
+  },
+  "recorded_at": "2026-09-12T18:25:43.221Z",
+  "scenarios": {
+    "host_session_start": {
+      "recovery_request_count": 2,
+      "distinct_idempotency_keys": 1,
+      "distinct_causation_ids": 2,
+      "failures": [
+        "Invalid output from scribe-coordinator: Idempotency key scribe-coordinator:scribe.recovery-request:75a587b4-84dc-45a7-b509-9bc6a6028164:session-20260912182543:electron-scribe-default:1.0.0 was reused with different content"
+      ]
+    },
+    "slow_model_catch_up": {
+      "session_start_omits_guidance_configure": true,
+      "admission_deadline_ms": 5000,
+      "inference_durations_ms": [
+        48402,
+        46180
+      ],
+      "slowest_inference_ms": 48402,
+      "ratio_to_admission_deadline": 9.7,
+      "batches_admitted": [
+        [
+          0,
+          1,
+          2
+        ],
+        [
+          3,
+          4,
+          5
+        ]
+      ],
+      "outcomes": [
+        "items-recorded",
+        "items-recorded"
+      ],
+      "logged_items_stored": 4,
+      "wire_failures": 0,
+      "durable_cursor": 5,
+      "transcript_finalization_ms": [
+        95,
+        77,
+        61,
+        80,
+        77,
+        62
+      ],
+      "worst_transcript_finalization_ms": 95,
+      "request_bytes": [
+        5997,
+        7068
+      ]
+    },
+    "request_shape": {
+      "request_bytes": 5997,
+      "governed_limits": {
+        "max_context_chars": 26140,
+        "max_context_tokens": 6535,
+        "max_output_chars": 2048,
+        "max_output_tokens": 512
+      },
+      "instruction_version": "1.1.0",
+      "policy_profile": "neutral-contextual-log",
+      "new_evidence_segment_count": 3,
+      "background_context_present": true,
+      "messages_per_call": 2,
+      "authorization_header_sent": false,
+      "admitted_segment_ids": [
+        "session-acceptance-97c1it8c-segment-0",
+        "session-acceptance-97c1it8c-segment-1",
+        "session-acceptance-97c1it8c-segment-2"
+      ],
+      "stored_item_provenance": [
+        {
+          "item_id": "logged-item-705587feaa7735e2bfd5c970",
+          "first_segment_id": "session-acceptance-97c1it8c-segment-0",
+          "last_segment_id": "session-acceptance-97c1it8c-segment-0"
+        },
+        {
+          "item_id": "logged-item-0b5ea3aec79494cf54930af0",
+          "first_segment_id": "session-acceptance-97c1it8c-segment-1",
+          "last_segment_id": "session-acceptance-97c1it8c-segment-1"
+        }
+      ],
+      "outcome": "items-recorded"
+    },
+    "idle_remainder": {
+      "idle_threshold_ms": 15000,
+      "observed_wait_ms": 15100,
+      "admitted_sequences": [
+        0
+      ],
+      "admission_reason": "idle-timeout",
+      "premature_admissions": 0
+    },
+    "provider_unreachable": {
+      "failure_codes": [
+        "MODEL_ENDPOINT_UNAVAILABLE"
+      ],
+      "retained_batch_identities": [
+        "scribe-batch-8db28fa5e2d3e553d0cfd9d6364c4f0d"
+      ],
+      "cursor_after_failure": -1,
+      "logged_items_stored": 0
+    },
+    "guidance_immutability": {
+      "identical_replay_accepted": true,
+      "different_value_refused": true,
+      "refusal": "SCRIBE_GUIDANCE_CONFLICT"
+    },
+    "model_switch_divergence": {
+      "failure_codes": [
+        "MODEL_CONFIGURATION_CONFLICT"
+      ],
+      "reached_provider": 0,
+      "logged_items_stored": 0,
+      "cursor_after_divergence": -1
+    }
+  }
+}

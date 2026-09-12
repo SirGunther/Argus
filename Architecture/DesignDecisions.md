@@ -610,6 +610,15 @@ The exact token-budget calculation and response reserve, context persistence/res
 - Session restart cannot silently discard or duplicate an admitted batch; its exact recovery policy must be resolved before implementation is considered complete.
 - The main application and graph runtime do not own Scribe admission rules. A standalone contracted Scribe coordinator owns the pure eligibility policy, timer, cursor transitions, and recovery interaction while reusing existing storage and scheduling boundaries.
 
+
+### Acceptance status (2026-09-12, SCRIBE-06)
+
+This records what has been observed against a real provider. It changes no decision above.
+
+**Proven against real LM Studio inference** (`docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md`): three-row immediate admission; the 15,000 ms idle remainder with governed reason `idle-timeout`; stateless bounded requests carrying the protected instruction; zero-item and multiple-item outcomes; retained batch identity and an unmoved cursor across provider failure; and - the decision's most load-bearing operational claim - consecutive batches continuing to reach the provider when a single healthy inference runs **roughly eight times longer than the wire's admission deadline** (38,825 ms and 38,976 ms against 5,000 ms in the recorded run; 50,511 ms in an earlier one), with no wire failure and no stranded checkpoint. Transcript finalization during those inferences stayed under 100 ms per row, confirming that Scribe latency is not transcript latency.
+
+**Not yet true of the shipped host.** The `DesktopApplication` session-start sequence publishes the session policy twice, and the coordinator's recovery handshake fails with `IDEMPOTENCY_KEY_CONFLICT` before any evidence is admitted; every session on `5dbeae3` therefore produces zero Logged Items. The mechanism, bisection, and required ownership revision are in `docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`. The behavior this ADR specifies is implemented; the path that reaches it at session start is not yet correct.
+
 ## ADR-022 — Scribe is current; Assistant and Actor are reserved roles
 
 **Status:** Accepted
