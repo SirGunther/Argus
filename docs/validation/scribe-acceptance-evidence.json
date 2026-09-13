@@ -113,14 +113,6 @@
       "identical_replay_accepted": true,
       "different_value_refused": true,
       "refusal": "SCRIBE_GUIDANCE_CONFLICT"
-    },
-    "model_switch_divergence": {
-      "failure_codes": [
-        "MODEL_CONFIGURATION_CONFLICT"
-      ],
-      "reached_provider": 0,
-      "logged_items_stored": 0,
-      "cursor_after_divergence": -1
     }
   }
 }

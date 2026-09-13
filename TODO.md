@@ -179,10 +179,10 @@ Delivery and agent ownership are defined in `docs/plans/SCRIBE-PIPELINE-INTEGRAT
 The eight items above are implemented, and where a real provider can exercise them they are proven
 against one — see [`docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md`](docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md).
 They are checked because the behavior exists and is covered, **not** because the feature is currently
-deliverable. The two items below are what stands between that and a working product.
+deliverable on its own. The two items below remain open.
 
-- [ ] **Blocking defect.** Repair the session-start policy publication conflict that makes the desktop host produce zero Logged Items for every session. Root cause, bisection to `eebc74f`, and three candidate ownership revisions are in [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md). The executable expectation is carried as a `todo` in `tests/scribe-real-acceptance.test.mjs`.
-- [ ] **Pending user acceptance.** Physical-microphone Scribe evidence, and human judgement of Logged Item quality, guidance effect, and duplicate suppression across a real conversation. Neither is satisfiable by an agent; the exact steps are in the validation artifact. Both are gated behind the defect above.
+- [ ] **Open defect.** Session start publishes the session policy twice, producing a duplicate `scribe.recovery-request` under one idempotency key and an `IDEMPOTENCY_KEY_CONFLICT`. Confirmed and bisected to `eebc74f`; **impact not established** — a real desktop session recorded Logged Items normally. Record: [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md). The executable expectation is carried as a `todo` in `tests/scribe-real-acceptance.test.mjs`.
+- [ ] **Pending user acceptance.** Physical-microphone Scribe evidence, and human judgement of Logged Item quality, guidance effect, and duplicate suppression across a real conversation. Neither is satisfiable by an agent; the exact steps are in the validation artifact.
 
 ## 6. Sessions and storage
 

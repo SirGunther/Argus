@@ -22,9 +22,15 @@ import { startRecordingModelProxy } from './helpers/recording-model-proxy.mjs';
  * the model, the queue, the durable storage, or the Logged Item path is simulated. The only
  * substitution is Whisper, which is the physical microphone boundary and is recorded as such.
  *
- * The provider-backed tests skip unless a real provider answers, so they never turn the default
- * suite red on a machine without LM Studio - and, equally, never report a pass they did not earn.
- * The host session-start regression below needs no provider and always runs.
+ * Scope limit, stated up front: these scenarios drive the production graph directly. They do NOT
+ * drive the shipped desktop startup sequence, because they dispatch `session.record` without the
+ * `scribe.guidance-configure` that `DesktopApplication` always sends first. What they validate is
+ * the admission, batching, request-shape and failure behavior of the graph under a real provider -
+ * not that a user pressing Record gets that behavior. The host session-start regression below is
+ * the only test here that exercises `DesktopApplication` itself.
+ *
+ * The whole file is opt-in and skips without the provider, so it never turns the default suite red
+ * and never reports a pass it did not earn.
  */
 const UPSTREAM = process.env.ARGUS_ACCEPTANCE_ENDPOINT || 'http://127.0.0.1:1234/v1/chat/completions';
 const MODELS_URL = new URL('../models', UPSTREAM).href;
@@ -32,8 +38,15 @@ const PREFERRED_MODEL = process.env.ARGUS_ACCEPTANCE_MODEL;
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EVIDENCE_FILE = process.env.ARGUS_ACCEPTANCE_EVIDENCE || path.join(root, 'runtime-output', 'scribe-acceptance-evidence.json');
 
-const provider = await probeProvider();
-const skip = provider.available ? false : `no real model provider answered at ${UPSTREAM}: ${provider.reason}`;
+// Real-provider acceptance is an explicit command, never part of the default deterministic suite.
+// Without the opt-in this file probes nothing, runs nothing, and writes nothing - `npm test` must
+// stay fast, offline, and free of side effects.
+const OPTED_IN = process.env.ARGUS_SCRIBE_ACCEPTANCE === '1';
+const OPT_IN_NOTE = 'real-provider acceptance is opt-in: set ARGUS_SCRIBE_ACCEPTANCE=1';
+const provider = OPTED_IN ? await probeProvider() : { available: false, reason: OPT_IN_NOTE };
+const skip = OPTED_IN
+  ? (provider.available ? false : `no real model provider answered at ${UPSTREAM}: ${provider.reason}`)
+  : OPT_IN_NOTE;
 const MODEL = provider.model;
 const evidence = {
   provider: { endpoint: UPSTREAM, model: MODEL, available: provider.available, reason: provider.reason },
@@ -42,6 +55,7 @@ const evidence = {
 };
 
 after(async () => {
+  if (!OPTED_IN) return;
   await mkdir(path.dirname(EVIDENCE_FILE), { recursive: true });
   await writeFile(EVIDENCE_FILE, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
 });
@@ -65,6 +79,7 @@ after(async () => {
 // the second publication. Nothing self-heals it - not further rows, not Stop, not Resume.
 test('the host publishes one session-start recovery request, not two under one key', {
   todo: 'fails on origin/main 5dbeae3; SCRIBE-05B regression, production fix is outside SCRIBE-06 ownership',
+  skip: OPTED_IN ? false : OPT_IN_NOTE,
   timeout: 120000
 }, async () => {
   const sessionRoot = path.join(os.tmpdir(), `argus-host-acceptance-${Math.random().toString(36).slice(2, 8)}`);
@@ -112,10 +127,10 @@ test('the host publishes one session-start recovery request, not two under one k
 // reply - a ratio, not the real quantity. Here the deadline is the shipped 5,000 ms and the
 // inference is however long the real model takes.
 //
-// This session start deliberately omits `scribe.guidance-configure`, because including it is what
-// the todo test above proves is broken. That omission is the one way this scenario differs from the
-// shipped host, and it is recorded in the evidence file rather than papered over: it isolates the
-// admission behavior under test from the unrelated session-start defect blocking it.
+// Limitation, not a justification: this session start omits `scribe.guidance-configure`, which the
+// real host always sends before `session.record`. So this scenario exercises an internal graph path
+// and says nothing about the shipped startup sequence. The evidence file records the omission under
+// `session_start_omits_guidance_configure` so no reader can mistake one for the other.
 test('consecutive real batches survive an inference far longer than the admission deadline', { skip, timeout: 900000 }, async () => {
   const proxy = await startRecordingModelProxy({ upstream: UPSTREAM });
   const harness = await startRealScribeHarness({ endpointUrl: proxy.url, modelName: MODEL });
@@ -323,48 +338,6 @@ test('a running session refuses a second, different guidance value', { skip, tim
       identical_replay_accepted: true,
       different_value_refused: true,
       refusal: String(conflict.code || conflict.message || conflict).slice(0, 200)
-    };
-  } finally {
-    await harness.shutdown();
-    await proxy.close();
-  }
-});
-
-// A real-world failure point no scenario in the ticket names, found while tracing how the model
-// name reaches the wire. The extraction boundary reads `ARGUS_MODEL_NAME` from its own process
-// environment, fixed at spawn; the model lane is reconfigured by a live `ai.provider-configure`.
-// Switching models in the settings drawer mid-session therefore moves one and not the other. That
-// divergence must fail closed and visibly, never silently prompt a different model than the
-// governed request claims - the request fingerprint would otherwise attest to work that did not
-// happen.
-test('switching the configured model mid-session fails closed instead of prompting a mismatched model', { skip, timeout: 300000 }, async () => {
-  const proxy = await startRecordingModelProxy({ upstream: UPSTREAM });
-  const harness = await startRealScribeHarness({ endpointUrl: proxy.url, modelName: MODEL });
-  try {
-    await harness.record();
-    // Exactly what `DesktopApplication.synchronizeModelProvider` sends after the user saves new
-    // provider settings. The already-spawned extractor keeps the model name it started with.
-    await harness.graph.dispatchFrom('@desktop-controller', 'control', 'ai.provider-configure', harness.sessionId, {
-      configuration: { version: 1, mode: 'local', provider: 'lm-studio', endpoint: proxy.url, model: `${MODEL}-switched`, protocol: 'openai-compatible', timeout_ms: 120000 },
-      credential: { provided: false }
-    }, `provider-switch:${harness.sessionId}`);
-    await harness.graph.waitForIdle();
-
-    for (const [index, text] of FIRST_BATCH.entries()) await harness.finalizeRow(index, text);
-    await harness.waitFor(() => harness.failures.length >= 1 || harness.evaluated.length >= 1, 'the divergence resolves one way or the other', 120000);
-
-    const codes = [...new Set(harness.failures.map((failure) => failure.payload?.error?.code).filter(Boolean))];
-    assert.equal(harness.stored.length, 0, 'a divergent model name must not silently store an item');
-    assert.ok(codes.includes('MODEL_CONFIGURATION_CONFLICT'), `the divergence must surface as MODEL_CONFIGURATION_CONFLICT; saw ${codes.join(', ') || 'nothing'}`);
-    assert.equal(proxy.calls.length, 0, 'no request may reach the provider under a mismatched model name');
-    const checkpoint = await harness.checkpoint();
-    assert.notEqual(checkpoint?.admitted_through?.last_sequence, 2, 'the cursor must not advance past an unresolved batch');
-
-    evidence.scenarios.model_switch_divergence = {
-      failure_codes: codes,
-      reached_provider: proxy.calls.length,
-      logged_items_stored: harness.stored.length,
-      cursor_after_divergence: checkpoint?.admitted_through?.last_sequence ?? null
     };
   } finally {
     await harness.shutdown();

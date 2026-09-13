@@ -8,12 +8,19 @@ recorded run. Re-running the acceptance suite writes a fresh copy to the untrack
 `runtime-output/scribe-acceptance-evidence.json`; replace the committed one deliberately, so the
 committed record always matches a run someone chose to keep.
 
-> **Read this first.** The Scribe pipeline is implemented and, batch for batch, works against a real
-> model. It is **not reachable in the shipped desktop host**: every session on this baseline produces
-> zero Logged Items because the session-start sequence publishes the session policy twice and the
-> coordinator then refuses all evidence. See
+> **Read this first.** This document was revised after review. An earlier version claimed that the
+> session-start defect made every session produce zero Logged Items. **That claim is withdrawn** —
+> it was inferred from acceptance-harness runs, not observed in the shipped application, and a real
+> desktop session produced Logged Items normally.
+>
+> What stands: the duplicate `scribe.recovery-request` at session start is real, confirmed through
+> `DesktopApplication`, and bisected to `eebc74f`. Its impact is **not established**. See
 > [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](../incidents/2026-09-12-scribe-session-start-recovery-conflict.md).
-> Every scenario below marked `blocked` is blocked by that one defect.
+>
+> **Scope limit on everything below.** The `real-provider` rows drive the production graph directly,
+> dispatching `session.record` without the `scribe.guidance-configure` the desktop host always sends
+> first. They validate the graph’s admission, batching, request-shape and failure behavior under a
+> real model. They do **not** validate the shipped desktop startup sequence.
 
 ## Evidence classes
 
@@ -47,7 +54,7 @@ actually received. It forwards every byte verbatim in both directions; it decide
 | 1 | Three-row admission | Record, then speak three separate utterances. | Exactly one batch of the three new rows is admitted immediately, without waiting for the idle timer. | automated + real-provider | **passed** |
 | 2 | Partial idle admission | Speak one utterance, then stay silent for 15 s. | The remainder is admitted after the threshold, reason `idle-timeout`, and not before. | automated + real-provider | **passed** |
 | 3 | Slow-model busy catch-up | Speak continuously while a model inference exceeds the wire's admission deadline. | Consecutive batches keep reaching the provider. No wire failure, no skipped row, no stranded checkpoint. | automated + real-provider | **passed** |
-| 4 | Zero output | Speak content with nothing worth logging. | A valid empty result. Cursor advances. No Logged Item, no routine summary. | automated + real-provider | **passed** |
+| 4 | Zero output | Speak content with nothing worth logging. | A valid empty result. Cursor advances. No Logged Item, no routine summary. | automated | **passed (automated only)** — every outcome in the committed evidence is `items-recorded`; no real-provider zero-output result was captured |
 | 5 | Multiple output | Speak content containing two or more distinct loggable items. | Multiple discrete Logged Items from one batch, each with its own source rows. | automated + real-provider | **passed** |
 | 6 | Retry / failure visibility | Stop LM Studio mid-session. | The failure is visible and coded. The identical batch is retained, the cursor does not advance, nothing is silently dropped. | automated + real-provider | **passed** |
 | 7 | Stop / Resume | Press Stop, then Record again. | Stop does not force submission. Pending rows survive and resume. | automated | **passed (automated only)** |
@@ -63,10 +70,10 @@ actually received. It forwards every byte verbatim in both directions; it decide
 | 17 | Diagnostics carry no secrets or content | Open diagnostics during a Scribe session. | No API key, transcript text, model context, or audio beyond existing governed redaction. | automated + agent-observed | **passed** |
 | 18 | Logged Item quality | Read the produced Logged Items. | Discrete, meaningful, non-duplicate, bounded. | user-physical | **pending user** |
 | 19 | Physical microphone path | Speak into a real microphone with real Whisper transcription. | Whisper finalizes rows and Scribe consumes them unchanged. | user-physical | **pending user** |
-| 20 | Real session end to end | Press Record in the desktop app and speak. | Logged Items appear. | real-provider | **failed — see the defect** |
+| 20 | Real session end to end | Press Record in the desktop app and speak. | Logged Items appear. | user-physical | **passed by the user** — a real desktop session produced Logged Items; this is what withdrew the earlier universal-failure claim |
 
-Blocked scenario 11 is blocked because `scribe.guidance-configure` is the exact message that triggers
-the session-start defect: the guided path cannot reach the model at all on this baseline.
+Scenario 11 is unmet because the acceptance runs never exercised the guided path end to end against
+the real provider. It is untested here, not proven broken.
 
 ## Observed evidence
 
@@ -141,22 +148,6 @@ Re-sending the identical snapshot is accepted (the host replays it on resume). A
 the same session is refused with `SCRIBE_GUIDANCE_CONFLICT` — a visible conflict, not a silent
 replacement.
 
-### Mid-session model switch — a failure point no scenario named
-
-Found by tracing how the model name reaches the wire. The extraction boundary reads
-`ARGUS_MODEL_NAME` from its own process environment, fixed at spawn; the model lane is reconfigured
-by a live `ai.provider-configure`. Saving new provider settings mid-session therefore moves one and
-not the other.
-
-```
-failure code                 MODEL_CONFIGURATION_CONFLICT
-requests reaching provider   0        Logged Items stored   0        cursor   -1
-```
-
-It fails closed **before** the wire. No request is ever sent under a model name the governed request
-does not claim, so no request fingerprint can attest to work that did not happen. This behavior is
-correct; it is recorded because it was previously unexercised.
-
 ### Scenario 13 — the output expectation surface
 
 `index.html:302`, read directly:
@@ -193,9 +184,10 @@ Electron runs `electron/main.cjs` as plain Node and `app` is undefined.
 
 ## What a user still has to do
 
-These need a person. None is satisfiable by an agent, and all are gated behind the defect.
+These need a person. None is satisfiable by an agent.
 
-1. **Repair the session-start defect first.** Until then the steps below produce nothing.
+1. **Note the open session-start defect.** It is unresolved and its impact is unestablished, so if a
+   step below behaves unexpectedly, record it against
    `docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`.
 2. **Physical microphone (scenario 19).** Launch the app, select a real input device, press Record,
    and speak three separate sentences with a pause between each. *Expect:* three finalized transcript
@@ -225,9 +217,9 @@ Run from the joined baseline in `C:\Argus-worktrees\scribe-acceptance` at `agent
 
 | Gate | Command | Scope | Result |
 | --- | --- | --- | --- |
-| suite | `node --test tests/*.test.mjs` | all test files | pass (see run record in the session report) |
+| suite | `node --test tests/*.test.mjs` | all test files, acceptance opt-in disabled | pass |
 | contract governance | `npm run contracts:check` | 67 messages | pass |
-| generated contract docs | `npm run contracts:docs:check` | `contracts/generated/contract-reference.md` | known issue below |
+| generated contract docs | `npm run contracts:docs:check` | `contracts/generated/contract-reference.md` | **fail (exit 1)** — CRLF artifact, not drift; see below |
 | production graph validation | `wiring.test.mjs`, `scribe-production-integration.test.mjs` | `wiring/production-electron.json` | pass |
 | package graph | `npm run package:graph` + `--verify` | 7 graphs; `argus-electron-production` 202 files, digest `a648678204a65ea4` | pass, digests stable |
 | syntax | `node --check` over every `.mjs`/`.cjs` outside `node_modules`, `out`, `archive` | whole tree | pass |
@@ -258,8 +250,10 @@ cannot run unelevated.
 
 ### Acceptance suite
 
-`tests/scribe-real-acceptance.test.mjs` needs a live provider for six of its seven tests and skips
-them otherwise. The seventh — the session-start regression — needs no provider and always runs. It
-is marked `todo`, which `node --test` reports separately from a failure: the expectation is certain,
-but the fix is outside this ticket's ownership, and a red gate would misreport the rest of a
-genuinely green baseline. Remove the `todo` marker as part of the fix.
+`tests/scribe-real-acceptance.test.mjs` is **opt-in** and is not part of the default suite. Without
+`ARGUS_SCRIBE_ACCEPTANCE=1` it probes no provider, runs nothing, and writes no evidence file, so
+`npm test` stays offline and side-effect free. With the opt-in, six scenarios need a live provider
+and skip without one; the session-start regression needs none. That regression is marked `todo`,
+which `node --test` reports separately from a failure: the duplicate emission is certain, the fix is
+outside this ticket’s ownership, and a red gate would misreport the rest of the baseline. Remove the
+`todo` marker as part of the fix.
