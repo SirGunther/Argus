@@ -694,4 +694,7 @@ The Scribe integration is complete only when every applicable implementation, re
 
 ## Next dispatch
 
-Assign **SCRIBE-05A Stage 1 only** using `docs/plans/ARGUS-ISOLATED-TICKET-HANDOFF.md` plus the complete SCRIBE-05A ticket above. Start from the current `origin/main`, complete the lower-cost preparation checklist, send the required notification, and pause. Resume the same ticket and branch for Stage 2 only after the user switches to the stronger high-reasoning configuration. Review and merge SCRIBE-05A before dispatching SCRIBE-05B.
+SCRIBE-06 remains incomplete; do not redispatch an already completed Scribe ticket or create a new
+numbered phase automatically. The next work, when authorized, is a narrow correction for the
+duplicate session-start recovery request, followed by the outstanding guided-provider and physical-
+microphone acceptance recorded above.

@@ -71,12 +71,12 @@ after(async () => {
 // command is dispatched) and once from the `session.recorded` lifecycle outcome. The coordinator
 // emits `scribe.recovery-request` for each, and its identity key (scribe-coordinator/index.mjs:101)
 // covers only boot id, session, policy id and policy version - so both carry one key. The semantic
-// fingerprint (message-identity.mjs:53) includes `causation_id`, which differs. The result is
-// IDEMPOTENCY_KEY_CONFLICT, the coordinator's output is rejected, its recovery handshake never
-// completes, and it then refuses every finalized transcript row for the life of the session.
+// fingerprint (message-identity.mjs:53) includes `causation_id`, which differs. The second output
+// is therefore rejected with IDEMPOTENCY_KEY_CONFLICT. This test deliberately proves only that
+// duplicate emission; its effect on later Scribe processing is not established.
 //
-// Bisected: 9973a47 (pre-SCRIBE-05B) emits one recovery-request and no failure; eebc74f introduces
-// the second publication. Nothing self-heals it - not further rows, not Stop, not Resume.
+// Bisected: 9973a47 (pre-SCRIBE-05B) emits one recovery request and no failure; eebc74f introduces
+// the second publication.
 test('the host publishes one session-start recovery request, not two under one key', {
   todo: 'fails on origin/main 5dbeae3; SCRIBE-05B regression, production fix is outside SCRIBE-06 ownership',
   skip: OPTED_IN ? false : OPT_IN_NOTE,
@@ -192,9 +192,9 @@ test('consecutive real batches survive an inference far longer than the admissio
 // the bounded Scribe request shape and the protected instruction, neither of which can be read from
 // the provider's own UI.
 //
-// Only the DEFAULT (no guidance) request can be obtained on this baseline. The guided request needs
-// `scribe.guidance-configure`, which is the message the session-start defect makes fatal, so
-// scenario 11 is recorded as blocked rather than claimed.
+// Only the DEFAULT (no guidance) request was captured in this acceptance run. The guided request
+// was not exercised end to end against the real provider, so scenario 11 remains untested rather
+// than being claimed as either passing or broken.
 test('the real default request carries the protected instruction and bounded, stateless context', { skip, timeout: 900000 }, async () => {
   const proxy = await startRecordingModelProxy({ upstream: UPSTREAM });
   const harness = await startRealScribeHarness({ endpointUrl: proxy.url, modelName: MODEL });
