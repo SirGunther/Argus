@@ -692,9 +692,28 @@ The Scribe integration is complete only when every applicable implementation, re
 - Whisper, transcript ownership, Logged Item ownership/history, service isolation, explicit wires, and recovery rules remain intact.
 - Assistant and Actor remain documented future roles with no current runtime, model, tool, permission, or side effect.
 
+## SCRIBE-06B — Session-start recovery correction
+
+**Goal:** Eliminate the duplicate session-start recovery request now confirmed to conditionally
+strand Scribe in recovery. This is a defect correction within SCRIBE-06, not a new architecture phase.
+
+- [ ] Reproduce the real host sequence through `DesktopApplication`: configure guidance, Record,
+  policy publication, and recovery.
+- [ ] Ensure one logical recovery handshake occurs per session start without weakening message
+  identity, recovery, Resume, or crash-recovery rules.
+- [ ] Confirm session start produces no `IDEMPOTENCY_KEY_CONFLICT` or orchestration failure.
+- [ ] Confirm the first finalized rows are admitted after recovery and can produce Logged Items.
+- [ ] Convert the existing session-start acceptance `todo` into a passing regression and run the
+  focused and complete deterministic suites.
+- [ ] Change no Whisper/audio, prompting, batching, UI layout, installer, or unrelated architecture.
+
+### SCRIBE-06B exit gate
+
+- [ ] A real desktop session starts cleanly, transcription remains independent, Scribe leaves
+  recovery, and finalized evidence reaches the existing Scribe pipeline.
+- [ ] The correction is narrow, production-path tested, committed, and reviewed before merge.
+
 ## Next dispatch
 
-SCRIBE-06 remains incomplete; do not redispatch an already completed Scribe ticket or create a new
-numbered phase automatically. The next work, when authorized, is a narrow correction for the
-duplicate session-start recovery request, followed by the outstanding guided-provider and physical-
-microphone acceptance recorded above.
+Dispatch SCRIBE-06B only. Guided-provider and remaining physical-microphone acceptance resume after
+this correction is reviewed and merged.

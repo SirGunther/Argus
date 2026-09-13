@@ -181,7 +181,7 @@ against one — see [`docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md`](docs/val
 They are checked because the behavior exists and is covered, **not** because the feature is currently
 deliverable on its own. The two items below remain open.
 
-- [ ] **Open defect.** Session start publishes the session policy twice, producing a duplicate `scribe.recovery-request` under one idempotency key and an `IDEMPOTENCY_KEY_CONFLICT`. Confirmed and bisected to `eebc74f`; **impact not established** — a real desktop session recorded Logged Items normally. Record: [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md). The executable expectation is carried as a `todo` in `tests/scribe-real-acceptance.test.mjs`.
+- [ ] **SCRIBE-06B — Session-start recovery correction.** Session start publishes the session policy twice, producing a duplicate `scribe.recovery-request` under one idempotency key and an `IDEMPOTENCY_KEY_CONFLICT`. A real desktop run now confirms the conditional impact: Scribe can remain in recovery, reject finalized evidence, and leave Logged Items unavailable while transcription continues. Record: [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md). The executable expectation is carried as a `todo` in `tests/scribe-real-acceptance.test.mjs`.
 - [ ] **Pending user acceptance.** Physical-microphone Scribe evidence, and human judgement of Logged Item quality, guidance effect, and duplicate suppression across a real conversation. Neither is satisfiable by an agent; the exact steps are in the validation artifact.
 
 ## 6. Sessions and storage
