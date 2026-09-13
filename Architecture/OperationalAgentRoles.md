@@ -27,6 +27,14 @@ Its responsibility is:
 
 Scribe is the only one of these three roles currently in implementation scope. Its present local model path is the provider-neutral serial AI lane configured for LM Studio over loopback. LM Studio does not own session memory; Argus constructs each stateless, bounded request.
 
+### Implementation status (2026-09-12)
+
+The Scribe pipeline is implemented end to end and is proven against a real LM Studio model for admission, bounded stateless requests, zero-item and multiple-item outcomes, failure retention, and catch-up across inferences far longer than the wire admission deadline. Evidence and the remaining user acceptance are in [`docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md`](../docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md).
+
+One open defect sits at the session-start seam: the host publishes the session policy twice, producing a duplicate `scribe.recovery-request` under one idempotency key. The duplicate is confirmed; its impact is not established, and a real desktop session recorded Logged Items normally. See [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](../docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md).
+
+Assistant and Actor remain reserved with no runtime, model, tool, permission, or side effect. Acceptance confirmed this rather than assuming it: nothing in the observed message traffic originated from either role.
+
 ## Assistant — reserved role
 
 Assistant is a future session-level reasoning and coordination role responsible for evaluating accumulated session state and determining whether anything warrants attention, follow-up, recommendation, delegation, or action.
