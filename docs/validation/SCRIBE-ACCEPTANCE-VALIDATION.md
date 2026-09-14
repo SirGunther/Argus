@@ -8,19 +8,23 @@ recorded run. Re-running the acceptance suite writes a fresh copy to the untrack
 `runtime-output/scribe-acceptance-evidence.json`; replace the committed one deliberately, so the
 committed record always matches a run someone chose to keep.
 
-> **Read this first.** This document was revised after review. An earlier version claimed that the
-> session-start defect made every session produce zero Logged Items. **That claim is withdrawn** —
-> it was inferred from acceptance-harness runs, not observed in the shipped application, and a real
-> desktop session produced Logged Items normally.
+> **Read this first.** This document was revised after review, and again after `SCRIBE-06B`. An
+> earlier version claimed that the session-start defect made every session produce zero Logged
+> Items. **That claim was withdrawn** — it was inferred from acceptance-harness runs, not observed
+> in the shipped application, and a real desktop session produced Logged Items normally.
 >
-> What stands: the duplicate `scribe.recovery-request` at session start is real, confirmed through
-> `DesktopApplication`, and bisected to `eebc74f`. Its impact is **not established**. See
-> [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](../incidents/2026-09-12-scribe-session-start-recovery-conflict.md).
+> The duplicate `scribe.recovery-request` at session start was real, confirmed through
+> `DesktopApplication`, and bisected to `eebc74f`. **It is now fixed** (`SCRIBE-06B`,
+> `services/scribe-coordinator/coordinator.mjs`). See
+> [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](../incidents/2026-09-12-scribe-session-start-recovery-conflict.md)
+> for the resolution.
 >
-> **Scope limit on everything below.** The `real-provider` rows drive the production graph directly,
-> dispatching `session.record` without the `scribe.guidance-configure` the desktop host always sends
-> first. They validate the graph’s admission, batching, request-shape and failure behavior under a
-> real model. They do **not** validate the shipped desktop startup sequence.
+> **Scope limit on everything below except the host-regression row.** The `real-provider` rows drive
+> the production graph directly, dispatching `session.record` without the
+> `scribe.guidance-configure` the desktop host always sends first. They validate the graph's
+> admission, batching, request-shape and failure behavior under a real model, not the shipped
+> desktop startup sequence. The host-regression scenario (row 20) is the exception: it drives
+> `DesktopApplication` itself and does validate the real startup sequence.
 
 ## Evidence classes
 
@@ -186,9 +190,8 @@ Electron runs `electron/main.cjs` as plain Node and `app` is undefined.
 
 These need a person. None is satisfiable by an agent.
 
-1. **Note the open session-start defect.** It is unresolved and its impact is unestablished, so if a
-   step below behaves unexpectedly, record it against
-   `docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`.
+1. **The session-start defect is resolved (SCRIBE-06B).** No action needed here; recorded for history
+   at `docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`.
 2. **Physical microphone (scenario 19).** Launch the app, select a real input device, press Record,
    and speak three separate sentences with a pause between each. *Expect:* three finalized transcript
    rows, then one Scribe batch, then Logged Items. *Watch for:* whether real Whisper row boundaries

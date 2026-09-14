@@ -176,12 +176,12 @@ Delivery and agent ownership are defined in `docs/plans/SCRIBE-PIPELINE-INTEGRAT
 - [x] Prove zero-item, one-item, multiple-item, duplicate, malformed-response, timeout, retry, restart, and session-close outcomes against the provider-neutral boundary.
 - [x] Keep Assistant reasoning and all Actor side effects out of this implementation slice.
 
-The eight items above are implemented, and where a real provider can exercise them they are proven
+The nine items above are implemented, and where a real provider can exercise them they are proven
 against one — see [`docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md`](docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md).
 They are checked because the behavior exists and is covered, **not** because the feature is currently
-deliverable on its own. The two items below remain open.
+deliverable on its own. One item below remains open.
 
-- [ ] **SCRIBE-06B — Session-start recovery correction.** Session start publishes the session policy twice, producing a duplicate `scribe.recovery-request` under one idempotency key and an `IDEMPOTENCY_KEY_CONFLICT`. A real desktop run now confirms the conditional impact: Scribe can remain in recovery, reject finalized evidence, and leave Logged Items unavailable while transcription continues. Record: [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md). The executable expectation is carried as a `todo` in `tests/scribe-real-acceptance.test.mjs`.
+- [x] **SCRIBE-06B — Session-start recovery correction.** Session start published the session policy twice, producing a duplicate `scribe.recovery-request` under one idempotency key and an `IDEMPOTENCY_KEY_CONFLICT`. Fixed in `services/scribe-coordinator/coordinator.mjs`: the coordinator now emits at most one outstanding recovery request per session while unrecovered. Proven at the coordinator-unit level and through the real `DesktopApplication` session-start sequence, including that recovery completes and finalized evidence is admitted and produces a stored Logged Item afterward. Record: [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md).
 - [ ] **Pending user acceptance.** Physical-microphone Scribe evidence, and human judgement of Logged Item quality, guidance effect, and duplicate suppression across a real conversation. Neither is satisfiable by an agent; the exact steps are in the validation artifact.
 
 ## 6. Sessions and storage

@@ -74,6 +74,7 @@ export function createScribeCoordinator({
         pendingPersistence: undefined,
         lastPersistence: undefined,
         recovered: !requireRecovery,
+        recoveryRequested: false,
         pendingComplete: true,
         awaitingContinuation: false,
         settleWaiters: undefined
@@ -107,6 +108,17 @@ export function createScribeCoordinator({
 
   function recoveryRequest(state, sessionId) {
     if (!requireRecovery || state.recovered) return [];
+    // configurePolicy legitimately runs more than once before recovery completes: the host
+    // republishes a session's policy both from its guidance snapshot and from the
+    // session.recorded/resumed lifecycle outcome, and both replays reach here with byte-identical
+    // policy content. One outstanding request per session is correct - a genuine retry of the
+    // identical request is already idempotent by identity key downstream, so re-emitting on every
+    // replay only manufactures a second logical request under a distinct causation, which is
+    // exactly what collided under one recovery-request identity key at the message-identity
+    // boundary. The flag clears once acceptRecoveryRestored recovers the session, so a later
+    // restart (a fresh coordinator instance, a fresh state map) is unaffected.
+    if (state.recoveryRequested) return [];
+    state.recoveryRequested = true;
     const policy = policyFor(state, sessionId);
     return [{ type: 'recovery-request', sessionId, policyId: policy.policy_id, policyVersion: policy.policy_version }];
   }

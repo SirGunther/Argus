@@ -262,6 +262,40 @@ test('recovered pending remainder resumes idle eligibility and live-state recove
   assert.throws(() => coordinator.restoreState('s1', { cursor: { last_sequence: -1 }, pendingSegments: [] }), /already has coordinator state/);
 });
 
+// SCRIBE-06B. The real host publishes a session's policy twice before recovery ever completes -
+// once from its guidance snapshot (DesktopApplication.configureScribeGuidance, sent unconditionally
+// before Record/Resume) and once from the session.recorded/resumed lifecycle outcome. Both reach
+// scribe-policy-source, which republishes byte-identical policy content, and both reach
+// configurePolicy here. Before this fix, recoveryRequest() re-emitted a recovery-request on every
+// call while unrecovered, and the second request's distinct causation collided with the first
+// under one shared identity key (scribe-coordinator/index.mjs's identityKey covers boot id,
+// session, policy id and policy version only) - producing IDEMPOTENCY_KEY_CONFLICT.
+test('replaying an identical policy before recovery completes asks for recovery only once', () => {
+  const coordinator = createScribeCoordinator({ clock: createFakeClock().clock, requireRecovery: true });
+  const first = coordinator.configurePolicy(policy('s1'));
+  assert.deepEqual(first.map((output) => output.type), ['recovery-request']);
+
+  // The exact replay a real session start performs: identical policy content, same session, still
+  // unrecovered. A second logical recovery-request here is the defect; silence is correct.
+  const second = coordinator.configurePolicy(policy('s1'));
+  assert.deepEqual(second, [], 'a byte-identical policy replay before recovery must not ask again');
+
+  // A third replay is still silent - this is not a one-shot fluke.
+  assert.deepEqual(coordinator.configurePolicy(policy('s1')), []);
+
+  // Recovery still completes normally after the suppressed replays, and evidence still admits.
+  assert.deepEqual(coordinator.acceptRecoveryRestored({
+    session_id: 's1', policy_id: 'test-policy', policy_version: '1.0.0', recovered_at: '2026-09-13T00:00:00.000Z',
+    checkpoint: null, pending_segments: [], in_flight_segments: [], background_transcript_segments: []
+  }), []);
+  const admitted = admit(coordinator, 's1');
+  assert.ok(admitted, 'evidence is admitted once recovery completes, unaffected by the suppressed replays');
+
+  // A genuinely different session is unaffected: it gets its own single request.
+  const other = coordinator.configurePolicy(policy('s2'));
+  assert.deepEqual(other.map((output) => output.type), ['recovery-request']);
+});
+
 test('explicit recovery and durable checkpoint acknowledgements gate admission and cursor advancement', () => {
   const coordinator = createScribeCoordinator({ clock: createFakeClock().clock, requireRecovery: true, requirePersistence: true });
   const configured = coordinator.configurePolicy(policy('s1'));

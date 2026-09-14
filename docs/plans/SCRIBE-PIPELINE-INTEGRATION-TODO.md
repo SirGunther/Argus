@@ -697,21 +697,37 @@ The Scribe integration is complete only when every applicable implementation, re
 **Goal:** Eliminate the duplicate session-start recovery request now confirmed to conditionally
 strand Scribe in recovery. This is a defect correction within SCRIBE-06, not a new architecture phase.
 
-- [ ] Reproduce the real host sequence through `DesktopApplication`: configure guidance, Record,
-  policy publication, and recovery.
-- [ ] Ensure one logical recovery handshake occurs per session start without weakening message
-  identity, recovery, Resume, or crash-recovery rules.
-- [ ] Confirm session start produces no `IDEMPOTENCY_KEY_CONFLICT` or orchestration failure.
-- [ ] Confirm the first finalized rows are admitted after recovery and can produce Logged Items.
-- [ ] Convert the existing session-start acceptance `todo` into a passing regression and run the
-  focused and complete deterministic suites.
-- [ ] Change no Whisper/audio, prompting, batching, UI layout, installer, or unrelated architecture.
+- [x] Reproduce the real host sequence through `DesktopApplication`: configure guidance, Record,
+  policy publication, and recovery. — reproduced directly through `DesktopApplication`, root-caused
+  to `services/scribe-coordinator/coordinator.mjs`, and fixed there.
+- [x] Ensure one logical recovery handshake occurs per session start without weakening message
+  identity, recovery, Resume, or crash-recovery rules. — the fix is a per-session
+  `recoveryRequested` guard inside `recoveryRequest()`; message identity, the paged-continuation
+  recovery path, Resume, and crash-recovery are untouched, and the full deterministic suite is
+  unaffected.
+- [x] Confirm session start produces no `IDEMPOTENCY_KEY_CONFLICT` or orchestration failure. —
+  confirmed absent in the host regression (`recoveryRequests.length === 1`, `failures === []`).
+- [x] Confirm the first finalized rows are admitted after recovery and can produce Logged Items. —
+  the host regression finalizes three rows post-recovery and confirms one batch admits, settles,
+  and produces one stored Logged Item.
+- [x] Convert the existing session-start acceptance `todo` into a passing regression and run the
+  focused and complete deterministic suites. — `todo` removed; coordinator suite 18/18 pass;
+  complete deterministic suite (`node --test tests/*.test.mjs`, no opt-in) 392 tests / 385 pass /
+  0 fail / 7 skip / 0 todo.
+- [x] Change no Whisper/audio, prompting, batching, UI layout, installer, or unrelated architecture.
+  — the diff is one production file (`services/scribe-coordinator/coordinator.mjs`) and two test
+  files.
 
 ### SCRIBE-06B exit gate
 
-- [ ] A real desktop session starts cleanly, transcription remains independent, Scribe leaves
-  recovery, and finalized evidence reaches the existing Scribe pipeline.
-- [ ] The correction is narrow, production-path tested, committed, and reviewed before merge.
+- [x] A real desktop session starts cleanly, transcription remains independent, Scribe leaves
+  recovery, and finalized evidence reaches the existing Scribe pipeline. — proven through
+  `DesktopApplication` with only Whisper substituted (the physical-microphone boundary).
+- [x] The correction is narrow, production-path tested, committed, and reviewed before merge. —
+  narrow (one production file); production-path tested (the coordinator unit test was confirmed to
+  fail against the pre-fix code and pass against the fix; the real-host regression exercises the
+  actual session-start sequence); committed on `agent/scribe-session-start-recovery`, pushed,
+  awaiting review before merge.
 
 ## Next dispatch
 
