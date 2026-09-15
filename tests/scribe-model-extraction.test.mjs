@@ -321,8 +321,17 @@ test('commentary, malformed JSON, excess items, oversized text, forged identity,
   const cases = [
     ['prose commentary', { raw: 'Here is the batch summary you asked for.' }, 'MODEL_INVALID_JSON'],
     ['malformed JSON', { raw: '{"choices":[{"message":{"content":"{\\"items\\":"' }, 'MODEL_INVALID_JSON'],
-    ['markdown-fenced JSON', { content: '```json\n{"protocol_version":"2.0.0","purpose":"logged-item-extraction","items":[]}\n```' }, 'MODEL_INVALID_JSON'],
+    // SCRIBE-07B: a complete, exactly-one Markdown `json` fence is now unwrapped before
+    // `JSON.parse`, so this case is no longer rejected as malformed JSON - but this particular
+    // fenced payload omits `batch_identity` entirely, so `validateScribeBatchModelResponse` still
+    // rejects it, now as INVALID_MODEL_OUTPUT rather than MODEL_INVALID_JSON. The exact-fence
+    // *acceptance* case (a complete, schema-valid governed response) is proved separately below in
+    // 'an exact complete Markdown json-fenced valid batch response is accepted on the first call'.
+    ['markdown-fenced JSON missing batch_identity', { content: '```json\n{"protocol_version":"2.0.0","purpose":"logged-item-extraction","items":[]}\n```' }, 'INVALID_MODEL_OUTPUT'],
     ['JSON wrapped in commentary', { content: 'Sure - here is the batch: {"protocol_version":"2.0.0","purpose":"logged-item-extraction","items":[]}' }, 'MODEL_INVALID_JSON'],
+    ['commentary preceding a complete fence', { content: 'Sure - here is the batch:\n```json\n{"protocol_version":"2.0.0","purpose":"logged-item-extraction","items":[]}\n```' }, 'MODEL_INVALID_JSON'],
+    ['fence missing its closing delimiter', { content: '```json\n{"protocol_version":"2.0.0","purpose":"logged-item-extraction","items":[]}' }, 'MODEL_INVALID_JSON'],
+    ['two fenced blocks', { content: '```json\n{"protocol_version":"2.0.0","purpose":"logged-item-extraction","items":[]}\n```\n```json\n{"protocol_version":"2.0.0","purpose":"logged-item-extraction","items":[]}\n```' }, 'MODEL_INVALID_JSON'],
     ['forged item identity', { items: [{ item_id: 'forged-by-model', text: 'Ship it.', source_segment_ids: ['segment-10'] }] }, 'INVALID_MODEL_OUTPUT'],
     ['unsupported kind', { items: [{ text: 'Ship it.', kind: 'summary', source_segment_ids: ['segment-10'] }] }, 'INVALID_MODEL_OUTPUT'],
     ['forged provenance', { items: [{ text: 'Ship it.', source_segment_ids: ['segment-99'] }] }, 'INVALID_MODEL_OUTPUT'],
@@ -345,6 +354,34 @@ test('commentary, malformed JSON, excess items, oversized text, forged identity,
     } finally {
       await endpoint.close();
     }
+  }
+});
+
+// SCRIBE-07B: real-work regression for the exact fenced response observed at 2026-09-15 17:20:17
+// (docs/plans/SCRIBE-STATELESS-REQUEST-HARDENING-TODO.md, "Real-work evidence baseline") - a
+// complete, valid governed Scribe batch object wrapped in one Markdown ```json fence. Before the
+// fix this failed with MODEL_INVALID_JSON and, per the 17:20:56 baseline entry, the unmodified
+// batch was then resent and regenerated the same deterministic fenced result. `maxAttempts: 2`
+// below proves the corrected path never needs that retry: the fenced response is accepted on the
+// first provider call, so the second attempt is never spent.
+test('an exact complete Markdown json-fenced valid batch response is accepted on the first call and never triggers a retry', async () => {
+  const items = [{ text: 'Ship the draft Friday.', kind: 'decision', source_segment_ids: ['segment-10'] }];
+  const endpoint = await startScribeBatchModelEndpoint({
+    reply: (modelRequest) => ({ content: `\`\`\`json\n${JSON.stringify(batchResponse({ batch_identity: modelRequest.batch_identity }, items))}\n\`\`\`` })
+  });
+  try {
+    const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-fenced' }));
+    const result = await runService(laneManifest, [providerConfiguration(endpoint.url), workRequestEnvelope(request, { maxAttempts: 2 })], 3, 8000);
+    const completion = result.outputs.find((message) => message.message_type === 'ai.work-completed');
+    assert.equal(completion.payload.result.status, 'succeeded');
+    assert.equal(completion.payload.attempt, 1, 'the fenced-but-valid response must succeed on the first attempt, not exhaust a retry');
+    assert.deepEqual(completion.payload.result.response.batch_identity, request.batch_identity);
+    assert.deepEqual(completion.payload.result.response.items, items);
+    // The retry mechanism this baseline observed repeating work through: only one call reached the
+    // provider, proving the identical batch was never resent for the same deterministic result.
+    assert.equal(endpoint.calls.length, 1);
+  } finally {
+    await endpoint.close();
   }
 });
 

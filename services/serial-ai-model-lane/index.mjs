@@ -197,7 +197,8 @@ async function requestConfiguredModel(runtime, request) {
       if (config.protocol === 'openai-compatible') {
         const content = parsed.choices?.[0]?.message?.content;
         if (typeof content === 'object' && content) return content;
-        return JSON.parse(String(content || ''));
+        const raw = String(content || '');
+        return JSON.parse(isScribeBatchRequest(request) ? unwrapScribeJsonFence(raw) : raw);
       }
       return parsed;
     }
@@ -222,6 +223,35 @@ function isScribeBatchRequest(request) {
  */
 function scribeBatchResponseFormat() {
   return { type: 'json_schema', json_schema: { name: 'scribe_batch_response', strict: true, schema: SCRIBE_BATCH_RESPONSE_JSON_SCHEMA } };
+}
+
+/**
+ * SCRIBE-07B compatibility normalizer for Scribe batch response content only. The real LM Studio
+ * batch response observed at 2026-09-15 17:20:17 (docs/plans/SCRIBE-STATELESS-REQUEST-HARDENING-
+ * TODO.md, "Real-work evidence baseline") was a complete, valid governed JSON object wrapped in
+ * exactly one Markdown ```json fence; `JSON.parse` rejected the fenced string as malformed even
+ * though the content was otherwise correct, and the unmodified retry then reproduced the same
+ * fenced result and repeated serial-lane work for no new outcome (SCRIBE-07A narrows how often the
+ * provider wraps a valid answer this way at all; this narrows what a wrapped answer must look like
+ * to still be accepted).
+ *
+ * This trims only outer whitespace and unwraps exactly one *complete* Markdown fence - from the
+ * start to the end of the trimmed string, with an optional `json` language tag - and returns the
+ * content unchanged in every other case, so `JSON.parse` still rejects it exactly as before:
+ * commentary preceding or following a fence, a fence missing its closing delimiter, and more than
+ * one fenced block (detected by the inner text still containing a fence delimiter after the outer
+ * one is stripped) are all left with their original triple backticks intact and fail to parse.
+ */
+function unwrapScribeJsonFence(content) {
+  const trimmed = content.trim();
+  const match = /^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n```$/.exec(trimmed);
+  if (!match) return trimmed;
+  const inner = match[1];
+  // A second fence delimiter still present in the unwrapped interior means the trimmed string held
+  // more than one fenced block (or a fence plus surrounding commentary the outer anchors happened
+  // to still bound); that is not "exactly one complete fence", so leave the original untouched.
+  if (inner.includes('```')) return trimmed;
+  return inner;
 }
 
 /**

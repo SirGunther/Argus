@@ -508,30 +508,107 @@ agent chat.
 
 #### Implementation record
 
-- **Status:** Not started
-- **Starting `origin/main` SHA:** Pending
+- **Status:** Implemented, awaiting review
+- **Starting SHA:** `f815c9124a7a8c80a110725ff5c9a81a4595327f` — this is **SCRIBE-07A's branch tip**
+  (`agent/scribe-structured-response`), not `origin/main`. Per the coordinator's chaining
+  instruction, SCRIBE-07B was dispatched directly from SCRIBE-07A's reviewed-but-not-yet-merged
+  branch (`origin/main` under it is `89a9f66d02c7c36a56a04c70ee5f1bb87b3e5da3`, which already
+  includes merged SCRIBE-06B).
 - **Branch:** `agent/scribe-json-fence-compatibility`
-- **Full implementation SHA:** Pending
-- **WHY:** Pending
-- **HOW:** Pending
-- **WHAT:** Pending
-- **Real-work failure evidence:** Pending
-- **Production path trace:** Pending
-- **Why the regression represents that production failure:** Pending
-- **Post-correction real-runtime evidence:** Pending
+- **Full implementation SHA:** `<recorded after commit, see below>`
+- **WHY:** At `2026-09-15 17:20:17` LM Studio returned a complete, valid governed Scribe batch JSON
+  object wrapped in exactly one Markdown ` ```json ` fence for a 9,288-`prompt_tokens` request. The
+  fenced string reached `requestConfiguredModel`'s `openai-compatible` response branch
+  (`services/serial-ai-model-lane/index.mjs`), where `JSON.parse(String(content || ''))` was handed
+  the fence delimiters themselves and threw, so the response was classified `MODEL_INVALID_JSON`
+  even though the model's answer was otherwise correct. At `17:20:56` Argus resent the identical
+  retained batch and the model regenerated the same deterministic fenced result, repeating serial-
+  lane work for no new outcome. SCRIBE-07A (already on this branch) narrows how often the provider
+  wraps a valid Scribe answer in the first place by requesting `response_format`; it explicitly left
+  response-content parsing untouched for this ticket to own.
+- **HOW:** The narrowest correct seam is the one line inside `requestConfiguredModel`'s
+  `openai-compatible` branch that turns the assistant message's `content` string into the parsed
+  object before `JSON.parse`. A single new helper, `unwrapScribeJsonFence(content)`, is applied to
+  that string — and only that string, only when `isScribeBatchRequest(request)` is true (the same
+  existing predicate SCRIBE-07A gates `response_format` on, so no second detection mechanism was
+  introduced) — immediately before `JSON.parse`. It trims outer whitespace, then matches the
+  anchored pattern `^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n```$` against the trimmed string: only a
+  fence that starts at the very first character and closes at the very last character (i.e.
+  "exactly one complete fence", not a partial one, not one followed or preceded by prose) unwraps to
+  its inner text. If the unwrapped interior still contains a `` ``` `` delimiter, the original,
+  untouched string is returned instead — this is what rejects two fenced blocks that would otherwise
+  satisfy the outer anchors by having the non-greedy capture swallow everything between the first
+  block's close and the second block's close. Every other input (no fence, partial fence, fence
+  preceded/followed by commentary) is returned completely unchanged, so it still fails `JSON.parse`
+  exactly as before. Legacy extraction, classification enrichment, ollama, and provider-neutral-json
+  requests never call this helper at all, since `isScribeBatchRequest` is false for them.
+- **WHAT:** Different: an OpenAI-compatible Scribe batch response whose entire trimmed content is
+  one complete Markdown JSON fence (with no language tag or the `json` tag) is now parsed
+  successfully instead of raising `MODEL_INVALID_JSON`, and — because it now parses to a
+  schema-valid object — is accepted on the very first provider call, so the existing retry is never
+  spent re-sending the identical deterministic batch. Preserved: commentary preceding or following a
+  fence, a fence missing its closing delimiter, two or more fenced blocks, and empty/malformed
+  content all remain rejected as `MODEL_INVALID_JSON` exactly as before; ordinary unfenced JSON is
+  returned byte-for-byte unchanged (trimming a string that was already valid JSON does not change
+  what `JSON.parse` produces); `validateScribeBatchModelResponse` still runs unmodified after
+  parsing and is still the sole authority on identity, provenance, item limits, and exact-batch
+  comparison — a fenced response missing `batch_identity` (or otherwise schema-invalid) now parses
+  but is still rejected by that validator, as `INVALID_MODEL_OUTPUT` instead of `MODEL_INVALID_JSON`
+  (see the updated `tests/scribe-model-extraction.test.mjs` case below). No retry count, prompt
+  text, contract version, queue, provider setting, or non-Scribe workload changed.
+- **Real-work failure evidence:** The `17:20:17` fenced/rejected request and the `17:20:56`
+  identical-batch resend recorded in this artifact's "Real-work evidence baseline", tied to
+  `requestConfiguredModel` per that section's own production-inspection note, and already cited
+  verbatim in the SCRIBE-07A evidence above as the shared baseline both tickets correct.
+- **Production path trace:** `services/serial-ai-model-lane/index.mjs` —
+  `requestConfiguredModel`'s `config.protocol === 'openai-compatible'` response branch (the
+  `const content = parsed.choices?.[0]?.message?.content; ... return JSON.parse(...)` lines), the
+  new `unwrapScribeJsonFence()` helper defined immediately beside `scribeBatchResponseFormat()`, and
+  the existing `isScribeBatchRequest(request)` predicate reused to gate it. Post-parse authority:
+  `contracts/model-protocol.mjs` — `validateScribeBatchModelResponse` (unmodified).
+- **Why the regression represents that production failure:** The new focused test in
+  `tests/scribe-model-extraction.test.mjs`, `'an exact complete Markdown json-fenced valid batch
+  response is accepted on the first call and never triggers a retry'`, dispatches a real
+  `ai.work-request`/`ai.provider-configure` pair through the actual `serial-ai-model-lane` service
+  process (`runService(laneManifest, ...)`) against a mock OpenAI-compatible endpoint
+  (`startScribeBatchModelEndpoint`) that returns `{ choices: [{ message: { content: '```json\n' +
+  <the exact governed batch object> + '\n```' } }] }` — the identical wire shape and the identical
+  `requestConfiguredModel` code path a real LM Studio fenced batch response traverses, not a copied
+  helper or a reimplemented parser. Verified directly against the pre-fix code (see Verification
+  below): with the fix reverted, this test fails with `status: 'failed'` (not `'succeeded'`) because
+  the lane still raises `MODEL_INVALID_JSON` on the fenced string, which is the same failure
+  mechanism the real 17:20:17 request hit. The pre-existing `'markdown-fenced JSON'` case in the same
+  file's `'commentary, malformed JSON, ...'` table also flips: before the fix it asserted
+  `MODEL_INVALID_JSON` for a complete fence (proving the regression was already represented in the
+  suite); after the fix that same fence parses, and the case was updated to assert
+  `INVALID_MODEL_OUTPUT` because its payload happens to omit `batch_identity`, demonstrating parsing
+  succeeded while the runtime validator remained the final authority.
+- **Post-correction real-runtime evidence:** Pending — deferred to the coordinator's final real LM
+  Studio acceptance step (this artifact's "Final real LM Studio acceptance" section), same as
+  SCRIBE-07A. No live LM Studio endpoint is available in this worktree; nothing here fabricates that
+  check.
 
 | Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
 | --- | --- | --- | --- |
-| Pending | Pending | Pending | Pending |
+| `services/serial-ai-model-lane/index.mjs` | `requestConfiguredModel`'s `openai-compatible` response branch is the exact function/branch production inspection (this artifact, "Real-work evidence baseline") named as passing the fenced string straight to `JSON.parse`. | Added `unwrapScribeJsonFence(content)`, applied to the assistant message content only for Scribe batch requests (`isScribeBatchRequest(request)`), only before `JSON.parse`, trimming outer whitespace and unwrapping exactly one complete optional-`json` Markdown fence. | A complete, exactly-one `json`-fenced Scribe response now parses instead of raising `MODEL_INVALID_JSON`; partial fences, multiple fenced blocks, commentary-plus-fence, empty content, and every non-Scribe request body/response are byte-for-byte unaffected. |
+| `tests/scribe-model-extraction.test.mjs` | Already owned the pre-existing `'markdown-fenced JSON'` case asserting `MODEL_INVALID_JSON` for a complete fence — the exact expectation this ticket's fix inverts. | Updated that case's expected code to `INVALID_MODEL_OUTPUT` (its payload lacks `batch_identity`, so parsing now succeeds but the runtime validator still rejects it) and added four new rows/tests: the real 17:20:17 exact-fence acceptance-and-no-retry case, commentary-preceding-a-complete-fence, a fence missing its closing delimiter, and two fenced blocks — all still `MODEL_INVALID_JSON`. | The suite proves the exact observed regression is fixed and that every rejected wrapper/prose shape named by the ticket remains rejected. |
 
 | Verification | Command or evidence source | Result |
 | --- | --- | --- |
-| Focused regression | Pending | Pending |
-| Complete suite | Pending | Pending |
-| Syntax/diff | Pending | Pending |
-| Push/worktree | Pending | Pending |
+| Pre-fix regression check | `git stash push -u -m scribe-07b-prefix-check-tmp -- services/serial-ai-model-lane/index.mjs`, then `node --test tests/scribe-model-extraction.test.mjs`, then `git stash apply <captured-sha>` + `git stash drop <captured-sha>` (never bare `git stash pop`, per this worktree's shared-stash rule) | Two failures, both for the expected production reason: the pre-existing `'markdown-fenced JSON'` case asserted `MODEL_INVALID_JSON` (actual) vs the fix's `INVALID_MODEL_OUTPUT` (expected); the new no-retry test asserted `status: 'failed'` (actual) vs `'succeeded'` (expected). Every other case in the file still passed unmodified (23/25). Fix restored afterward; worktree clean. |
+| Focused regression | `node --test tests/scribe-model-extraction.test.mjs` | 25 pass, 0 fail (post-fix). |
+| Focused model-lane/Scribe suites | `node --test tests/phase5b-model-adapter.test.mjs tests/scribe-model-extraction.test.mjs tests/scribe-structured-response.test.mjs tests/scribe-contracts.test.mjs tests/contract-governance.test.mjs` | 92 pass, 0 fail. |
+| Complete suite | `npm test` (`node --test tests/*.test.mjs`) | 390 pass, 7 skipped (same pre-existing live-LM-Studio-only tests in `tests/scribe-real-acceptance.test.mjs` noted in the SCRIBE-07A ledger), 0 fail. |
+| Syntax | `node --check services/serial-ai-model-lane/index.mjs`, `node --check tests/scribe-model-extraction.test.mjs` | Both pass. |
+| Diff whitespace | `git diff --check` | Clean. |
+| Push/worktree | `git status` clean after commit; branch `agent/scribe-json-fence-compatibility` created from `origin/agent/scribe-structured-response` at `f815c91`; pushed to `origin` | Recorded below with the pushed SHA. |
 
-- **Remaining acceptance or limitation:** Pending
+- **Remaining acceptance or limitation:** Real LM Studio runtime acceptance (does the exact fence
+  the model actually emits match this normalizer's "exactly one complete fence" shape in practice,
+  and does the observed repeated-work failure stop recurring) is pending and explicitly deferred to
+  the coordinator's final acceptance step — no live provider was available in this worktree.
+  SCRIBE-07C (governed context/output limits) is intentionally out of scope here and remains
+  unaffected: this ticket touched no context budget, policy default, or limit constant.
 
 #### Review record
 
