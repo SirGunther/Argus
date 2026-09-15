@@ -26,6 +26,66 @@ export const EXTRACTION_BATCH_OUTPUT_LIMITS = Object.freeze({
   max_output_chars: 2048,
   max_output_tokens: 512
 });
+// Provider-requested structured-output schema for the Scribe batch response (SCRIBE-07A). This
+// describes the exact shape `validateScribeBatchModelResponse` already enforces after parsing
+// (fixed protocol/purpose, one batch identity object, zero-to-`max_items` item objects, the
+// governed item kinds, item text, and source segment ids) so an OpenAI-compatible provider can be
+// asked to emit it directly. It is a transport supplement, not a competing contract: this schema
+// is intentionally looser than the full runtime validator (for example it cannot express the
+// batch-identity-must-echo-the-request rule or the total output character/token ceilings), so
+// `validateScribeBatchModelResponse` remains the sole authority on every parsed response.
+export const SCRIBE_BATCH_RESPONSE_JSON_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  required: ['protocol_version', 'purpose', 'batch_identity', 'items'],
+  properties: {
+    protocol_version: { const: SCRIBE_BATCH_PROTOCOL_VERSION },
+    purpose: { const: 'logged-item-extraction' },
+    batch_identity: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['request_id', 'session_id', 'segments', 'first_sequence', 'last_sequence', 'admission_reason', 'policy_id', 'policy_version', 'instruction_version'],
+      properties: {
+        request_id: { type: 'string' },
+        session_id: { type: 'string' },
+        segments: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['segment_id', 'revision', 'sequence'],
+            properties: {
+              segment_id: { type: 'string' },
+              revision: { type: 'integer' },
+              sequence: { type: 'integer' }
+            }
+          }
+        },
+        first_sequence: { type: 'integer' },
+        last_sequence: { type: 'integer' },
+        admission_reason: { enum: ['batch-complete', 'idle-timeout'] },
+        policy_id: { type: 'string' },
+        policy_version: { type: 'string' },
+        instruction_version: { type: 'string' }
+      }
+    },
+    items: {
+      type: 'array',
+      maxItems: EXTRACTION_BATCH_OUTPUT_LIMITS.max_items,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['text', 'kind', 'source_segment_ids'],
+        properties: {
+          text: { type: 'string', maxLength: EXTRACTION_BATCH_OUTPUT_LIMITS.max_item_chars },
+          kind: { enum: SCRIBE_ITEM_KINDS },
+          source_segment_ids: { type: 'array', items: { type: 'string' } }
+        }
+      }
+    }
+  }
+});
+
 // Optional user Scribe guidance (SCRIBE-05B). 2000 chars is ~500 governed tokens, so even a
 // maximum-length guidance leaves the instruction, the whole new evidence, and the output reserve
 // inside the ~8000-token policy budget. Guidance is never truncated to fit: an over-budget request

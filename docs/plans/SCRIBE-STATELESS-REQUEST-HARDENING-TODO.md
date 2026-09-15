@@ -404,30 +404,90 @@ agent chat.
 
 #### Implementation record
 
-- **Status:** Not started
-- **Starting `origin/main` SHA:** Pending
+- **Status:** Implemented, awaiting review
+- **Starting `origin/main` SHA:** `89a9f66d02c7c36a56a04c70ee5f1bb87b3e5da3`
 - **Branch:** `agent/scribe-structured-response`
-- **Full implementation SHA:** Pending
-- **WHY:** Pending
-- **HOW:** Pending
-- **WHAT:** Pending
-- **Real-work failure evidence:** Pending
-- **Production path trace:** Pending
-- **Why the regression represents that production failure:** Pending
-- **Post-correction real-runtime evidence:** Pending
+- **Full implementation SHA:** Recorded after commit, see chat pointer
+- **WHY:** At `2026-09-15 17:20:17` LM Studio returned a complete, valid governed Scribe batch
+  JSON object wrapped in one Markdown ` ```json ` fence for a 9,288-`prompt_tokens` request.
+  Argus's `requestConfiguredModel` (`services/serial-ai-model-lane/index.mjs`) passed the fenced
+  string straight to `JSON.parse`, which threw, so the response was classified `MODEL_INVALID_JSON`
+  even though the model's output was otherwise correct. At `17:20:56` Argus resent the identical
+  retained batch and the model regenerated the same deterministic fenced result, repeating serial-
+  lane work for no new outcome. Reading the pre-change `openai-compatible` request body (the
+  branch inside `requestConfiguredModel`) confirmed it never asked the provider for enforced
+  structured output at all — the body was exactly `{ model, stream, temperature, max_tokens,
+  messages }` for every OpenAI-compatible request, Scribe batch or not. Requesting
+  provider-enforced JSON output for the Scribe batch shape narrows how often the model wraps a
+  valid answer in prose/fencing in the first place; SCRIBE-07B separately makes the parser
+  tolerant of the one fence already observed.
+- **HOW:** The narrowest correct seam is the single `openai-compatible` request-body branch inside
+  `requestConfiguredModel` (`services/serial-ai-model-lane/index.mjs`), gated by the existing
+  `isScribeBatchRequest(request)` predicate (already present, keyed off
+  `request.protocol_version === SCRIBE_BATCH_PROTOCOL_VERSION`) — no new mechanism was invented to
+  detect a Scribe batch request. When true, the body now also carries `response_format: {
+  type: "json_schema", json_schema: { name: "scribe_batch_response", strict: true, schema:
+  SCRIBE_BATCH_RESPONSE_JSON_SCHEMA } }`. `SCRIBE_BATCH_RESPONSE_JSON_SCHEMA` is a new export in
+  `contracts/model-protocol.mjs` (the shared Scribe protocol module `requestConfiguredModel`
+  already imports from), built only from the already-governed constants in that same file
+  (`SCRIBE_BATCH_PROTOCOL_VERSION`, `SCRIBE_ITEM_KINDS`, `EXTRACTION_BATCH_OUTPUT_LIMITS`) and the
+  required-key sets `validateScribeBatchIdentity`/`validateScribeProposedItem` already enforce. No
+  second response contract was created.
+- **WHAT:** Different: every OpenAI-compatible Scribe batch request now carries a
+  `response_format` asking the provider to emit the governed shape directly. Preserved: every
+  other OpenAI-compatible request (legacy `logged-item-extraction`, `classification-enrichment`)
+  keeps its exact prior body with no `response_format` key; the `ollama` and
+  `provider-neutral-json` protocol branches are untouched; `validateScribeBatchModelResponse`
+  still performs full post-parse identity, provenance, limit, and exact-batch-comparison
+  validation exactly as before — the new schema is intentionally looser (it cannot express
+  "batch_identity must equal the request's" or the total output character/token ceilings), so it
+  supplements rather than replaces the runtime validator. No Markdown-fence handling, retry
+  behavior, prompt/instruction wording, contract version, or provider setting changed.
+- **Real-work failure evidence:** The two real LM Studio requests recorded in this artifact's
+  "Real-work evidence baseline" (`prompt_tokens: 9334` unfenced/accepted at 17:19:40;
+  `prompt_tokens: 9288` fenced/rejected at 17:20:17; identical batch resent and re-regenerated at
+  17:20:56), tied to `requestConfiguredModel` per that section's own production-inspection note.
+- **Production path trace:** `services/serial-ai-model-lane/index.mjs` — `requestConfiguredModel`
+  (body construction for `config.protocol === 'openai-compatible'`, now emitting
+  `response_format` only under `isScribeBatchRequest(request)`) and the new
+  `scribeBatchResponseFormat()` helper beside it. Schema source: `contracts/model-protocol.mjs` —
+  new `SCRIBE_BATCH_RESPONSE_JSON_SCHEMA` export, alongside the pre-existing
+  `SCRIBE_BATCH_PROTOCOL_VERSION`, `SCRIBE_ITEM_KINDS`, `EXTRACTION_BATCH_OUTPUT_LIMITS`, and
+  `validateScribeBatchModelResponse` it mirrors.
+- **Why the regression represents that production failure:** `tests/scribe-structured-response.test.mjs`'s
+  first test dispatches a real `ai.work-request`/`ai.provider-configure` pair through the actual
+  `serial-ai-model-lane` service process (`runService(laneManifest, ...)`), the same
+  `requestConfiguredModel` code path a real LM Studio batch traverses, and inspects the literal
+  HTTP body a mock OpenAI-compatible endpoint received — not a copied helper or a reimplemented
+  request builder. Before the fix this assertion fails because `response_format` is `undefined`
+  (verified directly, see below); after the fix it is the exact governed schema.
+- **Post-correction real-runtime evidence:** Pending — deferred to the coordinator's final real
+  LM Studio acceptance step (this artifact's "Final real LM Studio acceptance" section). No live
+  LM Studio endpoint is available in this worktree; nothing here fabricates that check.
 
 | Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
 | --- | --- | --- | --- |
-| Pending | Pending | Pending | Pending |
+| `services/serial-ai-model-lane/index.mjs` | `requestConfiguredModel`'s `openai-compatible` branch is the exact function production inspection (this artifact, "Real-work evidence baseline") named as building the body LM Studio received without `response_format`. | Add `response_format` to the OpenAI-compatible HTTP body, gated by the existing `isScribeBatchRequest(request)` predicate, plus the new `scribeBatchResponseFormat()` helper. | Only Scribe batch OpenAI-compatible requests now ask the provider for enforced `json_schema` output; every other request body (legacy extraction, classification, ollama, provider-neutral-json) is byte-identical to before. |
+| `contracts/model-protocol.mjs` | This is the sole existing home of the governed Scribe batch response shape (`SCRIBE_BATCH_PROTOCOL_VERSION`, `SCRIBE_ITEM_KINDS`, `EXTRACTION_BATCH_OUTPUT_LIMITS`, `validateScribeBatchModelResponse`) that `services/serial-ai-model-lane/index.mjs` already imports from — the smallest shared helper location the ticket's ownership names. | Add `SCRIBE_BATCH_RESPONSE_JSON_SCHEMA`, a JSON Schema description derived from those same constants, for the model lane to hand to the provider. | A new, additive export; no existing export, validator, or fixture changed. |
+| `tests/scribe-structured-response.test.mjs` (new) | N/A — new focused test file. | Prove the Scribe-only `response_format` addition, prove a valid structured response still passes `validateScribeBatchModelResponse`, and prove legacy extraction/classification/provider-neutral-json/ollama bodies are unaffected. | Four passing focused tests; the first was confirmed failing against the pre-change code (see Verification). |
 
 | Verification | Command or evidence source | Result |
 | --- | --- | --- |
-| Focused regression | Pending | Pending |
-| Complete suite | Pending | Pending |
-| Syntax/diff | Pending | Pending |
-| Push/worktree | Pending | Pending |
+| Pre-fix regression check | `git stash push -u` the production diff, then `node --test tests/scribe-structured-response.test.mjs` | First test failed exactly as expected: `AssertionError`, `actual: undefined` vs `expected: { type: 'json_schema', ... }` on `sentBody.response_format` — confirms the regression enters the real pre-fix defect, not a fabricated side path. Change restored via `git stash apply`/`git stash drop` afterward. |
+| Focused regression | `node --test tests/scribe-structured-response.test.mjs` | 4 pass, 0 fail. |
+| Focused model-lane/Scribe suites | `node --test tests/phase5b-model-adapter.test.mjs tests/scribe-model-extraction.test.mjs tests/scribe-contracts.test.mjs tests/contract-governance.test.mjs` | 87 pass, 0 fail. |
+| Complete suite | `npm test` (`node --test tests/*.test.mjs`) | 389 pass, 7 skipped (pre-existing `tests/scribe-real-acceptance.test.mjs` live-LM-Studio-only tests, unrelated to this change), 0 fail. |
+| Syntax | `node --check contracts/model-protocol.mjs`, `node --check services/serial-ai-model-lane/index.mjs`, `node --check tests/scribe-structured-response.test.mjs` | All pass. |
+| Diff whitespace | `git diff --check` | Clean. |
+| Push/worktree | `git status` clean after commit; branch `agent/scribe-structured-response` created from `origin/main` at `89a9f66`; push attempted, see chat pointer for result | Recorded after commit |
 
-- **Remaining acceptance or limitation:** Pending
+- **Remaining acceptance or limitation:** Real LM Studio runtime acceptance (does LM Studio
+  actually honor `response_format` for this model/config, and does it reduce the observed fenced-
+  response rate) is pending and explicitly deferred to the coordinator's final acceptance step —
+  no live provider was available in this worktree. SCRIBE-07B (response-content fenced-JSON
+  compatibility) is intentionally out of scope here and remains a separate, subsequent failure
+  mode: a fenced response is now less likely but not yet structurally impossible to receive from
+  an OpenAI-compatible provider that only partially honors `strict` structured output.
 
 #### Review record
 

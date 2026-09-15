@@ -1,6 +1,6 @@
 import { SerialAiScheduler } from '../../runtime/serial-ai-scheduler.mjs';
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
-import { SCRIBE_BATCH_PROTOCOL_VERSION, assertPurposeMatchesWorkload, fingerprintModelRequest, validateModelRequest, validateModelResponse, validateScribeBatchModelRequest, validateScribeBatchModelResponse } from '../../contracts/model-protocol.mjs';
+import { SCRIBE_BATCH_PROTOCOL_VERSION, SCRIBE_BATCH_RESPONSE_JSON_SCHEMA, assertPurposeMatchesWorkload, fingerprintModelRequest, validateModelRequest, validateModelResponse, validateScribeBatchModelRequest, validateScribeBatchModelResponse } from '../../contracts/model-protocol.mjs';
 import { scribeBatchInstruction } from '../../contracts/scribe-instruction.mjs';
 import { normalizeModelProviderSettings, readRuntimeModelConfig } from './model-config.mjs';
 
@@ -173,7 +173,12 @@ async function requestConfiguredModel(runtime, request) {
       stream: false,
       temperature: 0,
       max_tokens: request.limits.max_output_tokens,
-      messages: [{ role: 'system', content: modelInstruction(request) }, { role: 'user', content: JSON.stringify(request) }]
+      messages: [{ role: 'system', content: modelInstruction(request) }, { role: 'user', content: JSON.stringify(request) }],
+      // Only the Scribe batch protocol asks the provider to enforce its governed JSON shape.
+      // Every other OpenAI-compatible workload (legacy extraction, classification enrichment)
+      // keeps exactly the body it already sent; `validateScribeBatchModelResponse` remains the
+      // authority on the parsed response either way (SCRIBE-07A).
+      ...(isScribeBatchRequest(request) ? { response_format: scribeBatchResponseFormat() } : {})
     } : request;
     const headers = { 'content-type': 'application/json' };
     if (runtime.credential) headers.authorization = `Bearer ${runtime.credential}`;
@@ -205,6 +210,18 @@ async function requestConfiguredModel(runtime, request) {
 /** A batch-shaped Scribe extraction request, distinguished only by its explicit protocol version. */
 function isScribeBatchRequest(request) {
   return request?.protocol_version === SCRIBE_BATCH_PROTOCOL_VERSION;
+}
+
+/**
+ * OpenAI-compatible structured-output transport option for a Scribe batch request only. The
+ * schema is the shared, already-governed `SCRIBE_BATCH_RESPONSE_JSON_SCHEMA` (contracts/
+ * model-protocol.mjs) - not a second, competing response contract - and `strict: true` asks the
+ * provider to enforce it at generation time. Provider enforcement is a supplement: after parsing,
+ * `validateScribeBatchModelResponse` still performs the full identity, provenance, limit, and
+ * exact-batch-comparison checks this schema cannot express.
+ */
+function scribeBatchResponseFormat() {
+  return { type: 'json_schema', json_schema: { name: 'scribe_batch_response', strict: true, schema: SCRIBE_BATCH_RESPONSE_JSON_SCHEMA } };
 }
 
 /**
