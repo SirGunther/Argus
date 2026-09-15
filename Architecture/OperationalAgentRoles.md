@@ -31,7 +31,9 @@ Scribe is the only one of these three roles currently in implementation scope. I
 
 The Scribe pipeline is implemented end to end and is proven against a real LM Studio model for admission, bounded stateless requests, zero-item and multiple-item outcomes, failure retention, and catch-up across inferences far longer than the wire admission deadline. Evidence and the remaining user acceptance are in [`docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md`](../docs/validation/SCRIBE-ACCEPTANCE-VALIDATION.md).
 
-One open defect sits at the session-start seam: the host publishes the session policy twice, producing a duplicate `scribe.recovery-request` under one idempotency key. The duplicate is confirmed; its impact is not established, and a real desktop session recorded Logged Items normally. See [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](../docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md).
+### SCRIBE-06B correction (2026-09-13)
+
+The session-start seam previously described here is resolved. The host publishes a session's Scribe policy twice at session start (once from its guidance snapshot, once from the `session.recorded`/`resumed` lifecycle outcome); the coordinator's `recoveryRequest` now emits at most one outstanding recovery request per session while unrecovered, so the second byte-identical replay is silently absorbed instead of manufacturing a second logical request under a different causation. Proven at the coordinator level and through the real `DesktopApplication` session-start sequence, including that recovery completes and finalized evidence is admitted and produces a stored Logged Item afterward. See [`docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md`](../docs/incidents/2026-09-12-scribe-session-start-recovery-conflict.md) for the resolved record.
 
 Assistant and Actor remain reserved with no runtime, model, tool, permission, or side effect. Acceptance confirmed this rather than assuming it: nothing in the observed message traffic originated from either role.
 

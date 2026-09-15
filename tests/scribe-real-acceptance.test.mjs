@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,7 @@ import test, { after } from 'node:test';
 import { DesktopApplication } from '../runtime/desktop-application.mjs';
 import { startRealScribeHarness } from './helpers/real-scribe-harness.mjs';
 import { startRecordingModelProxy } from './helpers/recording-model-proxy.mjs';
+import { startScribeBatchModelEndpoint } from './helpers/scribe-batch-model-endpoint.mjs';
 
 /**
  * SCRIBE-06 acceptance coverage against a REAL model provider.
@@ -61,37 +62,72 @@ after(async () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// The defect SCRIBE-06 acceptance found. Marked `todo` because it fails on `origin/main` at
-// 5dbeae3 and SCRIBE-06 owns no production file that could fix it - not because the expectation is
-// uncertain. `node --test` reports a todo separately from a failure, so the assertion below stays
-// in the suite as the executable statement of correct behavior without falsifying the gate result.
+// SCRIBE-06B. Formerly a `todo` recording a confirmed defect: `DesktopApplication` published a
+// session's Scribe policy twice at session start - once from `configureScribeGuidance`
+// (desktop-application.mjs:600, unconditional, before the command is dispatched) and once from the
+// `session.recorded` lifecycle outcome. The coordinator emitted `scribe.recovery-request` for each,
+// and its identity key (scribe-coordinator/index.mjs:101) covers only boot id, session, policy id
+// and policy version - so both carried one key. The semantic fingerprint (message-identity.mjs:53)
+// includes `causation_id`, which differed, so the second output was rejected with
+// IDEMPOTENCY_KEY_CONFLICT.
 //
-// What it asserts: `DesktopApplication` publishes a session's Scribe policy twice at session start
-// - once from `configureScribeGuidance` (desktop-application.mjs:600, unconditional, before the
-// command is dispatched) and once from the `session.recorded` lifecycle outcome. The coordinator
-// emits `scribe.recovery-request` for each, and its identity key (scribe-coordinator/index.mjs:101)
-// covers only boot id, session, policy id and policy version - so both carry one key. The semantic
-// fingerprint (message-identity.mjs:53) includes `causation_id`, which differs. The second output
-// is therefore rejected with IDEMPOTENCY_KEY_CONFLICT. This test deliberately proves only that
-// duplicate emission; its effect on later Scribe processing is not established.
+// Fixed in `services/scribe-coordinator/coordinator.mjs`: `recoveryRequest` now emits at most one
+// outstanding request per session while unrecovered (`state.recoveryRequested`), so a second replay
+// of byte-identical policy content is silently absorbed instead of manufacturing a second logical
+// request under a different causation. The coordinator-level proof of that, including that a
+// distinct session is unaffected, is in `tests/scribe-coordinator.test.mjs`.
+//
+// This test proves the same thing through the real host sequence, and further proves recovery
+// actually completes and finalized evidence is admitted afterward - the two things a duplicate
+// recovery-request could otherwise still silently prevent even if the request count were merely
+// hidden rather than fixed. The only substitution is Whisper, replaced by the same injected
+// `transcript.word-committed`/`transcript.utterance-boundary` traffic used throughout this test
+// file's other scenarios; that is the physical-microphone boundary, not a change to how Whisper,
+// audio, prompting, batching, or the graph's other wiring behaves.
 //
 // Bisected: 9973a47 (pre-SCRIBE-05B) emits one recovery request and no failure; eebc74f introduces
 // the second publication.
-test('the host publishes one session-start recovery request, not two under one key', {
-  todo: 'fails on origin/main 5dbeae3; SCRIBE-05B regression, production fix is outside SCRIBE-06 ownership',
+test('the host publishes one session-start recovery request, recovers, and admits evidence', {
   skip: OPTED_IN ? false : OPT_IN_NOTE,
   timeout: 120000
 }, async () => {
-  const sessionRoot = path.join(os.tmpdir(), `argus-host-acceptance-${Math.random().toString(36).slice(2, 8)}`);
-  const application = new DesktopApplication({ root, graphFile: path.join(root, 'wiring', 'production-electron.json'), sessionRoot });
+  const base = await mkdtemp(path.join(os.tmpdir(), 'argus-host-acceptance-'));
+  const sessionRoot = path.join(base, 'sessions');
+  const graphFile = path.join(base, 'graph.json');
+  await writeWhisperSubstitutedGraph(graphFile);
+  // A non-empty reply, not just `items: []`: the checklist item is "admitted after recovery and
+  // CAN PRODUCE Logged Items", which an always-empty batch would not actually demonstrate.
+  const endpoint = await startScribeBatchModelEndpoint({
+    reply: (request) => {
+      const segmentId = request?.new_evidence_segments?.[0]?.segment_id;
+      return segmentId ? { items: [{ text: 'A decision was made.', kind: 'decision', source_segment_ids: [segmentId] }] } : { items: [] };
+    }
+  });
+  process.env.ARGUS_MODEL_ENDPOINT = endpoint.url;
+  process.env.ARGUS_MODEL_NAME = 'scribe-06b-regression-model';
+  process.env.ARGUS_MODEL_PROTOCOL = 'openai-compatible';
+  process.env.ARGUS_MODEL_TIMEOUT_MS = '30000';
+  const application = new DesktopApplication({ root, graphFile, sessionRoot });
   const recoveryRequests = [];
   const failures = [];
+  const admitted = [];
+  const evaluated = [];
+  const stored = [];
   await application.start();
   const graph = application.graph;
   const priorOnMessage = graph.onMessage?.bind(graph);
+  // The interactive runner reports one line once when it is emitted and again when it reaches a
+  // result-collector; the desktop host dedupes by message id, so this observer does too.
+  const seen = new Set();
   graph.onMessage = (message) => {
-    if (message.message_type === 'scribe.recovery-request') recoveryRequests.push(message);
-    if (message.message_type === 'service.failure') failures.push(message.payload?.error?.message || 'failure');
+    if (!seen.has(message.message_id)) {
+      seen.add(message.message_id);
+      if (message.message_type === 'scribe.recovery-request') recoveryRequests.push(message);
+      if (message.message_type === 'scribe.batch-admitted') admitted.push(message);
+      if (message.message_type === 'scribe.batch-evaluated') evaluated.push(message);
+      if (message.message_type === 'logged-item.stored') stored.push(message);
+      if (message.message_type === 'service.failure') failures.push(message.payload?.error?.message || 'failure');
+    }
     return priorOnMessage?.(message);
   };
   const priorOnStatus = graph.onStatus?.bind(graph);
@@ -106,17 +142,58 @@ test('the host publishes one session-start recovery request, not two under one k
 
     const keys = new Set(recoveryRequests.map((message) => message.idempotency_key));
     const causations = new Set(recoveryRequests.map((message) => message.causation_id));
+    assert.deepEqual([...new Set(failures)], [], 'starting a session must raise no service failure');
+    assert.equal(recoveryRequests.length, 1, 'one session start is one recovery request');
+    assert.equal(keys.size, recoveryRequests.length, 'no two recovery requests may share an identity key');
+    assert.equal(causations.size, 1, 'exactly one causing message produced the one request');
+
+    // The checklist item a bare request-count assertion cannot cover: recovery actually completed,
+    // so real finalized rows are admitted and produce a settled Scribe evaluation.
+    const sessionId = application.sessionId;
+    // Word sequences are one contiguous per-session stream (OrderedStreamGuard); a per-row
+    // numbering scheme is rejected with SEQUENCE_GAP exactly as a dropped Whisper word would be.
+    let nextSequence = 0;
+    for (const [index, text] of ['First finalized row.', 'Second finalized row.', 'Third finalized row.'].entries()) {
+      const words = text.split(' ');
+      const utteranceId = `${sessionId}-utterance-${index}`;
+      const first = nextSequence;
+      for (const word of words) {
+        const sequence = nextSequence;
+        nextSequence += 1;
+        await graph.dispatchFrom('@desktop-controller', 'domain', 'transcript.word-committed', sessionId, {
+          word_id: `${sessionId}-word-${sequence}`, session_id: sessionId, utterance_id: utteranceId, sequence,
+          start_time: `00:00:${String(sequence).padStart(2, '0')}.000`, end_time: `00:00:${String(sequence + 1).padStart(2, '0')}.000`,
+          text: word, confidence: 0.97, evidence: { provider: 'scribe-06b-injected-speech', chunk_ids: [`${sessionId}-chunk-${sequence}`], alternatives: [] }
+        }, `word:${sessionId}:${sequence}`);
+      }
+      const last = nextSequence - 1;
+      await graph.dispatchFrom('@desktop-controller', 'domain', 'transcript.utterance-boundary', sessionId, {
+        boundary_id: `${utteranceId}-boundary`, session_id: sessionId, utterance_id: utteranceId, reason: 'pause',
+        first_word_sequence: first, last_word_sequence: last,
+        start_time: `00:00:${String(first).padStart(2, '0')}.000`, end_time: `00:00:${String(last + 1).padStart(2, '0')}.000`,
+        punctuation_hint: 'statement', source_chunk_ids: words.map((_, offset) => `${sessionId}-chunk-${first + offset}`)
+      }, `boundary:${sessionId}:${index}`);
+    }
+    const deadline = Date.now() + 30000;
+    while (evaluated.length < 1 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+
     evidence.scenarios.host_session_start = {
       recovery_request_count: recoveryRequests.length,
       distinct_idempotency_keys: keys.size,
       distinct_causation_ids: causations.size,
-      failures: [...new Set(failures)]
+      failures: [...new Set(failures)],
+      rows_admitted_after_recovery: admitted.length,
+      batches_evaluated_after_recovery: evaluated.length,
+      logged_items_stored_after_recovery: stored.length
     };
-    assert.deepEqual([...new Set(failures)], [], 'starting a session must raise no service failure');
-    assert.equal(recoveryRequests.length, 1, 'one session start is one recovery request');
-    assert.equal(keys.size, recoveryRequests.length, 'no two recovery requests may share an identity key');
+    assert.equal(admitted.length, 1, 'the three finalized rows are admitted as one batch once recovery has completed');
+    assert.equal(evaluated.length, 1, 'the admitted batch settles - recovery did not leave Scribe stuck refusing evidence');
+    assert.equal(stored.length, 1, 'the batch not only settles but produces a stored Logged Item once recovery has completed');
+    assert.deepEqual([...new Set(failures)], [], 'admission and settlement must not raise a service failure either');
   } finally {
     await application.shutdown().catch(() => {});
+    await endpoint.close();
+    await rm(base, { recursive: true, force: true }).catch(() => {});
   }
 });
 
@@ -375,6 +452,36 @@ function describeFailure(failure) {
 function admissionDeadlineOf(definition) {
   const wire = definition.control_wires.find((candidate) => candidate.from === 'log-extractor' && candidate.to === 'model-lane' && candidate.contract === 'ai.work-request');
   return wire?.delivery?.operation_timeout_ms;
+}
+
+/**
+ * The unmodified `wiring/production-electron.json` with exactly one substitution: Whisper replaced
+ * by letting `@desktop-controller` emit the same `transcript.word-committed` and
+ * `transcript.utterance-boundary` traffic Whisper emits. This is the same technique
+ * `tests/helpers/real-scribe-harness.mjs` uses for its graph-level scenarios; here it is applied so
+ * a `DesktopApplication`-driven test can prove the real host session-start sequence without a
+ * physical microphone. Nothing about Whisper, audio, prompting, batching, or any other production
+ * wiring is changed - the admission policy, idle threshold, and admission deadline are left exactly
+ * as configured in the real file.
+ */
+async function writeWhisperSubstitutedGraph(graphFile) {
+  const definition = JSON.parse(await readFile(path.join(root, 'wiring', 'production-electron.json'), 'utf8'));
+  definition.name = 'argus-scribe-06b-host-regression';
+  definition.contracts = path.join(root, 'contracts', 'catalog.json');
+  definition.services = definition.services
+    .filter((service) => service.id !== 'speech-to-text')
+    .map((service) => ({ ...service, manifest: path.resolve(root, 'wiring', service.manifest) }));
+  const controller = definition.runtime_components.find((component) => component.id === '@desktop-controller');
+  controller.ports.domain.emits = ['transcript.word-committed', 'transcript.utterance-boundary', 'transcript.segment-update', 'logged-item.update'];
+  const removed = (wire) => wire.from === 'speech-to-text' || wire.to === 'speech-to-text';
+  definition.domain_wires = definition.domain_wires.filter((wire) => !removed(wire));
+  definition.control_wires = definition.control_wires.filter((wire) => !removed(wire));
+  definition.domain_wires.unshift(
+    { from: '@desktop-controller', contract: 'transcript.word-committed', to: 'active-transcript' },
+    { from: '@desktop-controller', contract: 'transcript.utterance-boundary', to: 'active-transcript' }
+  );
+  await writeFile(graphFile, JSON.stringify(definition, null, 2), 'utf8');
+  return definition;
 }
 
 async function probeProvider() {
