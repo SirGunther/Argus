@@ -55,10 +55,11 @@ live in `contracts/model-protocol.mjs`: `SCRIBE_BATCH_PROTOCOL_VERSION` (`"2.0.0
   just well-formed). SCRIBE-04B implements the runtime comparison against the exact retained
   request fingerprint, nested result work ID, full response identity, and coordinator
   `batch_attempt`. A mismatch does not delete or replace retained work.
-- **Idle timer and 8,000-token accounting**: `scribe.batch-policy` carries the
+- **Idle timer and 16,384-token accounting**: `scribe.batch-policy` carries the
   governed defaults (`rows_per_batch: 3`, `idle_timeout_ms: 15000`,
-  `max_total_context_tokens: 8000`). The coordinator implements the single idle timer and
-  ordered recovery; extraction implements serialized request accounting and bounded rollover.
+  `max_total_context_tokens: 16384`, accepted SCRIBE-07C for a 32,000-token model context
+  window). The coordinator implements the single idle timer and ordered recovery; extraction
+  implements serialized request accounting and bounded rollover.
 - **Durable file I/O**: `scribe_checkpoint` (versioned snapshot, atomic
   replace-by-rename per ADR-015's existing pattern) and `scribe_batch_journal_entry`
   (one NDJSON line per evaluated batch, append-only) are implemented by SCRIBE-03. The

@@ -27,7 +27,7 @@ test('production graph configures the governed Scribe defaults without coupling 
   const definition = JSON.parse(await readFile(productionGraphFile, 'utf8'));
   const policy = definition.run.configuration.scribe_policy;
   assert.deepEqual(policy.admission, { rows_per_batch: 3, idle_timeout_ms: 15000 });
-  assert.deepEqual(policy.context, { max_total_context_tokens: 8000 });
+  assert.deepEqual(policy.context, { max_total_context_tokens: 16384 });
   // 1.1.0 is the first instruction whose wording ranks optional user guidance below the governed
   // role, schema, provenance, and ownership rules, so it is the version this graph prompts under.
   assert.equal(policy.generation.instruction_version, '1.1.0');

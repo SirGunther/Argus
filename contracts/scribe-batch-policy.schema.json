@@ -19,7 +19,7 @@
       "type": "object",
       "required": ["max_total_context_tokens"],
       "properties": {
-        "max_total_context_tokens": { "type": "integer", "minimum": 256, "maximum": 32000, "default": 8000 }
+        "max_total_context_tokens": { "type": "integer", "minimum": 256, "maximum": 32000, "default": 16384 }
       },
       "additionalProperties": false
     },

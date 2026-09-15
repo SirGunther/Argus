@@ -629,30 +629,158 @@ agent chat.
 
 #### Implementation record
 
-- **Status:** Not started
-- **Starting `origin/main` SHA:** Pending
+- **Status:** Implemented, awaiting review
+- **Starting SHA:** `050887a` — this is **SCRIBE-07B's branch tip** (`agent/scribe-json-fence-compatibility`),
+  not `origin/main` directly, per the coordinator's chaining instruction (`origin/main` under it is
+  `89a9f66d02c7c36a56a04c70ee5f1bb87b3e5da3`, which already includes merged SCRIBE-06B; SCRIBE-07A's
+  tip is `4a3d963e9cf4fc9b8799e127eaed49bf08f36230` and SCRIBE-07B's tip/full SHA is
+  `8facffdd7b7eef1ceaaba7b9af6a63faaf430729`, both already in this branch's history).
 - **Branch:** `agent/scribe-context-budget`
-- **Full implementation SHA:** Pending
-- **WHY:** Pending
-- **HOW:** Pending
-- **WHAT:** Pending
-- **Real-work failure evidence:** Pending
-- **Production path trace:** Pending
-- **Why the regression represents that production failure:** Pending
-- **Post-correction real-runtime evidence:** Pending
+- **Full implementation SHA:** recorded below after commit (see Push/worktree row).
+- **WHY:** The real-work baseline (this artifact, "Real-work evidence baseline") measured LM Studio
+  `prompt_tokens: 9334` and `prompt_tokens: 9288` for stateless Scribe batch requests against a
+  model configured with a 32,000-token context window, while the configured production budget was
+  only ~8,000 tokens end to end: `wiring/production-electron.json`'s
+  `run.configuration.scribe_policy.context.max_total_context_tokens` was `8000`, the coordinator's
+  own fallback `DEFAULT_POLICY.context.max_total_context_tokens`
+  (`services/scribe-coordinator/coordinator.mjs`) was `8000`, the extraction boundary's exported
+  `SCRIBE_POLICY_DEFAULT_TOTAL_CONTEXT_TOKENS`
+  (`services/log-extractor-local-http/scribe-batch-boundary.mjs`) was `8000`, and the governed
+  policy schema's declared default (`contracts/scribe-batch-policy.schema.json`,
+  `context.max_total_context_tokens.default`) was also `8000`. The accepted operating profile
+  formalizes a single 16,384-token budget across every one of those four locations, plus the
+  governed batch output ceilings (`EXTRACTION_BATCH_OUTPUT_LIMITS` in `contracts/model-protocol.mjs`)
+  at exactly `max_items: 8`, `max_item_chars: 512`, `max_output_chars: 4096`, `max_output_tokens: 2048`.
+- **HOW:** No new budget-assembly or retention mechanism was introduced. The narrowest correct seam
+  is the existing, single set of governed constants that `buildScribeBatchRequest`
+  (`services/log-extractor-local-http/scribe-batch-boundary.mjs`) and the coordinator's bounded
+  background retention (`services/scribe-coordinator/coordinator.mjs`,
+  `MAX_BACKGROUND_TRANSCRIPT_SEGMENTS = 48`, `MAX_BACKGROUND_LOGGED_ITEMS = 64`, both left unchanged
+  and unbounded-checked) already read: `EXTRACTION_BATCH_OUTPUT_LIMITS` in
+  `contracts/model-protocol.mjs`, `SCRIBE_POLICY_DEFAULT_TOTAL_CONTEXT_TOKENS` in the extraction
+  boundary, the coordinator's `DEFAULT_POLICY`, the production graph's
+  `wiring/production-electron.json` policy configuration, and the governed
+  `contracts/scribe-batch-policy.schema.json` default. Each of the four token-budget locations and
+  the batch output-limit constant were updated to the exact accepted numeric values; the mandatory
+  floor, oldest-unit-first rollover (transcript before Logged Items), and chronological-order
+  preservation logic already inside `buildScribeBatchRequest` were read and left completely
+  unmodified, since they are budget-value-agnostic and already implement the accepted priority
+  rule.
+- **WHAT:** Different: every governed Scribe context/output-limit default is now `16384` /
+  `{max_items: 8, max_item_chars: 512, max_output_chars: 4096, max_output_tokens: 2048}` instead of
+  `8000` / `{..., max_output_chars: 2048, max_output_tokens: 512}`. Preserved: statelessness, the
+  three-row batching threshold, the 15-second idle admission, the coordinator's bounded background
+  retention ceilings (48/64, unchanged), the mandatory floor (protected instruction/schema +
+  optional immutable guidance + complete new evidence + identity + output reserve must fit or the
+  dispatch fails visibly), oldest-complete-unit-first rollover with transcript exhausted before any
+  Logged Item is touched, chronological ordering of surviving background, and the provider-neutral
+  `estimateModelTokens` (`ceil(text.length / 4)`) — untouched, no defect found in it, no
+  LM-Studio-specific tokenizer added.
+- **Real-work failure evidence:** The `2026-09-15 17:19:40` (`prompt_tokens: 9334`) and
+  `2026-09-15 17:20:17` (`prompt_tokens: 9288`) real LM Studio requests recorded in this artifact's
+  "Real-work evidence baseline", both measured against a model configured with a 32,000-token
+  context window while every governed production budget was ~8,000 tokens.
+- **Production path trace:** `wiring/production-electron.json` →
+  `run.configuration.scribe_policy.context.max_total_context_tokens` (the real production graph's
+  configured budget, read by `tests/scribe-production-integration.test.mjs`) →
+  `services/scribe-coordinator/coordinator.mjs` (`DEFAULT_POLICY`, the coordinator's own fallback
+  when no policy is yet configured for a session, and `MAX_BACKGROUND_TRANSCRIPT_SEGMENTS` /
+  `MAX_BACKGROUND_LOGGED_ITEMS`, the bounded retention the extraction boundary's background pool is
+  built from) → `services/log-extractor-local-http/scribe-batch-boundary.mjs`
+  (`SCRIBE_POLICY_DEFAULT_TOTAL_CONTEXT_TOKENS`, `buildScribeBatchRequest`'s mandatory-floor and
+  oldest-unit-first rollover loop, which is the same production function every real Scribe dispatch
+  calls) → `contracts/model-protocol.mjs` (`EXTRACTION_BATCH_OUTPUT_LIMITS`, the output reserve
+  `buildScribeBatchRequest` subtracts from the budget and the ceiling
+  `validateScribeBatchModelResponse` enforces on every real model response) →
+  `contracts/scribe-batch-policy.schema.json` (the governed contract declaring the accepted
+  default for any policy source that omits an explicit value).
+- **Why the regression represents that production failure:** The new focused test file
+  `tests/scribe-context-budget.test.mjs` reads the actual `wiring/production-electron.json` file
+  and the actual `contracts/scribe-batch-policy.schema.json` file from disk (not a copied fixture)
+  and imports the real `SCRIBE_POLICY_DEFAULT_TOTAL_CONTEXT_TOKENS` and
+  `EXTRACTION_BATCH_OUTPUT_LIMITS` exports directly from the production modules
+  `buildScribeBatchRequest` and `validateScribeBatchModelResponse` are built from - the same symbols
+  those production functions read, not a reimplementation. Its second test constructs the
+  coordinator's own real bounded worst-case background shape (48 transcript segments, 64 prior
+  Logged Items - `services/scribe-coordinator/coordinator.mjs`'s own
+  `MAX_BACKGROUND_TRANSCRIPT_SEGMENTS`/`MAX_BACKGROUND_LOGGED_ITEMS` ceilings) and dispatches it
+  through the real `buildScribeBatchRequest`, first at the prior `8000`-token default (proving that
+  budget was too small to hold the bounded worst case without rolling background off - the same
+  failure mechanism the real 9,334/9,288-token requests hit) and then at the formalized `16384`
+  default (proving the same batch now fits with zero rollover). A third test drives an over-budget
+  new-evidence batch through the real mandatory-floor check at the literal `16384` default and
+  asserts the exact `SCRIBE_BATCH_BUDGET_EXCEEDED` failure message, including "governed budget is
+  16384".
+- **Post-correction real-runtime evidence:** Pending — deferred to the coordinator's final real LM
+  Studio acceptance step (this artifact's "Final real LM Studio acceptance" section), same as
+  SCRIBE-07A/07B. No live LM Studio endpoint is available in this worktree; nothing here fabricates
+  that check. In particular, whether the real 32K-context model's actual `prompt_tokens` for a
+  worst-case bounded batch (48/64 background) lands safely under 16,384 in practice - not merely
+  under Argus's provider-neutral `ceil(chars/4)` estimate - can only be confirmed against a live
+  provider.
 
 | Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
 | --- | --- | --- | --- |
+| `contracts/model-protocol.mjs` | Sole existing home of `EXTRACTION_BATCH_OUTPUT_LIMITS`, the governed batch output ceilings `buildScribeBatchRequest`'s output reserve and `validateScribeBatchModelResponse`'s response validation both read. | `max_output_chars` 2048→4096, `max_output_tokens` 512→2048 (the ticket's accepted exact values); `max_items`/`max_item_chars` were already 8/512 and are unchanged. Stale `~8000-token policy budget` comment reworded to the accepted 16,384 figure. | Every Scribe batch output-limit consumer (instruction text, structured-output JSON schema, response validator, extraction boundary's output reserve) now enforces the accepted ceilings via the one shared constant; no second limits constant was introduced. |
+| `services/log-extractor-local-http/scribe-batch-boundary.mjs` | Owns `SCRIBE_POLICY_DEFAULT_TOTAL_CONTEXT_TOKENS`, the extraction boundary's own governed default, and `buildScribeBatchRequest`, the real production request-assembly function the real 9,334/9,288-token requests traversed. | Default token budget 8000→16384; stale `~8,000-token policy` comment on the `total_tokens` budget field reworded to reference the accepted 16,384 figure (SCRIBE-07C). | Any caller that does not supply an explicit policy total now gets the formalized 16,384-token default; the mandatory-floor, oldest-unit-first rollover, and serialized-request accounting logic are untouched. |
+| `services/scribe-coordinator/coordinator.mjs` | Owns `DEFAULT_POLICY`, the coordinator's own fallback Scribe policy used before an explicit `scribe.batch-policy` is configured for a session. | `context.max_total_context_tokens` 8000→16384, matching every other governed default. | The coordinator's fallback policy (rarely exercised in production, since `wiring/production-electron.json` always configures an explicit policy first) is no longer a stale 8,000-token value; `MAX_BACKGROUND_TRANSCRIPT_SEGMENTS`/`MAX_BACKGROUND_LOGGED_ITEMS` (48/64) are explicitly unchanged and still bound retention. |
+| `wiring/production-electron.json` | The actual production Electron graph configuration; `tests/scribe-production-integration.test.mjs` reads this exact file to assert the real production Scribe defaults. | `run.configuration.scribe_policy.context.max_total_context_tokens` 8000→16384 (the ticket's accepted production default). | The real production graph now dispatches every Scribe batch under the formalized 16,384-token budget instead of the stale ~8,000-token one. |
+| `contracts/scribe-batch-policy.schema.json` | The governed contract schema declaring `context.max_total_context_tokens`'s accepted default (`minimum: 256`, `maximum: 32000`). | `default` 8000→16384, matching the other three governed default locations. | Any policy source that omits an explicit `max_total_context_tokens` (and is validated against this schema) now defaults to the accepted 16,384, not the stale 8,000; `minimum`/`maximum` bounds (unrelated to this ticket) are unchanged. |
+| `contracts/scribe-contract-handoff.md` | Directly corresponding Scribe documentation describing the governed policy defaults (`rows_per_batch`, `idle_timeout_ms`, `max_total_context_tokens`) for implementers of SCRIBE-02/03/04. | Reworded the "Idle timer and 8,000-token accounting" heading/prose to the accepted "16,384-token accounting", citing SCRIBE-07C. | Documentation no longer describes 8,000 as the current governed default; the `limits` construction description elsewhere in the same file (extraction-boundary-owned, no literal number) is unchanged. |
+| `tests/scribe-production-integration.test.mjs` | Asserts `policy.context` read directly from `wiring/production-electron.json`'s real production graph. | Updated expected `max_total_context_tokens` 8000→16384 to match the corrected production wiring; otherwise this test is unrelated to SCRIBE-07C and untouched. | The real production-graph integration test continues to pass against the corrected, formalized default instead of asserting the stale one. |
+| `tests/scribe-model-extraction.test.mjs` | Owns the existing focused budget/rollover/mandatory-floor tests for `buildScribeBatchRequest`, all parameterized by the shared `EXTRACTION_BATCH_OUTPUT_LIMITS` constant. | (1) Reworded three comments/titles that called this test file's own arbitrary 8,000-token *test* fixture budget "the governed default", since the real governed default is now a different, formalized 16,384 (the test's own budget is intentionally left at 8,000 as a stable arbitrary fixture value, not tied to production). (2) The pre-existing "oversized batch output" failure case is no longer reachable now that `max_output_chars` (4096) exactly equals `max_items * max_item_chars` (8 * 512 = 4096) — a response respecting the per-item and item-count ceilings can never independently exceed the total-character ceiling anymore. Removed that unreachable case (with an explanatory comment) and added a new passing-side test proving the exact per-item/per-count ceiling (8 items at 512 chars each = 4096 total chars) is accepted, not rejected. (3) The pre-existing mandatory-floor guidance test in `scribe-user-guidance.test.mjs` (see below) needed the same output-reserve-constant fix; noted together here since both stem from the same `max_output_tokens` 512→2048 change. | Focused budget/rollover/mandatory-floor coverage for `buildScribeBatchRequest` continues to pass and accurately reflects the new governed constants; the now-provably-unreachable total-character-ceiling failure case was replaced with an accurate boundary-acceptance test instead of silently left to fail or silently deleted without explanation. |
+| `tests/scribe-user-guidance.test.mjs` | Owns the mandatory-floor guidance test, which hard-coded the prior `max_output_tokens` value (512) inline to compute a budget that fits the instruction and output reserve but not evidence/guidance. | Replaced the hard-coded `512` with `EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens` (now 2048), and reworded one stale `~8,000-token policy` comment to clarify it is this test's own fixture budget, not the current production default. | The mandatory-floor rejection test again reaches the intended `SCRIBE_BATCH_BUDGET_EXCEEDED` / "guidance are never truncated" branch instead of failing one check earlier at the output-reserve branch, which is what the output-limit constant change had shifted it into. |
+| `tests/scribe-context-budget.test.mjs` (new) | N/A — new focused test file for SCRIBE-07C. | Added to prove: (1) the four exact accepted defaults are wired into the extraction boundary export, production wiring, the policy schema, and the output limits constant; (2) the coordinator's real bounded worst-case background (48/64) exceeds the prior 8,000-token default (with transcript rolling off before any Logged Item, oldest-first, chronological order preserved, new evidence untouched) but fits the formalized 16,384-token default with zero rollover; (3) mandatory new evidence alone exceeding 16,384 tokens fails visibly with the exact expected message, never silently truncated. | Four new passing focused tests directly tying the real-work 9,334/9,288-token baseline to the corrected, formalized defaults. |
+
+| Verification | Command | Scope | Result | Exception / risk |
+| --- | --- | --- | --- | --- |
+| Focused regression (new) | `node --test tests/scribe-context-budget.test.mjs` | new SCRIBE-07C context-budget tests | 4 pass, 0 fail | — |
+| Focused Scribe/context/coordinator/contract suites | `node --test tests/scribe-context-budget.test.mjs tests/scribe-model-extraction.test.mjs tests/scribe-user-guidance.test.mjs tests/scribe-contracts.test.mjs tests/scribe-coordinator.test.mjs tests/scribe-production-integration.test.mjs tests/scribe-structured-response.test.mjs tests/phase5b-model-adapter.test.mjs tests/scribe-wave2-integration.test.mjs tests/scribe-wave2-reconciliation.test.mjs` | Scribe context/extraction/coordinator/contract path | 167 pass, 0 fail (2 pre-fix failures identified and fixed - see below) | — |
+| Pre-fix regression check (output-limit shift) | Same focused command, run immediately after changing `EXTRACTION_BATCH_OUTPUT_LIMITS` but before updating the two affected tests | `tests/scribe-model-extraction.test.mjs`, `tests/scribe-user-guidance.test.mjs` | 2 failures for the expected reason: the "oversized batch output" case no longer exceeded the new 4096-char ceiling (`max_items * max_item_chars` now equals `max_output_chars` exactly), and the guidance mandatory-floor test's hard-coded `512` output-reserve constant under-computed the new 2048-token reserve, tripping the wrong budget branch. Both fixed as described above; re-run confirmed 0 fail. | Confirms the two test fixes were driven by the real constant change, not speculative edits. |
+| Complete suite | `npm test` (`node --test tests/*.test.mjs`) | whole repository | 401 pass − 7 skipped (pre-existing live-LM-Studio-only tests in `tests/scribe-real-acceptance.test.mjs`, unrelated) = 394 pass, 0 fail | — |
+| Contract docs check | `npm run contracts:docs:check` | `contracts/generated/contract-reference.md` vs `contracts/catalog.json`/schemas | Initially reported stale; regenerating (`npm run contracts:docs`) produced a byte-identical file once CRLF/LF normalization was stripped (`diff` on de-CRLF'd content showed zero lines changed) — a pre-existing Windows line-ending artifact unrelated to this ticket's schema edit, not real content drift. Reverted the regenerated file (`git checkout -- contracts/generated/contract-reference.md`) since it carried no real change. | Pre-existing environment line-ending quirk, not a SCRIBE-07C defect; documented here rather than silently worked around. |
+| Contract governance check | `npm run contracts:check` | all governed contracts | "Contract governance valid for 67 messages." | — |
+| Syntax | `node --check` on every changed `.mjs` production/test file (`contracts/model-protocol.mjs`, `services/log-extractor-local-http/scribe-batch-boundary.mjs`, `services/scribe-coordinator/coordinator.mjs`, `tests/scribe-context-budget.test.mjs`, `tests/scribe-model-extraction.test.mjs`, `tests/scribe-production-integration.test.mjs`, `tests/scribe-user-guidance.test.mjs`) | all changed `.mjs` files | All pass | — |
+| JSON syntax | `node -e` parse of `contracts/scribe-batch-policy.schema.json` and `wiring/production-electron.json` | both changed JSON files | Valid | — |
+| Diff whitespace | `git diff --check` | full worktree diff | Clean | — |
+| Push/worktree | `git status` clean after commit; branch `agent/scribe-context-budget` created from `origin/agent/scribe-json-fence-compatibility` at `050887a`; `git push -u origin agent/scribe-context-budget` | this branch | Recorded after commit/push below | — |
+
+- **Remaining acceptance or limitation:** Real LM Studio runtime acceptance — whether the formalized
+  16,384-token budget and the accepted output limits behave as expected against the real 32K-context
+  model, and whether a real worst-case bounded batch's actual `prompt_tokens` lands safely under
+  16,384 in practice — is pending and explicitly deferred to the coordinator's final acceptance step
+  (this artifact's "Final real LM Studio acceptance" section). No live LM Studio endpoint was
+  available in this worktree.
+
+**Scope-boundary finding (not blocking, recorded per process rules):** The accepted exact values
+`max_items: 8`, `max_item_chars: 512`, `max_output_chars: 4096` make the total-character-ceiling
+check inside `validateScribeBatchModelResponse` (`contracts/model-protocol.mjs`) structurally
+unreachable through item text alone, because the densest possible in-limit response
+(`max_items * max_item_chars` = 8 * 512 = 4096) now lands exactly at, never past, `max_output_chars`
+(this was not true under the prior values, where 8 * 512 = 4096 already exceeded the prior
+`max_output_chars` of 2048). This is not a defect introduced by this ticket — the four numeric
+values are exactly what the ticket's "Decisions already made" section mandates — but it is worth
+the coordinator's awareness: the total-character check remains valid defense-in-depth (e.g. against
+a future independent change to `max_items` or `max_item_chars` without a matching `max_output_chars`
+update) but cannot currently be exercised as an independently-triggerable rejection path. No
+production code was changed to "fix" this, per the instruction not to silently expand scope; the
+affected test case was adjusted to test the now-accepted boundary instead (see the
+`tests/scribe-model-extraction.test.mjs` row above).
+
+#### Review record
+
+- **Review status:** Pending
+- **Reviewed full SHA:** Pending
+- **Scope verdict:** Pending
+- **Correctness verdict:** Pending
+- **Real-work failure coverage verdict:** Pending
+
+| Finding | File and line/symbol evidence | Required disposition | Resolution |
+| --- | --- | --- | --- |
 | Pending | Pending | Pending | Pending |
 
-| Verification | Command or evidence source | Result |
-| --- | --- | --- |
-| Focused regression | Pending | Pending |
-| Complete suite | Pending | Pending |
-| Syntax/diff | Pending | Pending |
-| Push/worktree | Pending | Pending |
-
-- **Remaining acceptance or limitation:** Pending
+- **Merge verdict:** Pending
+- **Merged SHA:** Pending
 
 #### Review record
 

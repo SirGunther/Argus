@@ -62,7 +62,7 @@ test('the versioned Scribe instruction carries the accepted role, forbids routin
   assert.throws(() => scribeBatchInstruction('9.9.9'), /scribe instruction version 9\.9\.9 is not governed/);
 });
 
-test('a bounded Scribe batch request reserves instruction, schema, evidence, background, and output inside the governed 8,000-token budget', () => {
+test('a bounded Scribe batch request reserves instruction, schema, evidence, background, and output inside an 8,000-token test budget', () => {
   const { request, budget } = buildScribeBatchRequest(dispatchInput());
   const instruction = scribeBatchInstruction('1.0.0');
 
@@ -140,8 +140,11 @@ test('a batch whose structural overhead breaks the budget rolls background inste
   assert.ok(unrolled.budget.total_tokens > 8000, `serialized transmission measured ${unrolled.budget.total_tokens} tokens, which must exceed the budget for this regression to be meaningful`);
   assert.equal(unrolled.budget.removed_background_transcript_segment_ids.length, 0);
 
-  // Under the governed 8,000-token policy the same batch now rolls background until the real
-  // transmission fits, and never touches new evidence.
+  // Under this 8,000-token test policy the same batch now rolls background until the real
+  // transmission fits, and never touches new evidence. (The formalized production default is
+  // 16,384 tokens as of SCRIBE-07C; this test's own 8,000-token budget is an arbitrary fixture
+  // value chosen to exercise the rollover path, not a claim about the current production default —
+  // see tests/scribe-context-budget.test.mjs for the formalized-default coverage.)
   const bounded = buildScribeBatchRequest(input);
   assert.ok(bounded.budget.total_tokens <= 8000);
   assert.equal(bounded.budget.total_tokens, instruction.tokens + serializedRequestTokens(bounded.request) + EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens);
@@ -337,7 +340,14 @@ test('commentary, malformed JSON, excess items, oversized text, forged identity,
     ['forged provenance', { items: [{ text: 'Ship it.', source_segment_ids: ['segment-99'] }] }, 'INVALID_MODEL_OUTPUT'],
     ['excess items', { items: Array.from({ length: EXTRACTION_BATCH_OUTPUT_LIMITS.max_items + 1 }, () => ({ text: 'Ship it.', source_segment_ids: ['segment-10'] })) }, 'INVALID_MODEL_OUTPUT'],
     ['oversized item text', { items: [{ text: 'x'.repeat(EXTRACTION_BATCH_OUTPUT_LIMITS.max_item_chars + 1), source_segment_ids: ['segment-10'] }] }, 'INVALID_MODEL_OUTPUT'],
-    ['oversized batch output', { items: Array.from({ length: 5 }, (_unused, index) => ({ text: `${index}${'y'.repeat(EXTRACTION_BATCH_OUTPUT_LIMITS.max_item_chars - 1)}`, source_segment_ids: ['segment-10'] })) }, 'INVALID_MODEL_OUTPUT'],
+    // SCRIBE-07C formalized max_output_chars at exactly max_items * max_item_chars (8 * 512 =
+    // 4096), so a response that respects both the per-item and item-count ceilings can no longer
+    // independently exceed the total-character ceiling - the densest possible in-limit response
+    // (max_items items each at max_item_chars) lands exactly at, never past, max_output_chars.
+    // 'total batch output at the exact per-item/per-count ceiling' below proves that boundary is
+    // accepted rather than rejected; the character-total check in validateScribeBatchModelResponse
+    // itself is unchanged and still guards the case where a future limit change makes the total
+    // ceiling reachable independently of the per-item/count ceilings.
     ['malformed batch identity', { response: { protocol_version: '2.0.0', purpose: 'logged-item-extraction', batch_identity: { ...batchIdentity('batch-1'), admission_reason: 'model-decided' }, items: [] } }, 'INVALID_MODEL_OUTPUT'],
     ['wrong protocol version', { response: { protocol_version: '1.0.0', purpose: 'logged-item-extraction', text: 'A summary of the batch.' } }, 'INVALID_MODEL_OUTPUT']
   ];
@@ -354,6 +364,31 @@ test('commentary, malformed JSON, excess items, oversized text, forged identity,
     } finally {
       await endpoint.close();
     }
+  }
+});
+
+test('total batch output at the exact per-item/per-count ceiling (max_items items each at max_item_chars) is accepted, not rejected', async () => {
+  // SCRIBE-07C set max_output_chars to exactly max_items * max_item_chars (8 * 512 = 4096), so the
+  // densest response a compliant model can ever produce lands exactly at, not past, the total
+  // character ceiling. This is the accepted boundary, not a defect: it must validate successfully.
+  const items = Array.from({ length: EXTRACTION_BATCH_OUTPUT_LIMITS.max_items }, (_unused, index) => ({
+    text: `${index}${'y'.repeat(EXTRACTION_BATCH_OUTPUT_LIMITS.max_item_chars - 1)}`,
+    kind: 'other',
+    source_segment_ids: ['segment-10']
+  }));
+  const totalChars = items.reduce((sum, item) => sum + item.text.length, 0);
+  assert.equal(totalChars, EXTRACTION_BATCH_OUTPUT_LIMITS.max_items * EXTRACTION_BATCH_OUTPUT_LIMITS.max_item_chars);
+  assert.equal(totalChars, EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_chars);
+
+  const endpoint = await startScribeBatchModelEndpoint({ reply: () => ({ items }) });
+  try {
+    const { request } = buildScribeBatchRequest(dispatchInput({ requestId: 'batch-max-density' }));
+    const result = await runService(laneManifest, [providerConfiguration(endpoint.url), workRequestEnvelope(request, { maxAttempts: 1 })], 3, 8000);
+    const completion = result.outputs.find((message) => message.message_type === 'ai.work-completed');
+    assert.equal(completion.payload.result.status, 'succeeded');
+    assert.equal(completion.payload.result.response.items.length, EXTRACTION_BATCH_OUTPUT_LIMITS.max_items);
+  } finally {
+    await endpoint.close();
   }
 });
 
@@ -832,7 +867,7 @@ function dispatchInput({ requestId = 'batch-1', totalContextTokens, policy, batc
 
 function workId(requestId) { return `logged-item-extraction:${session}:${requestId}:batch-attempt-1`; }
 
-/** The real serialized total one dispatch consumes at the governed default budget. */
+/** The real serialized total one dispatch consumes at this test's own 8,000-token fixture budget. */
 function measuredTotalTokens(input) {
   return buildScribeBatchRequest({ ...input, policy: scribePolicy(8000) }).budget.total_tokens;
 }

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { SCRIBE_GUIDANCE_LIMITS, validateScribeBatchModelRequest } from '../contracts/model-protocol.mjs';
+import { EXTRACTION_BATCH_OUTPUT_LIMITS, SCRIBE_GUIDANCE_LIMITS, validateScribeBatchModelRequest } from '../contracts/model-protocol.mjs';
 import { SCRIBE_BATCH_INSTRUCTION_VERSIONS, SCRIBE_GUIDANCE_INSTRUCTION_VERSION, scribeBatchInstruction } from '../contracts/scribe-instruction.mjs';
 import { buildScribeBatchRequest, createScribeBatchRetention, fingerprintScribeBatchRequest } from '../services/log-extractor-local-http/scribe-batch-boundary.mjs';
 import {
@@ -149,7 +149,9 @@ test('guidance is counted inside the governed total budget, not outside it', () 
   const withGuidance = buildScribeBatchRequest(dispatchInput({ guidance: GUIDANCE })).budget;
   assert.ok(withGuidance.total_tokens > withoutGuidance.total_tokens);
   assert.ok(withGuidance.total_tokens <= 8000);
-  // The measured serialized request is what the ~8,000-token policy bounds, and guidance is in it.
+  // The measured serialized request is what this 8,000-token test policy bounds, and guidance is
+  // in it. (This is this test's own fixture budget, not the current production default, which is
+  // 16,384 tokens as of SCRIBE-07C.)
   assert.ok(withGuidance.serialized_request_tokens > withoutGuidance.serialized_request_tokens);
 });
 
@@ -168,7 +170,7 @@ test('guidance forces background out before it is itself shortened, and never to
 
 test('guidance that cannot fit the mandatory floor fails visibly instead of being trimmed', () => {
   const instruction = scribeBatchInstruction('1.1.0');
-  const noRoom = instruction.tokens + 512 + 1;
+  const noRoom = instruction.tokens + EXTRACTION_BATCH_OUTPUT_LIMITS.max_output_tokens + 1;
   assert.throws(
     () => buildScribeBatchRequest(dispatchInput({ guidance: GUIDANCE, totalContextTokens: noRoom })),
     (error) => {

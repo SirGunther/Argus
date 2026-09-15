@@ -22,7 +22,7 @@ export { EXTRACTION_BATCH_OUTPUT_LIMITS, SCRIBE_BATCH_PROTOCOL_VERSION };
  * because reading a budget from a constant instead of the accepted policy would let the
  * extraction path drift from the coordinator's governed configuration.
  */
-export const SCRIBE_POLICY_DEFAULT_TOTAL_CONTEXT_TOKENS = 8000;
+export const SCRIBE_POLICY_DEFAULT_TOTAL_CONTEXT_TOKENS = 16384;
 
 /**
  * Build one stateless Scribe batch model request inside the governed total token budget.
@@ -149,7 +149,8 @@ export function buildScribeBatchRequest({ batch, policy, workId, modelName }) {
       output_reserve_tokens: outputReserveTokens,
       request_allowance_tokens: requestAllowanceTokens,
       // The measured size of the transmission this dispatch produces, and the whole governed
-      // total it consumes. `total_tokens` is the number the ~8,000-token policy actually bounds.
+      // total it consumes. `total_tokens` is the number the accepted 16,384-token policy (SCRIBE-07C)
+      // actually bounds.
       serialized_request_tokens: serializedRequestTokens(request),
       total_tokens: totalTokens,
       new_evidence_text_tokens: estimateModelTokens(newEvidenceSegments),

@@ -8,7 +8,7 @@ const DEFAULT_POLICY = Object.freeze({
   policy_id: 'scribe-default-policy',
   policy_version: '1.0.0',
   admission: Object.freeze({ rows_per_batch: 3, idle_timeout_ms: 15000 }),
-  context: Object.freeze({ max_total_context_tokens: 8000 }),
+  context: Object.freeze({ max_total_context_tokens: 16384 }),
   generation: Object.freeze({ policy_profile: 'scribe-default', instruction_version: '1.0.0' })
 });
 const DEFAULT_MAX_SESSIONS = 8;

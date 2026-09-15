@@ -185,7 +185,7 @@
         "policy_id": "electron-scribe-default",
         "policy_version": "1.0.0",
         "admission": { "rows_per_batch": 3, "idle_timeout_ms": 15000 },
-        "context": { "max_total_context_tokens": 8000 },
+        "context": { "max_total_context_tokens": 16384 },
         "generation": { "policy_profile": "neutral-contextual-log", "instruction_version": "1.1.0" }
       }
     }

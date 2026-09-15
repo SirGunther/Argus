@@ -23,8 +23,8 @@ export const SCRIBE_ITEM_KINDS = Object.freeze(['action', 'decision', 'open-ques
 export const EXTRACTION_BATCH_OUTPUT_LIMITS = Object.freeze({
   max_items: 8,
   max_item_chars: 512,
-  max_output_chars: 2048,
-  max_output_tokens: 512
+  max_output_chars: 4096,
+  max_output_tokens: 2048
 });
 // Provider-requested structured-output schema for the Scribe batch response (SCRIBE-07A). This
 // describes the exact shape `validateScribeBatchModelResponse` already enforces after parsing
@@ -88,8 +88,9 @@ export const SCRIBE_BATCH_RESPONSE_JSON_SCHEMA = Object.freeze({
 
 // Optional user Scribe guidance (SCRIBE-05B). 2000 chars is ~500 governed tokens, so even a
 // maximum-length guidance leaves the instruction, the whole new evidence, and the output reserve
-// inside the ~8000-token policy budget. Guidance is never truncated to fit: an over-budget request
-// fails visibly at the extraction boundary instead of silently prompting under shortened wording.
+// inside the accepted 16,384-token policy budget (SCRIBE-07C). Guidance is never truncated to fit:
+// an over-budget request fails visibly at the extraction boundary instead of silently prompting
+// under shortened wording.
 export const SCRIBE_GUIDANCE_LIMITS = Object.freeze({ max_chars: 2000 });
 
 /** Stable governed identity for the normalized text of one Scribe guidance setting. */
