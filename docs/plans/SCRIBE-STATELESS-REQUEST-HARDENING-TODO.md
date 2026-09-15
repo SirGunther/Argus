@@ -407,7 +407,7 @@ agent chat.
 - **Status:** Implemented, awaiting review
 - **Starting `origin/main` SHA:** `89a9f66d02c7c36a56a04c70ee5f1bb87b3e5da3`
 - **Branch:** `agent/scribe-structured-response`
-- **Full implementation SHA:** Recorded after commit, see chat pointer
+- **Full implementation SHA:** `4a3d963e9cf4fc9b8799e127eaed49bf08f36230`
 - **WHY:** At `2026-09-15 17:20:17` LM Studio returned a complete, valid governed Scribe batch
   JSON object wrapped in one Markdown ` ```json ` fence for a 9,288-`prompt_tokens` request.
   Argus's `requestConfiguredModel` (`services/serial-ai-model-lane/index.mjs`) passed the fenced
@@ -479,7 +479,7 @@ agent chat.
 | Complete suite | `npm test` (`node --test tests/*.test.mjs`) | 389 pass, 7 skipped (pre-existing `tests/scribe-real-acceptance.test.mjs` live-LM-Studio-only tests, unrelated to this change), 0 fail. |
 | Syntax | `node --check contracts/model-protocol.mjs`, `node --check services/serial-ai-model-lane/index.mjs`, `node --check tests/scribe-structured-response.test.mjs` | All pass. |
 | Diff whitespace | `git diff --check` | Clean. |
-| Push/worktree | `git status` clean after commit; branch `agent/scribe-structured-response` created from `origin/main` at `89a9f66`; push attempted, see chat pointer for result | Recorded after commit |
+| Push/worktree | `git status` clean after commit; branch `agent/scribe-structured-response` created from `origin/main` at `89a9f66`; `git push -u origin agent/scribe-structured-response` | Pushed; `HEAD` and `origin/agent/scribe-structured-response` both at `4a3d963e9cf4fc9b8799e127eaed49bf08f36230`; worktree clean |
 
 - **Remaining acceptance or limitation:** Real LM Studio runtime acceptance (does LM Studio
   actually honor `response_format` for this model/config, and does it reduce the observed fenced-
