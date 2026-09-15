@@ -636,7 +636,7 @@ agent chat.
   tip is `4a3d963e9cf4fc9b8799e127eaed49bf08f36230` and SCRIBE-07B's tip/full SHA is
   `8facffdd7b7eef1ceaaba7b9af6a63faaf430729`, both already in this branch's history).
 - **Branch:** `agent/scribe-context-budget`
-- **Full implementation SHA:** recorded below after commit (see Push/worktree row).
+- **Full implementation SHA:** `f56028a33636600ae7e3769bac32bdee8428ba5f`
 - **WHY:** The real-work baseline (this artifact, "Real-work evidence baseline") measured LM Studio
   `prompt_tokens: 9334` and `prompt_tokens: 9288` for stateless Scribe batch requests against a
   model configured with a 32,000-token context window, while the configured production budget was
@@ -743,7 +743,7 @@ agent chat.
 | Syntax | `node --check` on every changed `.mjs` production/test file (`contracts/model-protocol.mjs`, `services/log-extractor-local-http/scribe-batch-boundary.mjs`, `services/scribe-coordinator/coordinator.mjs`, `tests/scribe-context-budget.test.mjs`, `tests/scribe-model-extraction.test.mjs`, `tests/scribe-production-integration.test.mjs`, `tests/scribe-user-guidance.test.mjs`) | all changed `.mjs` files | All pass | — |
 | JSON syntax | `node -e` parse of `contracts/scribe-batch-policy.schema.json` and `wiring/production-electron.json` | both changed JSON files | Valid | — |
 | Diff whitespace | `git diff --check` | full worktree diff | Clean | — |
-| Push/worktree | `git status` clean after commit; branch `agent/scribe-context-budget` created from `origin/agent/scribe-json-fence-compatibility` at `050887a`; `git push -u origin agent/scribe-context-budget` | this branch | Recorded after commit/push below | — |
+| Push/worktree | `git status` clean after commit; branch `agent/scribe-context-budget` created from `origin/agent/scribe-json-fence-compatibility` at `050887a`; `git push -u origin agent/scribe-context-budget` | this branch | Pushed; `HEAD` and `origin/agent/scribe-context-budget` both at `f56028a33636600ae7e3769bac32bdee8428ba5f`; worktree clean | — |
 
 - **Remaining acceptance or limitation:** Real LM Studio runtime acceptance — whether the formalized
   16,384-token budget and the accepted output limits behave as expected against the real 32K-context
