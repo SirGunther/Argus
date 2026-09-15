@@ -515,7 +515,7 @@ agent chat.
   branch (`origin/main` under it is `89a9f66d02c7c36a56a04c70ee5f1bb87b3e5da3`, which already
   includes merged SCRIBE-06B).
 - **Branch:** `agent/scribe-json-fence-compatibility`
-- **Full implementation SHA:** `<recorded after commit, see below>`
+- **Full implementation SHA:** `8facffdd7b7eef1ceaaba7b9af6a63faaf430729`
 - **WHY:** At `2026-09-15 17:20:17` LM Studio returned a complete, valid governed Scribe batch JSON
   object wrapped in exactly one Markdown ` ```json ` fence for a 9,288-`prompt_tokens` request. The
   fenced string reached `requestConfiguredModel`'s `openai-compatible` response branch
@@ -601,7 +601,7 @@ agent chat.
 | Complete suite | `npm test` (`node --test tests/*.test.mjs`) | 390 pass, 7 skipped (same pre-existing live-LM-Studio-only tests in `tests/scribe-real-acceptance.test.mjs` noted in the SCRIBE-07A ledger), 0 fail. |
 | Syntax | `node --check services/serial-ai-model-lane/index.mjs`, `node --check tests/scribe-model-extraction.test.mjs` | Both pass. |
 | Diff whitespace | `git diff --check` | Clean. |
-| Push/worktree | `git status` clean after commit; branch `agent/scribe-json-fence-compatibility` created from `origin/agent/scribe-structured-response` at `f815c91`; pushed to `origin` | Recorded below with the pushed SHA. |
+| Push/worktree | `git status` clean after commit; branch `agent/scribe-json-fence-compatibility` created from `origin/agent/scribe-structured-response` at `f815c91`; `git push -u origin agent/scribe-json-fence-compatibility` | Pushed; `HEAD` and `origin/agent/scribe-json-fence-compatibility` both at `8facffdd7b7eef1ceaaba7b9af6a63faaf430729`; worktree clean. |
 
 - **Remaining acceptance or limitation:** Real LM Studio runtime acceptance (does the exact fence
   the model actually emits match this normalizer's "exactly one complete fence" shape in practice,
