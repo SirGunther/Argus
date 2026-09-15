@@ -6,6 +6,8 @@
 
 **Merge authority:** The coordinating agent reviews and merges; implementation agents never merge `main`
 
+**Evidence authority:** This artifact, not the agent chat, is the durable implementation and review record
+
 **Created from:** `origin/main` at `ba6585c` on 2026-09-15
 
 ## Why this work exists
@@ -82,12 +84,19 @@ architectural judgments.
 - [ ] Confirm the worktree is clean and record the starting `origin/main` SHA before editing.
 - [ ] Read this complete artifact, `contracts/scribe-contract-handoff.md`, and only the production
   files and focused tests named by the ticket or directly imported by them.
-- [ ] Display the complete ticket checklist in the agent chat before editing and update it as work
-  proceeds, per `C:\dustin-thomason\agents\skills\checklist-in-chat\SKILL.md`.
+- [ ] Display the complete ticket checklist in the agent chat before editing and update only its
+  status as work proceeds, per `C:\dustin-thomason\agents\skills\checklist-in-chat\SKILL.md`.
+- [ ] Treat chat as a transient control surface, not the evidence record. Chat may contain checklist
+  state, a blocking question, and the final branch/SHA/artifact pointer. Do not paste the ticket's
+  WHY/HOW/WHAT analysis, changed-file evidence, test evidence, review findings, or delivery narrative
+  into chat.
+- [ ] Update this artifact's ticket checklist and evidence ledger on the implementation branch as
+  work proceeds. A chat checkbox is never sufficient evidence that an item was completed.
 - [ ] Use the existing service, request, validation, queue, and error mechanisms. Do not introduce
   a second mechanism for an existing responsibility.
-- [ ] If a necessary production change falls outside the ticket's ownership, stop, report the exact
-  file and reason, send the notification, and wait. Do not silently expand scope.
+- [ ] If a necessary production change falls outside the ticket's ownership, stop, record the exact
+  file and reason in the ticket evidence ledger, send the notification, and ask only the concise
+  blocking question plus artifact pointer in chat. Do not silently expand scope.
 - [ ] Preserve unrelated behavior and retain existing contract fixtures and compatibility.
 - [ ] Add focused regression evidence for the exact failure before claiming it is fixed.
 - [ ] Review the diff for debug output, stale comments, magic state strings, dense mixed-concern
@@ -101,34 +110,44 @@ architectural judgments.
 - [ ] Invoke
   `C:\dustin-thomason\scripts\notify-agent-complete.ps1 -Status "Completed" -Message "<5-9 word summary containing the agent name>"`
   after substantive completion or when blocked waiting for user direction.
-- [ ] Stop after reporting. The coordinating agent decides whether the branch is mergeable.
+- [ ] Stop after updating the artifact and posting the short chat pointer. The coordinating agent
+  decides whether the branch is mergeable.
 
-### Required implementation report
+### Required artifact evidence record
 
-Every implementation report must answer these three questions with code evidence:
+All implementation and review evidence must be written into this artifact under the applicable
+ticket's evidence-ledger section. Do not use the agent chat as the durable report.
+
+Each ticket record must answer these three questions with code evidence:
 
 - **WHY:** What measured failure from this artifact did the branch correct?
 - **HOW:** What existing execution path was changed, and why is that the narrowest correct seam?
 - **WHAT:** What behavior is now different and what behavior was explicitly preserved?
 
-Then provide one row per changed file:
+Then provide one row per changed file in the artifact:
 
 | Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
 | --- | --- | --- | --- |
 
 Assertions without a file, relevant symbol or line, and a concrete before/after behavior are not
-review evidence. Also report the starting SHA, branch, full commit SHA, focused/full checks, push
-confirmation, worktree status, and any remaining real-user acceptance.
+review evidence. Also record the starting SHA, branch, full commit SHA, focused/full checks, push
+confirmation, worktree status, and any remaining real-user acceptance in the artifact.
+
+The final chat response must be short: checklist status, branch, full SHA, the heading or line where
+the artifact evidence begins, and whether review is requested. It must not duplicate the evidence.
 
 ## Review gate for every branch
 
 The coordinating review determines whether the implementation is accurate against this artifact,
 the actual codebase, and the Scribe architecture. It is not a second implementation pass.
 
-- [ ] State the ticket's WHY, the implementation's HOW, and whether the resulting WHAT is sufficient.
+- [ ] State in the artifact the ticket's WHY, the implementation's HOW, and whether the resulting
+  WHAT is sufficient.
 - [ ] Inspect every changed production file and its focused regression. Do not accept the agent's
   summary as evidence.
-- [ ] Write every finding as a checklist item with a file and line/symbol showing the evidence.
+- [ ] Write every finding into the applicable artifact review ledger as a checklist item with a file
+  and line/symbol showing the evidence. In chat, report only the number of findings and point to the
+  artifact section.
 - [ ] Verify every changed file is necessary for the ticket. Treat unrelated cleanup,
   documentation churn, contract changes, and architectural improvements as scope violations.
 - [ ] Verify the branch did not weaken identity, provenance, statelessness, failure visibility,
@@ -140,7 +159,8 @@ the actual codebase, and the Scribe architecture. It is not a second implementat
 - [ ] Ignore product preference debates and do not demand unrelated live-data or smoke-test changes
   during the code review. Determine only whether the ticket was implemented correctly and within
   scope.
-- [ ] Merge only when there is evidence for each exit-gate item and no unresolved in-scope finding.
+- [ ] Update the artifact with the merge verdict and reviewed commit SHA. Merge only when there is
+  artifact evidence for each exit-gate item and no unresolved in-scope finding.
 
 ---
 
@@ -186,7 +206,7 @@ outbound provider request; SCRIBE-07B owns response-content compatibility.
   OpenAI-compatible requests retain their existing bodies and behavior.
 - [ ] Run focused model-lane/Scribe tests, the complete repository suite, syntax checks, and
   `git diff --check`.
-- [ ] Complete the required evidence report, commit, push, notify, and stop for review.
+- [ ] Complete the SCRIBE-07A artifact evidence ledger, commit, push, notify, and stop for review.
 
 ### Exit gate
 
@@ -235,7 +255,7 @@ strict JSON parsing or causing the same valid payload to be sent to the provider
 - [ ] Prove all rejected wrapper/prose cases remain rejected and ordinary unfenced JSON is unchanged.
 - [ ] Run focused model-lane/Scribe tests, the complete repository suite, syntax checks, and
   `git diff --check`.
-- [ ] Complete the required evidence report, commit, push, notify, and stop for review.
+- [ ] Complete the SCRIBE-07B artifact evidence ledger, commit, push, notify, and stop for review.
 
 ### Exit gate
 
@@ -295,7 +315,7 @@ request remains bounded and self-contained.
   priority, oldest-unit rollover, chronological output, and an over-budget mandatory floor.
 - [ ] Run focused Scribe context/extraction tests, the complete repository suite, contract checks
   only if a governed artifact was actually touched, syntax checks, and `git diff --check`.
-- [ ] Complete the required evidence report, commit, push, notify, and stop for review.
+- [ ] Complete the SCRIBE-07C artifact evidence ledger, commit, push, notify, and stop for review.
 
 ### Exit gate
 
@@ -306,6 +326,132 @@ request remains bounded and self-contained.
   background collection becomes unbounded.
 - [ ] No provider-specific tokenizer, conversation state, second context store, response-contract
   redesign, or unrelated behavior was introduced.
+
+---
+
+## Ticket evidence ledger
+
+Each implementation agent updates only its ticket subsection below. Each coordinating reviewer then
+updates that ticket's review record on the same branch. Replace placeholders with concise evidence;
+do not delete the fields. The artifact must make the branch understandable without reading the
+agent chat.
+
+### SCRIBE-07A evidence
+
+#### Implementation record
+
+- **Status:** Not started
+- **Starting `origin/main` SHA:** Pending
+- **Branch:** `agent/scribe-structured-response`
+- **Full implementation SHA:** Pending
+- **WHY:** Pending
+- **HOW:** Pending
+- **WHAT:** Pending
+
+| Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
+| --- | --- | --- | --- |
+| Pending | Pending | Pending | Pending |
+
+| Verification | Command or evidence source | Result |
+| --- | --- | --- |
+| Focused regression | Pending | Pending |
+| Complete suite | Pending | Pending |
+| Syntax/diff | Pending | Pending |
+| Push/worktree | Pending | Pending |
+
+- **Remaining acceptance or limitation:** Pending
+
+#### Review record
+
+- **Review status:** Pending
+- **Reviewed full SHA:** Pending
+- **Scope verdict:** Pending
+- **Correctness verdict:** Pending
+
+| Finding | File and line/symbol evidence | Required disposition | Resolution |
+| --- | --- | --- | --- |
+| Pending | Pending | Pending | Pending |
+
+- **Merge verdict:** Pending
+- **Merged SHA:** Pending
+
+### SCRIBE-07B evidence
+
+#### Implementation record
+
+- **Status:** Not started
+- **Starting `origin/main` SHA:** Pending
+- **Branch:** `agent/scribe-json-fence-compatibility`
+- **Full implementation SHA:** Pending
+- **WHY:** Pending
+- **HOW:** Pending
+- **WHAT:** Pending
+
+| Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
+| --- | --- | --- | --- |
+| Pending | Pending | Pending | Pending |
+
+| Verification | Command or evidence source | Result |
+| --- | --- | --- |
+| Focused regression | Pending | Pending |
+| Complete suite | Pending | Pending |
+| Syntax/diff | Pending | Pending |
+| Push/worktree | Pending | Pending |
+
+- **Remaining acceptance or limitation:** Pending
+
+#### Review record
+
+- **Review status:** Pending
+- **Reviewed full SHA:** Pending
+- **Scope verdict:** Pending
+- **Correctness verdict:** Pending
+
+| Finding | File and line/symbol evidence | Required disposition | Resolution |
+| --- | --- | --- | --- |
+| Pending | Pending | Pending | Pending |
+
+- **Merge verdict:** Pending
+- **Merged SHA:** Pending
+
+### SCRIBE-07C evidence
+
+#### Implementation record
+
+- **Status:** Not started
+- **Starting `origin/main` SHA:** Pending
+- **Branch:** `agent/scribe-context-budget`
+- **Full implementation SHA:** Pending
+- **WHY:** Pending
+- **HOW:** Pending
+- **WHAT:** Pending
+
+| Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
+| --- | --- | --- | --- |
+| Pending | Pending | Pending | Pending |
+
+| Verification | Command or evidence source | Result |
+| --- | --- | --- |
+| Focused regression | Pending | Pending |
+| Complete suite | Pending | Pending |
+| Syntax/diff | Pending | Pending |
+| Push/worktree | Pending | Pending |
+
+- **Remaining acceptance or limitation:** Pending
+
+#### Review record
+
+- **Review status:** Pending
+- **Reviewed full SHA:** Pending
+- **Scope verdict:** Pending
+- **Correctness verdict:** Pending
+
+| Finding | File and line/symbol evidence | Required disposition | Resolution |
+| --- | --- | --- | --- |
+| Pending | Pending | Pending | Pending |
+
+- **Merge verdict:** Pending
+- **Merged SHA:** Pending
 
 ---
 
@@ -327,6 +473,17 @@ This acceptance occurs only after all three branches are reviewed and merged.
   a request approaches the model's real 32K ceiling, stop and create a separate measured budgeting
   ticket rather than adding provider-specific logic here.
 - [ ] Confirm ordinary application diagnostics remain quiet and no installer was rebuilt.
+
+### Final acceptance evidence
+
+- **Status:** Not started
+- **Date and model:** Pending
+- **Session or log reference:** Pending
+- **Observed request separation:** Pending
+- **Observed structured-output behavior:** Pending
+- **Observed provider token counts:** Pending
+- **Observed Logged Item result:** Pending
+- **Remaining limitation:** Pending
 
 ## Definition of done
 
