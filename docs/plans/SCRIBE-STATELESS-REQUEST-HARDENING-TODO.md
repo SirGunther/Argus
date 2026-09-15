@@ -28,6 +28,32 @@ each request. LM Studio remains a shared provider: structured output is requeste
 the individual Scribe call and must not alter LM Studio globally or affect LMLink, MCP, other Argus
 workloads, or any other client.
 
+## Real-work evidence baseline
+
+The tickets below originate from a real Argus session using LM Studio, not from a hypothetical test:
+
+- At `2026-09-15 17:19:40`, LM Studio received a stateless two-message Scribe request for three new
+  finalized rows. It reported `prompt_tokens: 9334`, returned unfenced JSON, and Argus accepted it.
+- At `2026-09-15 17:20:17`, LM Studio received the next three-row Scribe batch. It reported
+  `prompt_tokens: 9288` and returned a complete valid JSON object wrapped in a Markdown `json` fence.
+  The response stopped normally and was not token-truncated, but Argus classified it as malformed
+  because the production OpenAI-compatible parser passed the entire fenced string to `JSON.parse`.
+- At `2026-09-15 17:20:56`, Argus sent the same retained batch again. LM Studio's prompt cache
+  recognized the identical request, but the model still regenerated the same deterministic fenced
+  result and occupied the serial lane again. This is the observed repeated-work failure.
+- Production inspection tied the failure to `requestConfiguredModel` in
+  `services/serial-ai-model-lane/index.mjs`: the OpenAI-compatible request body did not include
+  `response_format`, and its response path performed strict `JSON.parse` without narrowly handling
+  a complete Markdown JSON wrapper.
+- Production inspection also confirmed that context is intentionally reconstructed by
+  `buildScribeBatchRequest` in
+  `services/log-extractor-local-http/scribe-batch-boundary.mjs`. The coordinator retains bounded
+  background transcript and prior Logged Items; this is why each distinct stateless request carries
+  prior context and why the accepted budget must remain explicit and bounded.
+
+This baseline is the real failure that the implementation tests must represent. A new fixture or a
+green test is supporting evidence only; it cannot replace this production-path explanation.
+
 ## Decisions already made
 
 - Every Scribe request remains stateless and self-contained.
@@ -136,6 +162,34 @@ confirmation, worktree status, and any remaining real-user acceptance in the art
 The final chat response must be short: checklist status, branch, full SHA, the heading or line where
 the artifact evidence begins, and whether review is requested. It must not duplicate the evidence.
 
+### Correctness evidence standard
+
+**Every implementation must provide evidence that it is correct against the real work failure, not
+merely evidence that a newly written test passes. A test proves only that its own scenario passes
+until the artifact demonstrates that the scenario represents the actual production failure point.**
+
+For every ticket, the artifact must therefore contain all of the following:
+
+- [ ] The real-work observation that motivated the change: timestamped log evidence, captured
+  provider request/response, persisted state, user-visible failure, or another concrete production
+  artifact.
+- [ ] The production execution path from that observation to the owning function, branch, state,
+  or boundary. Name the files and symbols; do not infer ownership solely from a test filename.
+- [ ] An explanation of why the regression enters that same production path and recreates the same
+  failure mechanism. A copied helper, reimplemented algorithm, test-only shortcut, or assertion
+  against a fabricated side path is not valid evidence.
+- [ ] Evidence that the correction changes that production path while preserving the surrounding
+  contracts and boundaries. State what would still fail if the fix were removed.
+- [ ] A focused regression that fails for the production reason before the correction and passes
+  after it. The failure message or assertion must distinguish the real defect from unrelated setup.
+- [ ] Post-correction real-runtime evidence when the dependency is available. If physical hardware
+  or the real provider is unavailable, record that acceptance as pending rather than replacing it
+  with a mock and claiming completion.
+
+A ticket can be reviewable with a real pre-fix trace, a verified production code path, and a valid
+production-path regression. It cannot be declared fully accepted until any explicitly required
+real-runtime check is recorded in this artifact.
+
 ## Review gate for every branch
 
 The coordinating review determines whether the implementation is accurate against this artifact,
@@ -145,6 +199,8 @@ the actual codebase, and the Scribe architecture. It is not a second implementat
   WHAT is sufficient.
 - [ ] Inspect every changed production file and its focused regression. Do not accept the agent's
   summary as evidence.
+- [ ] Reject a test-only proof. Confirm the recorded real-work failure, production path, regression
+  entry point, and corrected path describe the same mechanism.
 - [ ] Write every finding into the applicable artifact review ledger as a checklist item with a file
   and line/symbol showing the evidence. In chat, report only the number of findings and point to the
   artifact section.
@@ -190,6 +246,8 @@ outbound provider request; SCRIBE-07B owns response-content compatibility.
 
 - [ ] Capture the current OpenAI-compatible Scribe HTTP body in a focused endpoint test and prove it
   lacks `response_format` before the correction.
+- [ ] In the SCRIBE-07A evidence ledger, connect that captured body to the real LM Studio requests
+  recorded in the real-work baseline and to `requestConfiguredModel`; do not cite the test alone.
 - [ ] Add `response_format.type: "json_schema"` with `strict: true` to the OpenAI-compatible HTTP
   body only when `isScribeBatchRequest(request)` is true.
 - [ ] Describe the existing Scribe response shape in that provider request: fixed protocol and
@@ -243,6 +301,9 @@ strict JSON parsing or causing the same valid payload to be sent to the provider
 
 - [ ] Reproduce the measured failure: a valid governed Scribe JSON object wrapped by exactly one
   complete `json` Markdown fence currently becomes `MODEL_INVALID_JSON`.
+- [ ] In the SCRIBE-07B evidence ledger, trace the real fenced response through
+  `requestConfiguredModel` to the repeated provider call and explain why the regression enters that
+  same parser and retry path.
 - [ ] Add one small response-content normalizer that trims outer whitespace and unwraps exactly one
   complete Markdown fence whose optional language is `json`.
 - [ ] Apply the normalizer only to the assistant message content before `JSON.parse`; do not alter
@@ -290,6 +351,9 @@ request remains bounded and self-contained.
 
 - [ ] Begin from clean `origin/main` containing SCRIBE-07A and SCRIBE-07B. Do not copy or commit the
   dirty main checkout noted above.
+- [ ] In the SCRIBE-07C evidence ledger, connect the 9,334/9,288-token real requests to
+  `buildScribeBatchRequest`, coordinator background retention, and the production policy values;
+  do not treat limit assertions by themselves as real-work evidence.
 - [ ] Set every production Scribe default/configuration of `max_total_context_tokens` to `16384`.
   Remove stale statements that describe 8,000 as the current production default without rewriting
   unrelated architectural history.
@@ -347,6 +411,10 @@ agent chat.
 - **WHY:** Pending
 - **HOW:** Pending
 - **WHAT:** Pending
+- **Real-work failure evidence:** Pending
+- **Production path trace:** Pending
+- **Why the regression represents that production failure:** Pending
+- **Post-correction real-runtime evidence:** Pending
 
 | Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
 | --- | --- | --- | --- |
@@ -367,6 +435,7 @@ agent chat.
 - **Reviewed full SHA:** Pending
 - **Scope verdict:** Pending
 - **Correctness verdict:** Pending
+- **Real-work failure coverage verdict:** Pending
 
 | Finding | File and line/symbol evidence | Required disposition | Resolution |
 | --- | --- | --- | --- |
@@ -386,6 +455,10 @@ agent chat.
 - **WHY:** Pending
 - **HOW:** Pending
 - **WHAT:** Pending
+- **Real-work failure evidence:** Pending
+- **Production path trace:** Pending
+- **Why the regression represents that production failure:** Pending
+- **Post-correction real-runtime evidence:** Pending
 
 | Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
 | --- | --- | --- | --- |
@@ -406,6 +479,7 @@ agent chat.
 - **Reviewed full SHA:** Pending
 - **Scope verdict:** Pending
 - **Correctness verdict:** Pending
+- **Real-work failure coverage verdict:** Pending
 
 | Finding | File and line/symbol evidence | Required disposition | Resolution |
 | --- | --- | --- | --- |
@@ -425,6 +499,10 @@ agent chat.
 - **WHY:** Pending
 - **HOW:** Pending
 - **WHAT:** Pending
+- **Real-work failure evidence:** Pending
+- **Production path trace:** Pending
+- **Why the regression represents that production failure:** Pending
+- **Post-correction real-runtime evidence:** Pending
 
 | Changed file | Evidence that this file owned the failure | Exact reason it changed | Resulting behavior |
 | --- | --- | --- | --- |
@@ -445,6 +523,7 @@ agent chat.
 - **Reviewed full SHA:** Pending
 - **Scope verdict:** Pending
 - **Correctness verdict:** Pending
+- **Real-work failure coverage verdict:** Pending
 
 | Finding | File and line/symbol evidence | Required disposition | Resolution |
 | --- | --- | --- | --- |
