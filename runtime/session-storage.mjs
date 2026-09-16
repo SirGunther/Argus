@@ -43,9 +43,9 @@ const SCRIBE_BATCH_EVALUATED_MAX_ITEMS = 8;
 const SCRIBE_CHECKPOINT_PENDING_MAX_SEGMENTS = 2;
 const SCRIBE_BATCH_IDENTITY_MAX_SEGMENTS = 16;
 const SCRIBE_ITEM_TEXT_MAX_LENGTH = 512;
-// 64 = ceiling on prior_logged_items even if the entire ~8000-token scribe.batch-policy context budget were
-// spent on them alone: at ~4 chars/token, a max-length (512-char, SCRIBE_ITEM_TEXT_MAX_LENGTH) item is ~128
-// tokens, so 8000/128 ~= 62 is the realistic max a policy-governed caller could ever produce; 64 rounds up.
+// Independently governed ceiling for persisted prior_logged_items. Keep recovery state bounded even
+// when the Scribe context budget changes; request assembly may retain fewer items when its budget
+// requires it, but persistence never grows this collection beyond 64.
 const SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX = 64;
 
 export class SessionStorageError extends Error {

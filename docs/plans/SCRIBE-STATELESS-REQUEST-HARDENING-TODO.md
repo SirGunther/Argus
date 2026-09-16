@@ -821,22 +821,23 @@ unless the live run exposes a measured failure and a separate corrective ticket 
 
 ### Goal
 
-Safely put the reviewed Scribe request-hardening chain on `origin/main` without touching the user's
-dirty `C:\Argus` checkout, then prove that the intended LM Studio model accepts the request-scoped
+Safely put the reviewed Scribe request-hardening chain on `origin/main` without losing the user's
+existing `C:\Argus` changes, then prove that the intended LM Studio model accepts the request-scoped
 JSON schema and that real stateless batches remain below the configured 32K model window.
 
 ### Landing checklist
 
-- [ ] Fetch `origin` and use a new clean integration worktree. Do not modify, clean, reset, stash,
-  or commit anything from the user's existing `C:\Argus` checkout.
-- [ ] Confirm `origin/main` still contains merged SCRIBE-06B and is an ancestor of the reviewed
+- [x] Fetch `origin` and use the clean SCRIBE-07 integration worktree for the merge. Preserve the
+  user's two existing tracked-file edits in the named stash
+  `pre-scribe-07 local limits 2026-09-15`; leave untracked `.claude` and `.vscode` content untouched.
+- [x] Confirm `origin/main` still contains merged SCRIBE-06B and is an ancestor of the reviewed
   `origin/agent/scribe-context-budget` tip. Stop if either condition is false.
-- [ ] Inspect the range from `origin/main` to the reviewed tip and confirm it contains only the
+- [x] Inspect the range from `origin/main` to the reviewed tip and confirm it contains only the
   reviewed 07A/07B/07C implementation, evidence-ledger, and review commits recorded above.
-- [ ] With coordinator/user merge authority, fast-forward `origin/main` to the full reviewed tip.
+- [x] With coordinator/user merge authority, fast-forward `origin/main` to the full reviewed tip.
   Do not cherry-pick individual implementation commits or rebuild the installer.
-- [ ] Confirm the pushed `origin/main` contains the reviewed chain and record its full landing SHA.
-- [ ] Correct only the stale comment beside `SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX` if still
+- [x] Confirm the pushed `origin/main` contains the reviewed chain and record its full landing SHA.
+- [x] Correct only the stale comment beside `SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX` if still
   present: describe 64 as the independently governed bounded-history cap, not as a derivation from
   the former 8,000-token budget. Do not change the constant or runtime behavior.
 
@@ -863,8 +864,8 @@ JSON schema and that real stateless batches remain below the configured 32K mode
 
 ### Acceptance evidence
 
-- **Status:** Not started
-- **Landing SHA:** Pending
+- **Status:** Landing complete; live LM Studio acceptance pending
+- **Landing SHA:** `fef6938f89bb82bc995934478985eeeb75eb2f64`
 - **Date and model:** Pending
 - **Session or log reference:** Pending
 - **Observed request separation:** Pending
@@ -875,13 +876,13 @@ JSON schema and that real stateless batches remain below the configured 32K mode
 
 ### Exit gate
 
-- [ ] `origin/main` contains the complete reviewed 07A→07B→07C chain.
+- [x] `origin/main` contains the complete reviewed 07A→07B→07C chain.
 - [ ] The real model accepts the per-request JSON schema and at least two Scribe batches settle into
   visible Logged Items without duplicate provider work.
 - [ ] Actual token counts are recorded and remain safely below the 32K model window, or a separate
   evidence-backed budgeting ticket exists.
-- [ ] The user's dirty `C:\Argus` checkout remains untouched and the acceptance evidence is recorded
-  here.
+- [ ] The user's prior tracked changes remain recoverable from the named stash, untracked local
+  content remains untouched, and the acceptance evidence is recorded here.
 
 ## Definition of done
 
