@@ -1,12 +1,10 @@
 # Argus Scribe Stateless Request Hardening Work Breakdown
 
-**Status:** SCRIBE-06B reviewed and merged (`89a9f66`). SCRIBE-07A, SCRIBE-07B, and SCRIBE-07C are
-implemented, independently reviewed, and each recommended MERGE (see each ticket's Review record
-below). They are chained sequentially as branches (`agent/scribe-structured-response` →
-`agent/scribe-json-fence-compatibility` → `agent/scribe-context-budget`) rather than merged into
-`origin/main` yet — the coordinator has not pushed the final merge-to-`main` decision for 07A/07B/07C
-during this session. Remaining: merge decision for the chain, then the Final real LM Studio
-acceptance below (not started; requires a live LM Studio session).
+**Status:** SCRIBE-06B is merged (`89a9f66`). SCRIBE-07A, SCRIBE-07B, and SCRIBE-07C are implemented
+as one sequential branch chain ending at reviewed tip `cee211f`, independently reviewed, and approved
+for merge. A second coordinator review found no new production-code blocker. The only remaining work
+is SCRIBE-07D: safely land the reviewed chain without touching the user's dirty `C:\Argus` checkout,
+then record real LM Studio acceptance with the intended 32K-context model.
 
 **Execution model:** One low-reasoning agent, one small branch at a time
 
@@ -94,17 +92,15 @@ the user's local checkout after reviewed branches are ready to merge.
 
 ## Delivery order
 
-1. Review and merge SCRIBE-06B independently.
-2. Dispatch SCRIBE-07A from the then-current `origin/main`.
-3. Review SCRIBE-07A for correctness and scope; merge it only if its exit gate passes.
-4. Dispatch SCRIBE-07B from the updated `origin/main` containing SCRIBE-07A.
-5. Review SCRIBE-07B for correctness and scope; merge it only if its exit gate passes.
-6. Dispatch SCRIBE-07C from the updated `origin/main` containing SCRIBE-07B.
-7. Review SCRIBE-07C for correctness and scope; merge it only if its exit gate passes.
-8. Perform the short real LM Studio acceptance at the end of this document.
+1. [x] Review and merge SCRIBE-06B independently.
+2. [x] Implement and review SCRIBE-07A on `agent/scribe-structured-response`.
+3. [x] Implement and review SCRIBE-07B on top of the reviewed SCRIBE-07A tip.
+4. [x] Implement and review SCRIBE-07C on top of the reviewed SCRIBE-07B tip.
+5. [ ] Complete SCRIBE-07D: land the full reviewed chain and perform real LM Studio acceptance.
 
-Do not run SCRIBE-07A, SCRIBE-07B, and SCRIBE-07C in parallel. Each branch starts from the reviewed
-merge immediately before it, giving the low-reasoning agent one isolated behavior at a time.
+SCRIBE-07A, SCRIBE-07B, and SCRIBE-07C were correctly kept sequential rather than run in parallel.
+They were chained through reviewed branch tips instead of being merged to `origin/main` between each
+ticket; the final branch contains the same ordered history and is the single landing candidate.
 
 ## Rules for every implementation ticket
 
@@ -250,34 +246,34 @@ outbound provider request; SCRIBE-07B owns response-content compatibility.
 
 ### Implementation checklist
 
-- [ ] Capture the current OpenAI-compatible Scribe HTTP body in a focused endpoint test and prove it
+- [x] Capture the current OpenAI-compatible Scribe HTTP body in a focused endpoint test and prove it
   lacks `response_format` before the correction.
-- [ ] In the SCRIBE-07A evidence ledger, connect that captured body to the real LM Studio requests
+- [x] In the SCRIBE-07A evidence ledger, connect that captured body to the real LM Studio requests
   recorded in the real-work baseline and to `requestConfiguredModel`; do not cite the test alone.
-- [ ] Add `response_format.type: "json_schema"` with `strict: true` to the OpenAI-compatible HTTP
+- [x] Add `response_format.type: "json_schema"` with `strict: true` to the OpenAI-compatible HTTP
   body only when `isScribeBatchRequest(request)` is true.
-- [ ] Describe the existing Scribe response shape in that provider request: fixed protocol and
+- [x] Describe the existing Scribe response shape in that provider request: fixed protocol and
   purpose, one batch identity object, zero-to-eight item objects, allowed item kinds, item text, and
   source segment IDs. Do not create a competing Argus response contract.
-- [ ] Keep `validateScribeBatchModelResponse` as the authority after JSON parsing. Provider
+- [x] Keep `validateScribeBatchModelResponse` as the authority after JSON parsing. Provider
   structured output supplements validation; it does not replace identity, provenance, limits, or
   exact batch comparison.
-- [ ] Do not alter response-content parsing, Markdown handling, provider retry behavior, or error
+- [x] Do not alter response-content parsing, Markdown handling, provider retry behavior, or error
   categories in this ticket.
-- [ ] Prove with focused tests that the Scribe request carries `response_format` and a normal valid
+- [x] Prove with focused tests that the Scribe request carries `response_format` and a normal valid
   structured response still passes the existing Argus validator.
-- [ ] Prove legacy extraction, classification enrichment, Ollama, and non-Scribe
+- [x] Prove legacy extraction, classification enrichment, Ollama, and non-Scribe
   OpenAI-compatible requests retain their existing bodies and behavior.
-- [ ] Run focused model-lane/Scribe tests, the complete repository suite, syntax checks, and
+- [x] Run focused model-lane/Scribe tests, the complete repository suite, syntax checks, and
   `git diff --check`.
-- [ ] Complete the SCRIBE-07A artifact evidence ledger, commit, push, notify, and stop for review.
+- [x] Complete the SCRIBE-07A artifact evidence ledger, commit, push, notify, and stop for review.
 
 ### Exit gate
 
-- [ ] Structured output is request-scoped to Scribe and cannot alter other LM Studio clients or
+- [x] Structured output is request-scoped to Scribe and cannot alter other LM Studio clients or
   Argus workloads.
-- [ ] Existing parsing and all Argus response validation remain active and unchanged.
-- [ ] No contract version, prompt instruction version, queue, provider setting, or global server
+- [x] Existing parsing and all Argus response validation remain active and unchanged.
+- [x] No contract version, prompt instruction version, queue, provider setting, or global server
   setting changed.
 
 ---
@@ -305,31 +301,31 @@ strict JSON parsing or causing the same valid payload to be sent to the provider
 
 ### Implementation checklist
 
-- [ ] Reproduce the measured failure: a valid governed Scribe JSON object wrapped by exactly one
+- [x] Reproduce the measured failure: a valid governed Scribe JSON object wrapped by exactly one
   complete `json` Markdown fence currently becomes `MODEL_INVALID_JSON`.
-- [ ] In the SCRIBE-07B evidence ledger, trace the real fenced response through
+- [x] In the SCRIBE-07B evidence ledger, trace the real fenced response through
   `requestConfiguredModel` to the repeated provider call and explain why the regression enters that
   same parser and retry path.
-- [ ] Add one small response-content normalizer that trims outer whitespace and unwraps exactly one
+- [x] Add one small response-content normalizer that trims outer whitespace and unwraps exactly one
   complete Markdown fence whose optional language is `json`.
-- [ ] Apply the normalizer only to the assistant message content before `JSON.parse`; do not alter
+- [x] Apply the normalizer only to the assistant message content before `JSON.parse`; do not alter
   the HTTP response envelope or the parsed Scribe object.
-- [ ] Continue rejecting commentary plus JSON, partial fences, multiple fenced blocks, empty
+- [x] Continue rejecting commentary plus JSON, partial fences, multiple fenced blocks, empty
   content, malformed JSON, schema-invalid JSON, altered batch identity, and fabricated provenance.
-- [ ] Preserve `validateScribeBatchModelResponse` as the final authority after parsing.
-- [ ] Prove the exact fenced valid response succeeds on the first provider call and therefore does
+- [x] Preserve `validateScribeBatchModelResponse` as the final authority after parsing.
+- [x] Prove the exact fenced valid response succeeds on the first provider call and therefore does
   not trigger the existing retry.
-- [ ] Prove all rejected wrapper/prose cases remain rejected and ordinary unfenced JSON is unchanged.
-- [ ] Run focused model-lane/Scribe tests, the complete repository suite, syntax checks, and
+- [x] Prove all rejected wrapper/prose cases remain rejected and ordinary unfenced JSON is unchanged.
+- [x] Run focused model-lane/Scribe tests, the complete repository suite, syntax checks, and
   `git diff --check`.
-- [ ] Complete the SCRIBE-07B artifact evidence ledger, commit, push, notify, and stop for review.
+- [x] Complete the SCRIBE-07B artifact evidence ledger, commit, push, notify, and stop for review.
 
 ### Exit gate
 
-- [ ] The observed complete `json` fence is accepted without a repeated provider request.
-- [ ] The parser does not extract JSON from prose or accept partial/multiple fenced content.
-- [ ] Existing schema, identity, provenance, and limit validation remains unchanged.
-- [ ] No retry policy, prompt, contract, queue, provider setting, or unrelated workload changed.
+- [x] The observed complete `json` fence is accepted without a repeated provider request.
+- [x] The parser does not extract JSON from prose or accept partial/multiple fenced content.
+- [x] Existing schema, identity, provenance, and limit validation remains unchanged.
+- [x] No retry policy, prompt, contract, queue, provider setting, or unrelated workload changed.
 
 ---
 
@@ -355,46 +351,47 @@ request remains bounded and self-contained.
 
 ### Implementation checklist
 
-- [ ] Begin from clean `origin/main` containing SCRIBE-07A and SCRIBE-07B. Do not copy or commit the
-  dirty main checkout noted above.
-- [ ] In the SCRIBE-07C evidence ledger, connect the 9,334/9,288-token real requests to
+- [x] Begin from a clean reviewed SCRIBE-07B branch tip containing SCRIBE-07A and SCRIBE-07B. Do not
+  copy or commit the dirty main checkout noted above. The implementation used the sequential branch
+  chain because its reviewed predecessors had intentionally not yet been merged to `origin/main`.
+- [x] In the SCRIBE-07C evidence ledger, connect the 9,334/9,288-token real requests to
   `buildScribeBatchRequest`, coordinator background retention, and the production policy values;
   do not treat limit assertions by themselves as real-work evidence.
-- [ ] Set every production Scribe default/configuration of `max_total_context_tokens` to `16384`.
+- [x] Set every production Scribe default/configuration of `max_total_context_tokens` to `16384`.
   Remove stale statements that describe 8,000 as the current production default without rewriting
   unrelated architectural history.
-- [ ] Set the governed batch output limits to exactly `max_items: 8`, `max_item_chars: 512`,
+- [x] Set the governed batch output limits to exactly `max_items: 8`, `max_item_chars: 512`,
   `max_output_chars: 4096`, and `max_output_tokens: 2048`.
-- [ ] Preserve the current mandatory floor: protected instruction/schema, optional immutable user
+- [x] Preserve the current mandatory floor: protected instruction/schema, optional immutable user
   guidance, complete new evidence, required request identity, and output reserve must fit or the
   request fails visibly.
-- [ ] Preserve bounded coordinator history (currently at most 48 transcript segments and 64 prior
+- [x] Preserve bounded coordinator history (currently at most 48 transcript segments and 64 prior
   Logged Items). Do not make either collection unbounded merely because the configured model has a
   larger window.
-- [ ] Prove background selection removes complete oldest transcript segments before removing any
+- [x] Prove background selection removes complete oldest transcript segments before removing any
   prior Logged Item; only after transcript background is empty may complete oldest Logged Items be
   removed.
-- [ ] Prove retained transcript segments and Logged Items remain chronologically ordered even
+- [x] Prove retained transcript segments and Logged Items remain chronologically ordered even
   though selection prefers newer entries.
-- [ ] Prove the three current evidence rows remain byte-for-byte present and separate from
+- [x] Prove the three current evidence rows remain byte-for-byte present and separate from
   background at every rollover boundary.
-- [ ] Keep the existing provider-neutral estimator unless a focused failing regression proves a
+- [x] Keep the existing provider-neutral estimator unless a focused failing regression proves a
   correctness defect. Label estimated values as estimates; do not add an LM-Studio-specific
   tokenizer dependency or provider call.
-- [ ] Add focused tests for the accepted exact defaults, mandatory evidence, Logged-Item-first
+- [x] Add focused tests for the accepted exact defaults, mandatory evidence, Logged-Item-first
   priority, oldest-unit rollover, chronological output, and an over-budget mandatory floor.
-- [ ] Run focused Scribe context/extraction tests, the complete repository suite, contract checks
+- [x] Run focused Scribe context/extraction tests, the complete repository suite, contract checks
   only if a governed artifact was actually touched, syntax checks, and `git diff --check`.
-- [ ] Complete the SCRIBE-07C artifact evidence ledger, commit, push, notify, and stop for review.
+- [x] Complete the SCRIBE-07C artifact evidence ledger, commit, push, notify, and stop for review.
 
 ### Exit gate
 
-- [ ] The governed production Scribe budget is consistently 16,384 tokens with the exact accepted
+- [x] The governed production Scribe budget is consistently 16,384 tokens with the exact accepted
   output limits.
-- [ ] Each request remains stateless, bounded, and visibly divided into new evidence and background.
-- [ ] New evidence cannot roll off; prior Logged Items survive before raw transcript history; no
+- [x] Each request remains stateless, bounded, and visibly divided into new evidence and background.
+- [x] New evidence cannot roll off; prior Logged Items survive before raw transcript history; no
   background collection becomes unbounded.
-- [ ] No provider-specific tokenizer, conversation state, second context store, response-contract
+- [x] No provider-specific tokenizer, conversation state, second context store, response-contract
   redesign, or unrelated behavior was introduced.
 
 ---
@@ -506,7 +503,7 @@ agent chat.
 | Finding | File and line/symbol evidence | Required disposition | Resolution |
 | --- | --- | --- | --- |
 | Full-suite result in the implementation record ("389 pass, 7 skipped, 0 fail") does not reproduce in the reviewer's environment | `tests/phase8-permissions-packaging.test.mjs:353` | Non-blocking — verify pre-existing on unmodified `origin/main` | Confirmed: the same failure reproduces identically on a clean `origin/main` worktree, unrelated to this branch's diff (a Windows filesystem-permission-scoping flake). Not a merge blocker; ledger's "0 fail" claim should read "1 pre-existing unrelated failure" for accuracy. |
-| Provider-facing JSON Schema marks `kind` as `required` while the runtime validator `validateScribeProposedItem` treats `kind` as optional | `contracts/model-protocol.mjs` — new schema `required: ['text','kind','source_segment_ids']` vs `validateScribeProposedItem`'s `if (item.kind !== undefined ...)` | Non-blocking — note asymmetry | A stricter provider-facing schema than the runtime validator can only reduce malformed responses; the runtime validator remains authoritative. No action required. |
+| Provider-facing JSON Schema marks `kind` as `required` while the runtime validator `validateScribeProposedItem` treats `kind` as optional | `contracts/model-protocol.mjs` — new schema `required: ['text','kind','source_segment_ids']` vs `validateScribeProposedItem`'s `if (item.kind !== undefined ...)` | Non-blocking — note asymmetry | The governed Scribe instruction already requires `item.kind`; the provider schema mirrors that generated response shape. The runtime validator retains optional-kind compatibility for previously accepted payloads and remains authoritative. No correction is required. |
 
 - **Merge verdict:** MERGE — approved to merge to `origin/main` once the coordinator resolves the branch chain (07A → 07B → 07C).
 - **Merged SHA:** Not yet merged to `origin/main` (coordinator is chaining ticket branches; see SCRIBE-07C's evidence for the full chained state).
@@ -792,39 +789,102 @@ affected test case was adjusted to test the now-accepted boundary instead (see t
 
 ---
 
-## Final real LM Studio acceptance
+### Coordinator re-review of the full branch chain
 
-This acceptance occurs only after all three branches are reviewed and merged.
+- **Reviewed chain:** `89a9f66..cee211f` in ancestry order `07A → 07B → 07C`.
+- **Production-code verdict:** MERGE. No new production-code blocker was found.
+- **SCRIBE-07A evidence:** The `response_format` addition is gated by the existing
+  `isScribeBatchRequest` predicate. The provider schema mirrors the instruction's required generated
+  shape; Argus still runs `validateScribeBatchModelResponse` afterward for identity, provenance,
+  batch equality, and output limits.
+- **SCRIBE-07B evidence:** `unwrapScribeJsonFence` is applied only to Scribe content and is anchored
+  to the complete trimmed response. Prose, partial fences, multiple fences, malformed JSON, and
+  schema-invalid JSON still reach the existing rejection path.
+- **SCRIBE-07C evidence:** The accepted 16,384/8/512/4096/2048 values are consistent across the
+  production policy, coordinator fallback, extraction fallback, validator constants, and schema.
+  The pre-existing mandatory-evidence floor, bounded 48/64 background retention, and transcript-
+  before-Logged-Item rollover policy were not changed.
+- **Unresolved work:** Safe landing and live LM Studio acceptance only. The stale ~8,000-token
+  comment beside `SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX` is documentation debt, not a runtime
+  defect; SCRIBE-07D may correct that comment without changing the value or behavior.
 
-- [ ] Start the source Electron application with the intended LM Studio model loaded and a 32,000-
-  token model context window.
-- [ ] Begin a new real session and speak long enough to settle at least two three-row Scribe batches.
-- [ ] In LM Studio logs, confirm each Scribe request is stateless, contains the current batch under
-  `new_evidence_segments`, and carries prior material separately under `background_context`.
-- [ ] Confirm Scribe requests use structured JSON output without changing requests made by another
-  client or another Argus workload.
-- [ ] Confirm a normal response produces zero, one, or multiple Logged Items as appropriate and no
-  fenced valid response causes a duplicate model call.
+---
+
+## SCRIBE-07D — Land the reviewed chain and perform real LM Studio acceptance
+
+**Depends on:** SCRIBE-07A, SCRIBE-07B, and SCRIBE-07C reviewed with MERGE verdicts
+
+**Reviewed chain anchor:** `origin/agent/scribe-context-budget` descending from `cee211f`
+
+**Nature of work:** Landing and real-provider acceptance. No new production behavior is authorized
+unless the live run exposes a measured failure and a separate corrective ticket is written first.
+
+### Goal
+
+Safely put the reviewed Scribe request-hardening chain on `origin/main` without touching the user's
+dirty `C:\Argus` checkout, then prove that the intended LM Studio model accepts the request-scoped
+JSON schema and that real stateless batches remain below the configured 32K model window.
+
+### Landing checklist
+
+- [ ] Fetch `origin` and use a new clean integration worktree. Do not modify, clean, reset, stash,
+  or commit anything from the user's existing `C:\Argus` checkout.
+- [ ] Confirm `origin/main` still contains merged SCRIBE-06B and is an ancestor of the reviewed
+  `origin/agent/scribe-context-budget` tip. Stop if either condition is false.
+- [ ] Inspect the range from `origin/main` to the reviewed tip and confirm it contains only the
+  reviewed 07A/07B/07C implementation, evidence-ledger, and review commits recorded above.
+- [ ] With coordinator/user merge authority, fast-forward `origin/main` to the full reviewed tip.
+  Do not cherry-pick individual implementation commits or rebuild the installer.
+- [ ] Confirm the pushed `origin/main` contains the reviewed chain and record its full landing SHA.
+- [ ] Correct only the stale comment beside `SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX` if still
+  present: describe 64 as the independently governed bounded-history cap, not as a derivation from
+  the former 8,000-token budget. Do not change the constant or runtime behavior.
+
+### Real LM Studio acceptance checklist
+
+- [ ] From a clean worktree at the landed `origin/main`, start the source Electron application with
+  the intended LM Studio model loaded and its context window configured to 32,000 tokens.
+- [ ] Begin a new real microphone session and speak long enough to settle at least two three-row
+  Scribe batches.
+- [ ] In LM Studio logs, confirm each Scribe request is stateless, contains only the current batch
+  under `new_evidence_segments`, and carries retained material separately under
+  `background_context`.
+- [ ] Confirm the Scribe HTTP request carries request-scoped `response_format.type: "json_schema"`
+  and LM Studio accepts it. Do not change a global LM Studio setting or another client.
+- [ ] Confirm accepted model output produces the appropriate zero, one, or multiple Logged Items in
+  Argus and no successful batch is sent to the model a second time.
 - [ ] Record LM Studio's actual `prompt_tokens` and `completion_tokens` for both requests. Treat a
-  difference from Argus's provider-neutral estimate as evidence, not automatically as a defect. If
-  a request approaches the model's real 32K ceiling, stop and create a separate measured budgeting
-  ticket rather than adding provider-specific logic here.
+  difference from Argus's provider-neutral estimate as evidence, not automatically as a defect.
 - [ ] Confirm ordinary application diagnostics remain quiet and no installer was rebuilt.
+- [ ] If LM Studio rejects the JSON schema, a valid response is still rejected, a settled batch is
+  repeated, Logged Items do not appear, or a request approaches the real 32K ceiling, stop. Record
+  the exact provider/application evidence and add one narrowly scoped corrective ticket; do not
+  patch opportunistically inside this acceptance ticket.
 
-### Final acceptance evidence
+### Acceptance evidence
 
 - **Status:** Not started
+- **Landing SHA:** Pending
 - **Date and model:** Pending
 - **Session or log reference:** Pending
 - **Observed request separation:** Pending
 - **Observed structured-output behavior:** Pending
 - **Observed provider token counts:** Pending
 - **Observed Logged Item result:** Pending
-- **Remaining limitation:** Pending
+- **Remaining limitation or corrective ticket:** Pending
+
+### Exit gate
+
+- [ ] `origin/main` contains the complete reviewed 07A→07B→07C chain.
+- [ ] The real model accepts the per-request JSON schema and at least two Scribe batches settle into
+  visible Logged Items without duplicate provider work.
+- [ ] Actual token counts are recorded and remain safely below the 32K model window, or a separate
+  evidence-backed budgeting ticket exists.
+- [ ] The user's dirty `C:\Argus` checkout remains untouched and the acceptance evidence is recorded
+  here.
 
 ## Definition of done
 
-This work is complete only when SCRIBE-07A, SCRIBE-07B, and SCRIBE-07C are independently reviewed
-and merged, the final real LM Studio acceptance is recorded, the ordinary Scribe path no longer
-rejects the observed fenced valid response, and context remains stateless, bounded, prioritized,
-and governed.
+This work is complete only when SCRIBE-07D lands the reviewed chain, records final real LM Studio
+acceptance, confirms the ordinary Scribe path no longer rejects the observed fenced valid response,
+and proves context remains stateless, bounded, prioritized, and governed.
