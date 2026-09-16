@@ -1,6 +1,12 @@
 # Argus Scribe Stateless Request Hardening Work Breakdown
 
-**Status:** Ready for sequential dispatch after SCRIBE-06B is reviewed and merged
+**Status:** SCRIBE-06B reviewed and merged (`89a9f66`). SCRIBE-07A, SCRIBE-07B, and SCRIBE-07C are
+implemented, independently reviewed, and each recommended MERGE (see each ticket's Review record
+below). They are chained sequentially as branches (`agent/scribe-structured-response` →
+`agent/scribe-json-fence-compatibility` → `agent/scribe-context-budget`) rather than merged into
+`origin/main` yet — the coordinator has not pushed the final merge-to-`main` decision for 07A/07B/07C
+during this session. Remaining: merge decision for the chain, then the Final real LM Studio
+acceptance below (not started; requires a live LM Studio session).
 
 **Execution model:** One low-reasoning agent, one small branch at a time
 
@@ -491,18 +497,19 @@ agent chat.
 
 #### Review record
 
-- **Review status:** Pending
-- **Reviewed full SHA:** Pending
-- **Scope verdict:** Pending
-- **Correctness verdict:** Pending
-- **Real-work failure coverage verdict:** Pending
+- **Review status:** Reviewed
+- **Reviewed full SHA:** `f815c9124a7a8c80a110725ff5c9a81a4595327f` (branch tip of `agent/scribe-structured-response`, `origin/main` under it at `89a9f66`)
+- **Scope verdict:** Pass — `git diff --stat origin/main...origin/agent/scribe-structured-response` shows exactly `contracts/model-protocol.mjs`, `services/serial-ai-model-lane/index.mjs`, `tests/scribe-structured-response.test.mjs` (new), and this evidence-ledger doc. No coordinator, persistence, UI, provider-settings, contracts-version, or installer files touched.
+- **Correctness verdict:** Pass — independently reverted only `services/serial-ai-model-lane/index.mjs` to pre-change state and confirmed the focused test fails for the real reason (`response_format` `actual: undefined`); restored and confirmed 4/4 pass. `response_format` gating confirmed to reuse the pre-existing `isScribeBatchRequest` predicate with no second detection mechanism; `SCRIBE_BATCH_RESPONSE_JSON_SCHEMA` confirmed built only from already-governed constants; `validateScribeBatchModelResponse` confirmed byte-unchanged.
+- **Real-work failure coverage verdict:** Pass — production path (`requestConfiguredModel`'s `openai-compatible` body construction) traced directly to the 17:20:17/17:20:56 real-work baseline; regression exercises the real service process (`runService`) against a mock endpoint, not a copied helper.
 
 | Finding | File and line/symbol evidence | Required disposition | Resolution |
 | --- | --- | --- | --- |
-| Pending | Pending | Pending | Pending |
+| Full-suite result in the implementation record ("389 pass, 7 skipped, 0 fail") does not reproduce in the reviewer's environment | `tests/phase8-permissions-packaging.test.mjs:353` | Non-blocking — verify pre-existing on unmodified `origin/main` | Confirmed: the same failure reproduces identically on a clean `origin/main` worktree, unrelated to this branch's diff (a Windows filesystem-permission-scoping flake). Not a merge blocker; ledger's "0 fail" claim should read "1 pre-existing unrelated failure" for accuracy. |
+| Provider-facing JSON Schema marks `kind` as `required` while the runtime validator `validateScribeProposedItem` treats `kind` as optional | `contracts/model-protocol.mjs` — new schema `required: ['text','kind','source_segment_ids']` vs `validateScribeProposedItem`'s `if (item.kind !== undefined ...)` | Non-blocking — note asymmetry | A stricter provider-facing schema than the runtime validator can only reduce malformed responses; the runtime validator remains authoritative. No action required. |
 
-- **Merge verdict:** Pending
-- **Merged SHA:** Pending
+- **Merge verdict:** MERGE — approved to merge to `origin/main` once the coordinator resolves the branch chain (07A → 07B → 07C).
+- **Merged SHA:** Not yet merged to `origin/main` (coordinator is chaining ticket branches; see SCRIBE-07C's evidence for the full chained state).
 
 ### SCRIBE-07B evidence
 
@@ -612,18 +619,18 @@ agent chat.
 
 #### Review record
 
-- **Review status:** Pending
-- **Reviewed full SHA:** Pending
-- **Scope verdict:** Pending
-- **Correctness verdict:** Pending
-- **Real-work failure coverage verdict:** Pending
+- **Review status:** Reviewed
+- **Reviewed full SHA:** `8facffdd7b7eef1ceaaba7b9af6a63faaf430729` (branch tip of `agent/scribe-json-fence-compatibility`, chained on `agent/scribe-structured-response` tip `f815c91`)
+- **Scope verdict:** Pass — diff between the two branch tips touches exactly `services/serial-ai-model-lane/index.mjs`, `tests/scribe-model-extraction.test.mjs`, and this evidence-ledger doc. `contracts/model-protocol.mjs` and `validateScribeBatchModelResponse` confirmed byte-unchanged. No retry-count, prompt, contract, coordinator, persistence, UI, or provider-settings files touched.
+- **Correctness verdict:** Pass — `unwrapScribeJsonFence`'s anchored regex hand-traced against all required rejection cases (commentary-preceding-fence fails the `^` anchor, missing-closing-fence fails the `$` anchor, two fenced blocks caught by the `inner.includes('```')` guard) — these are structural guarantees, not incidental to the test fixtures. Independently reverted the one production line and confirmed the focused tests fail for the real reason (`MODEL_INVALID_JSON`/`status:'failed'`); restored and confirmed 25/25 pass. The "no retry triggered" claim verified against real attempt-counted harness code (`executor: async (work, {attempt}) => {...}`), not a mock incapable of failing.
+- **Real-work failure coverage verdict:** Pass — production path (`requestConfiguredModel`'s response-parsing branch) traced directly to the 17:20:17 fenced-response/17:20:56 repeated-work baseline shared with SCRIBE-07A.
 
 | Finding | File and line/symbol evidence | Required disposition | Resolution |
 | --- | --- | --- | --- |
-| Pending | Pending | Pending | Pending |
+| None | — | — | — |
 
-- **Merge verdict:** Pending
-- **Merged SHA:** Pending
+- **Merge verdict:** MERGE — approved to merge to `origin/main` once the coordinator resolves the branch chain (07A → 07B → 07C).
+- **Merged SHA:** Not yet merged to `origin/main` (coordinator is chaining ticket branches).
 
 ### SCRIBE-07C evidence
 
@@ -769,33 +776,19 @@ affected test case was adjusted to test the now-accepted boundary instead (see t
 
 #### Review record
 
-- **Review status:** Pending
-- **Reviewed full SHA:** Pending
-- **Scope verdict:** Pending
-- **Correctness verdict:** Pending
-- **Real-work failure coverage verdict:** Pending
+- **Review status:** Reviewed
+- **Reviewed full SHA:** `f56028a33636600ae7e3769bac32bdee8428ba5f` (branch tip of `agent/scribe-context-budget`, chained on `agent/scribe-json-fence-compatibility` tip `050887a`)
+- **Scope verdict:** Pass — diff between the two branch tips touches exactly the 4 governed-default locations (`wiring/production-electron.json`, `services/scribe-coordinator/coordinator.mjs`, `services/log-extractor-local-http/scribe-batch-boundary.mjs`, `contracts/scribe-batch-policy.schema.json`), `contracts/model-protocol.mjs`'s output-limit constant, `contracts/scribe-contract-handoff.md`, 3 test files, and this ledger. Confirmed `MAX_BACKGROUND_TRANSCRIPT_SEGMENTS=48`/`MAX_BACKGROUND_LOGGED_ITEMS=64` unchanged; mandatory-floor and oldest-transcript-then-oldest-Logged-Item rollover logic in `buildScribeBatchRequest` read directly and confirmed untouched; provider-neutral `estimateModelTokens` confirmed untouched (zero diff hunks). Batching threshold, idle admission, coordinator cursor/recovery, queue, Logged Item ownership, Whisper/audio, UI, installer confirmed absent from the diff.
+- **Correctness verdict:** Pass — independently reverted `wiring/production-electron.json`'s value to 8000 and confirmed `tests/scribe-context-budget.test.mjs` and `tests/scribe-production-integration.test.mjs` fail for the real reason (`8000 !== 16384`); restored and confirmed green. The self-reported scope-boundary finding (`max_items * max_item_chars` = 4096 = `max_output_chars`, making the total-character ceiling unreachable via item text alone) was independently verified by reading `validateScribeBatchModelResponse` directly — accurately characterized, not a hidden correctness regression, no production logic weakened to route around it.
+- **Real-work failure coverage verdict:** Pass — all four token-budget locations traced directly to the 9,334/9,288-token real-work baseline and the stale ~8,000-token production configuration; regression tests read the actual production files/exports rather than reimplementing them.
 
 | Finding | File and line/symbol evidence | Required disposition | Resolution |
 | --- | --- | --- | --- |
-| Pending | Pending | Pending | Pending |
+| Stale "~8000-token" comment still live as the justification for an active constant | `runtime/session-storage.mjs` lines 46-48 — `SCRIBE_CHECKPOINT_BACKGROUND_ITEMS_MAX = 64` justified via "the entire ~8000-token scribe.batch-policy context budget" / "8000/128 ≈ 62 ... 64 rounds up" | Non-blocking — reword to the 16,384 figure in a follow-up (not a new ticket) | Not fixed in this ticket; the constant's value (64) is unaffected either way. Recorded here as the follow-up. |
+| Duplicated `#### Review record` block under SCRIBE-07C evidence (doc slip from a prior edit) | This file, previously two consecutive "Pending" Review record blocks after the Implementation record | Non-blocking — collapse to one | Fixed by this same edit: the duplicate block is removed and replaced with this single, filled-in Review record. |
 
-- **Merge verdict:** Pending
-- **Merged SHA:** Pending
-
-#### Review record
-
-- **Review status:** Pending
-- **Reviewed full SHA:** Pending
-- **Scope verdict:** Pending
-- **Correctness verdict:** Pending
-- **Real-work failure coverage verdict:** Pending
-
-| Finding | File and line/symbol evidence | Required disposition | Resolution |
-| --- | --- | --- | --- |
-| Pending | Pending | Pending | Pending |
-
-- **Merge verdict:** Pending
-- **Merged SHA:** Pending
+- **Merge verdict:** MERGE — approved to merge to `origin/main` once the coordinator resolves the branch chain (07A → 07B → 07C, each already independently reviewed and approved above).
+- **Merged SHA:** Not yet merged to `origin/main`. Current state: three sequentially-chained, independently-reviewed, MERGE-approved branches — `agent/scribe-structured-response` (07A) → `agent/scribe-json-fence-compatibility` (07B) → `agent/scribe-context-budget` (07C, this branch, containing the full chain) — none yet merged into `origin/main`, per the coordinator's explicit instruction to keep each ticket on its own branch and defer the actual merge-to-`main` decision rather than pushing it during this session.
 
 ---
 
