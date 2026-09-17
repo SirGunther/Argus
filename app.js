@@ -619,8 +619,9 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     for (const service of state.services.values()) {
       const chip = document.createElement('span');
       chip.className = `service-chip ${service.status}`;
-      chip.title = service.message;
-      chip.textContent = `${service.capability}: ${service.status}`;
+      const label = `${service.capability}: ${service.status}`;
+      chip.title = service.message ? `${label} — ${service.message}` : label;
+      chip.textContent = label;
       els.serviceStatusList.append(chip);
     }
     renderSystemStatusSummary();

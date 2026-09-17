@@ -112,7 +112,7 @@
             </div>
           </div>
           <div class="column-labels derived-labels" aria-hidden="true">
-            <span></span><span>Logged</span><span>Source context</span><span>Logged item</span><span></span>
+            <span></span><span>Logged</span><span>Logged item</span><span></span>
           </div>
           <div class="rows-scroll" id="derivedScroll">
             <div class="rows-list" id="derivedList"></div>
@@ -345,12 +345,14 @@
           <input type="checkbox" />
           <span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8 3 3 6-6" /></svg></span>
         </label>
-        <time></time>
-        <button class="source-range" type="button" hidden>
-          <span class="source-start"></span>
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12M12 6l4 4-4 4" /></svg>
-          <span class="source-end"></span>
-        </button>
+        <div class="row-time">
+          <time></time>
+          <button class="source-range" type="button" hidden>
+            <span class="source-start"></span>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12M12 6l4 4-4 4" /></svg>
+            <span class="source-end"></span>
+          </button>
+        </div>
         <div class="row-main">
           <div class="editable-text" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true"></div>
           <div class="row-provenance" hidden><strong>Source</strong><span class="source-identity"></span></div>

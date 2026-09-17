@@ -13,8 +13,11 @@
   --accent: #d9ff70;
   --accent-soft: rgba(217, 255, 112, 0.1);
   --accent-line: rgba(217, 255, 112, 0.38);
+  --accent-hover: #e2ff8e;
   --red: #ff655c;
   --red-soft: rgba(255, 101, 92, 0.12);
+  --red-hover: #ff776f;
+  --red-hover-border: #ffaaa4;
   --blue: #70b7ff;
   --violet: #aa8bff;
   --amber: #ffbd70;
@@ -161,7 +164,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   transition: .16s ease;
 }
 .icon-button:hover { border-color: var(--line); background: var(--surface-raised); color: var(--text); }
-.close-session-button { margin-left: 3px; }
+.close-session-button { margin-left: 3px; color: #d99a96; }
+.close-session-button:hover { border-color: rgba(255, 101, 92, .35); background: var(--red-soft); color: #ffb5af; }
 .ai-provider-button { margin-left: 3px; }
 button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
 
@@ -196,9 +200,9 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .pane-title-group, .pane-title-line { min-width: 0; }
 .eyebrow, .drawer-label { color: var(--text-muted); font: 500 8px/1.1 var(--mono); letter-spacing: .14em; }
 .pane-title-line { gap: 9px; margin-top: 8px; }
-.pane-title-line h2 { min-width: 0; margin: 0; overflow: hidden; font-size: 16px; line-height: 1; letter-spacing: -.015em; text-overflow: ellipsis; white-space: nowrap; }
+.pane-title-line h2 { flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden; font-size: 16px; line-height: 1; letter-spacing: -.015em; text-overflow: ellipsis; white-space: nowrap; }
 .count-badge { flex: 0 0 auto; padding: 3px 6px; border: 1px solid var(--line); border-radius: 10px; color: var(--text-muted); font: 400 8px/1 var(--mono); }
-.scribe-status { display: inline-flex; align-items: center; flex: 0 1 auto; gap: 5px; min-width: 0; padding: 3px 7px; border: 1px solid var(--line); border-radius: 10px; color: var(--text-muted); font: 400 8px/1 var(--mono); }
+.scribe-status { display: inline-flex; align-items: center; flex: 0 3 auto; gap: 5px; min-width: 0; padding: 3px 7px; border: 1px solid var(--line); border-radius: 10px; color: var(--text-muted); font: 400 8px/1 var(--mono); }
 .scribe-status > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-status-dot { width: 5px; height: 5px; flex: none; border-radius: 50%; background: currentColor; }
 .scribe-status.caught-up { color: var(--text-muted); }
@@ -223,11 +227,13 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 
 .column-labels, .data-row {
   display: grid;
-  grid-template-columns: 20px minmax(5ch, 7ch) minmax(0, 1fr) 28px;
+  /* Column 2 is a fixed px width, not ch: ch resolves per-element against each grid container's
+     own font, so the same "minmax(Nch, Mch)" string produced different actual pixel tracks in the
+     header vs. the row (see UX-007 in dustin-thomason/docs/Argus/ui-ux-cleanup-fixes.md) — a fixed
+     px value removes that font-dependence, and 64px is sized to fit an 8-character HH:MM:SS
+     timestamp at .data-row time's 10px mono font without clipping. */
+  grid-template-columns: 20px 64px minmax(0, 1fr) 28px;
   gap: 10px;
-}
-.derived-labels, #derivedList .data-row {
-  grid-template-columns: 20px minmax(5ch, 7ch) minmax(9ch, 13ch) minmax(0, 1fr) 28px;
 }
 .column-labels {
   align-items: center;
@@ -288,7 +294,8 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .row-checkbox input:checked + span { border-color: var(--accent); background: var(--accent); }
 .row-checkbox input:checked + span svg { opacity: 1; }
 
-.data-row time { padding-top: 2px; color: var(--text-muted); font: 400 10px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
+.row-time { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; padding-top: 2px; }
+.data-row time { color: var(--text-muted); font: 400 10px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
 .row-main { min-width: 0; }
 #transcriptList .data-row:not(.live-preview) > .row-main { margin-left: 4px; }
 .editable-text { min-height: 20px; outline: none; color: #dce1dd; font-size: 12px; line-height: 1.6; caret-color: var(--accent); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -304,36 +311,45 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .classification-suggestion { display: inline-block; margin-top: 7px; padding: 3px 6px; border: 1px solid rgba(112,183,255,.28); border-radius: 3px; color: #9bc7ee; font: 500 8px/1 var(--mono); letter-spacing: .02em; }
 .classification-suggestion.suggested { border-color: rgba(112,183,255,.38); background: rgba(112,183,255,.07); color: #afd7f8; }
 .classification-suggestion.available { border-color: rgba(158,214,94,.25); color: #b5d887; }
-.classification-suggestion.degraded { border-color: rgba(255,205,92,.36); color: #f0c978; }
-.classification-suggestion.unavailable { border-color: rgba(255,101,92,.32); color: #f19a93; }
+.classification-suggestion.degraded, .classification-suggestion.unavailable { border-color: var(--line); color: var(--text-muted); }
 .classification-suggestion[hidden], .row-provenance[hidden] { display: none; }
 
+/* Compact icon button: the exact source range is available on demand (title/aria-label, set in
+   app.js) rather than spelled out on every row — see UX-008 in
+   dustin-thomason/docs/Argus/ui-ux-cleanup-fixes.md. The .source-start/.source-end spans keep
+   carrying the range text for any consumer of textContent, but are visually hidden here. */
 .source-range {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-height: 23px;
-  margin-top: -2px;
-  padding: 0 6px;
-  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 2px;
-  background: rgba(112, 183, 255, .045);
-  color: #7f9189;
-  font: 400 8px/1 var(--mono);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  background: transparent;
+  color: #53645d;
+  opacity: 0;
   cursor: pointer;
   transition: .14s ease;
 }
+.data-row:hover .source-range, .source-range:focus-visible { opacity: 1; }
 .source-range[hidden] { display: none; }
-.source-range svg { width: 10px; height: 10px; color: #53645d; }
+.source-range svg { width: 11px; height: 11px; }
+.source-range .source-start, .source-range .source-end {
+  position: absolute;
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .source-range:hover, .source-range:focus-visible {
   border-color: var(--accent-line);
   background: var(--accent-soft);
   color: var(--accent);
   outline: none;
 }
+.source-range:disabled, .data-row:hover .source-range:disabled { cursor: default; opacity: .35; }
 
 .row-copy {
   display: grid;
@@ -444,7 +460,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .system-status-group { display: grid; gap: 7px; min-width: 0; }
 .system-status-label { color: var(--text-muted); font: 500 8px/1.1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
 .service-status-list { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 5px; min-width: 0; }
-.service-chip { max-width: 145px; overflow: hidden; padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; color: var(--text-muted); font: 500 8px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.service-chip { max-width: 190px; overflow: hidden; padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; color: var(--text-muted); font: 500 8px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .service-chip.available { border-color: rgba(158, 214, 94, .25); color: #b5d887; }
 .service-chip.degraded { border-color: rgba(255, 205, 92, .36); color: #f0c978; }
 .service-chip.unavailable { border-color: rgba(255, 101, 92, .32); color: #f19a93; }
@@ -541,7 +557,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .file-state { padding: 3px 5px; border-radius: 2px; background: rgba(255, 189, 112, .09); color: var(--amber); font: 500 7px/1 var(--mono); text-transform: uppercase; }
 .file-state.neutral { background: var(--surface-active); color: var(--text-muted); }
 .drawer-folder-button { width: 100%; margin-top: auto; border-color: var(--accent-line); background: var(--accent); color: #121711; }
-.drawer-folder-button:hover { background: #e2ff8e !important; border-color: var(--accent) !important; }
+.button.drawer-folder-button:hover { background: var(--accent-hover); border-color: var(--accent); }
 
 .settings-drawer { position: fixed; inset: 0; z-index: 25; visibility: hidden; pointer-events: none; }
 .settings-drawer.open { visibility: visible; pointer-events: auto; }
@@ -567,7 +583,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .credential-row .text-button { flex: none; }
 .settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 22px; }
 .settings-footer .button { min-height: 36px; background: var(--accent); color: #121711; }
-.settings-footer .button:hover { background: #e2ff8e !important; border-color: var(--accent) !important; }
+.settings-footer .button:hover { background: var(--accent-hover); border-color: var(--accent); }
 
 .modal-layer { position: fixed; inset: 0; display: grid; place-items: center; z-index: 30; visibility: hidden; pointer-events: none; }
 .modal-layer.open { visibility: visible; pointer-events: auto; }
@@ -584,7 +600,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 21px; }
 .modal-actions .button { min-height: 36px; font-size: 10px; }
 .button-danger { border-color: rgba(255, 101, 92, .45); background: var(--red); color: #180e0d; }
-.button-danger:hover { border-color: #ffaaa4 !important; background: #ff776f !important; }
+.button.button-danger:hover { border-color: var(--red-hover-border); background: var(--red-hover); }
 
 .toast-region { position: fixed; top: 18px; left: 50%; z-index: 50; display: grid; gap: 7px; transform: translateX(-50%); pointer-events: none; }
 .toast { display: flex; align-items: center; gap: 8px; min-width: 190px; padding: 10px 13px; border: 1px solid #3a4540; background: #1b2320; box-shadow: 0 9px 25px rgba(0,0,0,.35); color: var(--text-soft); font-size: 9px; animation: toastIn .24s ease both; }
@@ -626,6 +642,11 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
   .pane { grid-template-rows: auto 27px minmax(0, 1fr); }
   .pane-header { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; align-content: center; padding-top: 8px; padding-bottom: 8px; }
   .pane-actions { justify-content: flex-end; min-width: 0; }
+}
+
+@media (hover: none) {
+  /* Devices with no hover capability need row actions visible without a hover state to discover them. */
+  .row-copy, .source-range:not(:disabled) { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
