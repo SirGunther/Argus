@@ -329,6 +329,31 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     });
   }
 
+  function describeSourceRange(source) {
+    // Segments are contiguous (each starts exactly where the previous ends), so source.end_time is
+    // always numerically identical to the next, uncollected segment's start time. Stating a raw time
+    // range reads as "collection continued up to this instant," which is indistinguishable from that
+    // adjacent, uncollected segment starting at the same instant. Naming the exact segment count and
+    // ids makes clear this is a discrete, bounded set — not an open time window.
+    const resolvedCount = resolveSourceRangeIds(state.transcript, source).length;
+    const idPart = source.first_segment_id === source.last_segment_id
+      ? source.first_segment_id
+      : `${source.first_segment_id} → ${source.last_segment_id}`;
+    if (!resolvedCount) {
+      // The cited segments aren't in the currently loaded active transcript (e.g. trimmed active
+      // history) — resolveSourceRangeIds can't confirm a count, so don't fabricate one.
+      return {
+        title: `Exact source: ${idPart}, spoken ${source.start_time}–${source.end_time}`,
+        ariaLabel: `Exact source: ${idPart}, spoken from ${source.start_time} to ${source.end_time}`
+      };
+    }
+    const segmentWord = resolvedCount === 1 ? 'segment' : 'segments';
+    return {
+      title: `Exact source: ${resolvedCount} ${segmentWord} considered (${idPart}), spoken ${source.start_time}–${source.end_time}`,
+      ariaLabel: `Exact source: ${resolvedCount} ${segmentWord} considered, ${idPart}, spoken from ${source.start_time} to ${source.end_time}`
+    };
+  }
+
   function createRow(kind, item, animate) {
     const row = els.template.content.firstElementChild.cloneNode(true);
     const checkbox = row.querySelector('input');
@@ -377,8 +402,9 @@ import { createSessionTimer } from './ui/session-timer.mjs';
         sourceRange.querySelector('.source-start').textContent = source.start_time;
         sourceRange.querySelector('.source-end').textContent = source.end_time;
         sourceIdentity.textContent = `${source.first_segment_id} → ${source.last_segment_id}`;
-        sourceRange.title = `Show exact source range ${source.first_segment_id} (${source.start_time}) through ${source.last_segment_id} (${source.end_time})`;
-        sourceRange.setAttribute('aria-label', `Show exact source range ${source.first_segment_id} at ${source.start_time} through ${source.last_segment_id} at ${source.end_time}`);
+        const described = describeSourceRange(source);
+        sourceRange.title = described.title;
+        sourceRange.setAttribute('aria-label', described.ariaLabel);
         sourceRange.addEventListener('click', () => showSourceContext(row.argusItem));
         provenance.hidden = false;
       } else {
@@ -500,8 +526,9 @@ import { createSessionTimer } from './ui/session-timer.mjs';
         sourceRange.querySelector('.source-start').textContent = source.start_time;
         sourceRange.querySelector('.source-end').textContent = source.end_time;
         sourceIdentity.textContent = `${source.first_segment_id} → ${source.last_segment_id}`;
-        sourceRange.title = `Show exact source range ${source.first_segment_id} (${source.start_time}) through ${source.last_segment_id} (${source.end_time})`;
-        sourceRange.setAttribute('aria-label', `Show exact source range ${source.first_segment_id} at ${source.start_time} through ${source.last_segment_id} at ${source.end_time}`);
+        const described = describeSourceRange(source);
+        sourceRange.title = described.title;
+        sourceRange.setAttribute('aria-label', described.ariaLabel);
         provenance.hidden = false;
       } else {
         row.classList.add('degraded');
