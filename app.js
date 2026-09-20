@@ -329,6 +329,31 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     });
   }
 
+  function describeSourceRange(source) {
+    // Segments are contiguous (each starts exactly where the previous ends), so source.end_time is
+    // always numerically identical to the next, uncollected segment's start time. Stating a raw time
+    // range reads as "collection continued up to this instant," which is indistinguishable from that
+    // adjacent, uncollected segment starting at the same instant. Naming the exact segment count and
+    // ids makes clear this is a discrete, bounded set — not an open time window.
+    const resolvedCount = resolveSourceRangeIds(state.transcript, source).length;
+    const idPart = source.first_segment_id === source.last_segment_id
+      ? source.first_segment_id
+      : `${source.first_segment_id} → ${source.last_segment_id}`;
+    if (!resolvedCount) {
+      // The cited segments aren't in the currently loaded active transcript (e.g. trimmed active
+      // history) — resolveSourceRangeIds can't confirm a count, so don't fabricate one.
+      return {
+        title: `Exact source: ${idPart}, spoken ${source.start_time}–${source.end_time}`,
+        ariaLabel: `Exact source: ${idPart}, spoken from ${source.start_time} to ${source.end_time}`
+      };
+    }
+    const segmentWord = resolvedCount === 1 ? 'segment' : 'segments';
+    return {
+      title: `Exact source: ${resolvedCount} ${segmentWord} considered (${idPart}), spoken ${source.start_time}–${source.end_time}`,
+      ariaLabel: `Exact source: ${resolvedCount} ${segmentWord} considered, ${idPart}, spoken from ${source.start_time} to ${source.end_time}`
+    };
+  }
+
   function createRow(kind, item, animate) {
     const row = els.template.content.firstElementChild.cloneNode(true);
     const checkbox = row.querySelector('input');
@@ -376,18 +401,17 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       if (validSource) {
         sourceRange.querySelector('.source-start').textContent = source.start_time;
         sourceRange.querySelector('.source-end').textContent = source.end_time;
-        sourceIdentity.textContent = `${source.first_segment_id} → ${source.last_segment_id}`;
-        sourceRange.title = `Show exact source range ${source.first_segment_id} (${source.start_time}) through ${source.last_segment_id} (${source.end_time})`;
-        sourceRange.setAttribute('aria-label', `Show exact source range ${source.first_segment_id} at ${source.start_time} through ${source.last_segment_id} at ${source.end_time}`);
+        const described = describeSourceRange(source);
+        sourceRange.title = described.title;
+        sourceRange.setAttribute('aria-label', described.ariaLabel);
         sourceRange.addEventListener('click', () => showSourceContext(row.argusItem));
-        provenance.hidden = false;
       } else {
         row.classList.add('degraded');
         sourceRange.disabled = true;
         sourceRange.querySelector('.source-start').textContent = 'Source unavailable';
         sourceRange.querySelector('.source-end').textContent = '';
-        sourceIdentity.textContent = 'Exact provenance rejected';
-        provenance.hidden = false;
+        sourceRange.title = 'Exact source provenance is unavailable for this logged item.';
+        sourceRange.setAttribute('aria-label', 'Exact source provenance is unavailable for this logged item.');
       }
       const classification = describeClassification(item.classification_suggestion, state.services.get('classification'));
       suggestion.hidden = false;
@@ -499,18 +523,17 @@ import { createSessionTimer } from './ui/session-timer.mjs';
         sourceRange.disabled = false;
         sourceRange.querySelector('.source-start').textContent = source.start_time;
         sourceRange.querySelector('.source-end').textContent = source.end_time;
-        sourceIdentity.textContent = `${source.first_segment_id} → ${source.last_segment_id}`;
-        sourceRange.title = `Show exact source range ${source.first_segment_id} (${source.start_time}) through ${source.last_segment_id} (${source.end_time})`;
-        sourceRange.setAttribute('aria-label', `Show exact source range ${source.first_segment_id} at ${source.start_time} through ${source.last_segment_id} at ${source.end_time}`);
-        provenance.hidden = false;
+        const described = describeSourceRange(source);
+        sourceRange.title = described.title;
+        sourceRange.setAttribute('aria-label', described.ariaLabel);
       } else {
         row.classList.add('degraded');
         sourceRange.hidden = false;
         sourceRange.disabled = true;
         sourceRange.querySelector('.source-start').textContent = 'Source unavailable';
         sourceRange.querySelector('.source-end').textContent = '';
-        sourceIdentity.textContent = 'Exact provenance rejected';
-        provenance.hidden = false;
+        sourceRange.title = 'Exact source provenance is unavailable for this logged item.';
+        sourceRange.setAttribute('aria-label', 'Exact source provenance is unavailable for this logged item.');
       }
       const classification = describeClassification(item.classification_suggestion, state.services.get('classification'));
       suggestion.hidden = false;
@@ -619,8 +642,9 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     for (const service of state.services.values()) {
       const chip = document.createElement('span');
       chip.className = `service-chip ${service.status}`;
-      chip.title = service.message;
-      chip.textContent = `${service.capability}: ${service.status}`;
+      const label = `${service.capability}: ${service.status}`;
+      chip.title = service.message ? `${label} — ${service.message}` : label;
+      chip.textContent = label;
       els.serviceStatusList.append(chip);
     }
     renderSystemStatusSummary();
