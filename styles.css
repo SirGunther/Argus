@@ -328,7 +328,10 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-li
   border-radius: 2px;
   background: transparent;
   color: #53645d;
-  opacity: 0;
+  /* Always faintly visible (not opacity: 0) so the icon itself is the discoverability cue - a
+     fully-hidden-until-hover icon gives no indication there's anything to find. Brightens to full
+     opacity + accent color on row hover/focus below. */
+  opacity: .55;
   cursor: pointer;
   transition: .14s ease;
 }
