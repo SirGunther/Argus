@@ -401,19 +401,17 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       if (validSource) {
         sourceRange.querySelector('.source-start').textContent = source.start_time;
         sourceRange.querySelector('.source-end').textContent = source.end_time;
-        sourceIdentity.textContent = `${source.first_segment_id} → ${source.last_segment_id}`;
         const described = describeSourceRange(source);
         sourceRange.title = described.title;
         sourceRange.setAttribute('aria-label', described.ariaLabel);
         sourceRange.addEventListener('click', () => showSourceContext(row.argusItem));
-        provenance.hidden = false;
       } else {
         row.classList.add('degraded');
         sourceRange.disabled = true;
         sourceRange.querySelector('.source-start').textContent = 'Source unavailable';
         sourceRange.querySelector('.source-end').textContent = '';
-        sourceIdentity.textContent = 'Exact provenance rejected';
-        provenance.hidden = false;
+        sourceRange.title = 'Exact source provenance is unavailable for this logged item.';
+        sourceRange.setAttribute('aria-label', 'Exact source provenance is unavailable for this logged item.');
       }
       const classification = describeClassification(item.classification_suggestion, state.services.get('classification'));
       suggestion.hidden = false;
@@ -525,19 +523,17 @@ import { createSessionTimer } from './ui/session-timer.mjs';
         sourceRange.disabled = false;
         sourceRange.querySelector('.source-start').textContent = source.start_time;
         sourceRange.querySelector('.source-end').textContent = source.end_time;
-        sourceIdentity.textContent = `${source.first_segment_id} → ${source.last_segment_id}`;
         const described = describeSourceRange(source);
         sourceRange.title = described.title;
         sourceRange.setAttribute('aria-label', described.ariaLabel);
-        provenance.hidden = false;
       } else {
         row.classList.add('degraded');
         sourceRange.hidden = false;
         sourceRange.disabled = true;
         sourceRange.querySelector('.source-start').textContent = 'Source unavailable';
         sourceRange.querySelector('.source-end').textContent = '';
-        sourceIdentity.textContent = 'Exact provenance rejected';
-        provenance.hidden = false;
+        sourceRange.title = 'Exact source provenance is unavailable for this logged item.';
+        sourceRange.setAttribute('aria-label', 'Exact source provenance is unavailable for this logged item.');
       }
       const classification = describeClassification(item.classification_suggestion, state.services.get('classification'));
       suggestion.hidden = false;
