@@ -53,6 +53,29 @@ export function isSourceHighlighted(uiState, segmentId) {
   return uiState.sourceHighlights.has(segmentId);
 }
 
+// Logged Items must sort by the order they were actually logged, not by `logged_at`
+// (source-content time). `logged_at` is derived from the spoken audio's session-elapsed clock,
+// which restarts near zero whenever capture reinitializes without already knowing a session was
+// active - e.g. relaunching the app and resuming a session recorded earlier - producing a smaller
+// time string for genuinely later items. `orderMap` assigns each item a stable index the first
+// time it's ever seen (live arrival or bootstrap load, both already in true creation order) and
+// that index, not the unreliable time string, is what determines display order.
+//
+// `ensureDerivedOrder` must be called explicitly for a new item before it can ever reach
+// `compareDerivedOrder` (app.js does this at push time, immediately before re-sorting). It must
+// NOT be called lazily from inside the comparator: Array.prototype.sort does not guarantee which
+// argument order it compares elements in, so assigning on first comparison would hand out indices
+// based on the sort algorithm's internal traversal order instead of true arrival order - the same
+// class of bug this function exists to fix, just moved one level down.
+export function ensureDerivedOrder(orderMap, itemId) {
+  if (!orderMap.has(itemId)) orderMap.set(itemId, orderMap.size);
+  return orderMap.get(itemId);
+}
+
+export function compareDerivedOrder(orderMap, a, b) {
+  return orderMap.get(a.item_id) - orderMap.get(b.item_id);
+}
+
 export function describeClassification(suggestion, serviceStatus) {
   const availability = serviceStatus?.status || 'degraded';
   if (suggestion) {
