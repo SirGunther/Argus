@@ -1,5 +1,5 @@
 import {
-  createUiState, describeClassification, isSelected, isSourceHighlighted, jumpToLive,
+  compareDerivedOrder, createUiState, describeClassification, ensureDerivedOrder, isSelected, isSourceHighlighted, jumpToLive,
   noteIncomingContent, notePaneScroll, reconcileKeyedRows, replaceSourceHighlights,
   resolveSourceRangeIds, selectRange, selectionSummary, setAllSelected, toggleSelected
 } from './ui/ui-state.mjs';
@@ -13,7 +13,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   const AUDIO_INPUT_STORAGE_KEY = 'argus.selected-audio-input-device';
   const ui = createUiState();
   const desktop = window.argus || null;
-  const state = { session: null, transcript: [], derived: [], liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null, aiProvider: null, aiProviderTab: 'local', aiProviderSaving: false, scribeGuidance: null, scribeGuidanceSaving: false };
+  const state = { session: null, transcript: [], derived: [], derivedOrder: new Map(), liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null, aiProvider: null, aiProviderTab: 'local', aiProviderSaving: false, scribeGuidance: null, scribeGuidanceSaving: false };
   const timer = createSessionTimer();
   const STARTING_TIMEOUT_MS = 15000;
   const audioInput = { devices: [], selectedDeviceId: readRememberedAudioInput(), refreshing: false, initialized: false, ready: false, message: 'Checking microphone access...', tone: '' };
@@ -292,9 +292,10 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     const wasPresent = index >= 0;
     if (wasPresent) collection[index] = { ...collection[index], ...item };
     else collection.push({ ...item });
+    if (kind === 'derived') ensureDerivedOrder(state.derivedOrder, id);
     collection.sort((a, b) => kind === 'transcript'
       ? Number(Boolean(a.provisional)) - Number(Boolean(b.provisional)) || a.sequence - b.sequence
-      : a.logged_at.localeCompare(b.logged_at));
+      : compareDerivedOrder(state.derivedOrder, a, b));
     renderRows(kind, !bootstrap && !wasPresent);
     updateCounts();
     if (!bootstrap && !wasPresent) {
@@ -943,6 +944,7 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     if (result.status === 'accepted' && desktop && result.command === 'session.new') {
       state.transcript = [];
       state.derived = [];
+      state.derivedOrder.clear();
       resetLiveTranscriptState(state.liveProvisional);
       state.pending.clear();
       ui.selected.transcript.clear();
