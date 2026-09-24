@@ -94,7 +94,7 @@ The production Electron graph validates with 12 supervised components and an exp
 - Transcript source ranges on every logged item; selecting a range reveals the contributing transcript rows
 - Top-center notifications that stay clear of incoming live content
 - Session details drawer, identity-only storage capability preview, and finalization confirmation
-- Host-governed AI Provider settings with Local Model and External Service tabs, masked replace/remove credentials, and visible connection results
+- Host-governed AI Provider settings with Local Model and External Service tabs, masked replace/remove credentials, and visible connection results; External Service offers OpenAI-compatible providers and LM Studio over private HTTPS (such as Tailscale Serve) with a saved API token, and for that remote LM Studio connection Argus turns thinking off per request
 - Visible per-capability status for transcript, logged-item pipeline, storage/session, clipboard, folder opening, and optional classification
 - Responsive stacked-pane fallback for narrower windows
 

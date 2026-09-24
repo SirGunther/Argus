@@ -1726,8 +1726,16 @@ async function testProviderConnection(settings, credential, expectedIdentity) {
     if (models.length && !listed) return { status: 'unavailable', message: `${providerLabel(settings)} is reachable but selected model ${settings.model} is not available.` };
     return { status: 'available', message: `${providerLabel(settings)} connection is available for model ${settings.model}.` };
   } catch (error) {
+    if (error.status === 401 || error.status === 403) return { status: 'unavailable', message: authenticationFailureMessage(settings, error.status, Boolean(credential)) };
     return { status: 'unavailable', message: `${providerLabel(settings)} unavailable: ${error.message}` };
   }
+}
+
+// Local mode never sends a credential, so an auth rejection there means the server needs the External Service path.
+function authenticationFailureMessage(settings, status, credentialSent) {
+  return credentialSent
+    ? `${providerLabel(settings)} rejected the API key (HTTP ${status}).`
+    : `${providerLabel(settings)} requires an API key (HTTP ${status}). Local providers never send one; connect through External Service with an API key.`;
 }
 
 function modelListingUrl(endpoint) {
@@ -1748,7 +1756,7 @@ async function fetchJson(url, options, timeoutMs) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
     return response.json();
   } catch (error) {
     if (error.name === 'AbortError') throw new Error(`request timed out after ${timeoutMs} ms`);

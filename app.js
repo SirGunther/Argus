@@ -11,6 +11,10 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   'use strict';
 
   const AUDIO_INPUT_STORAGE_KEY = 'argus.selected-audio-input-device';
+  const OPENAI_DEFAULT_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
+  const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini';
+  // A remote LM Studio server has no default address; the placeholder shows the full-URL shape the host requires.
+  const EXTERNAL_LM_STUDIO_ENDPOINT_PLACEHOLDER = 'https://your-device.your-tailnet.ts.net/v1/chat/completions';
   const ui = createUiState();
   const desktop = window.argus || null;
   const state = { session: null, transcript: [], derived: [], derivedOrder: new Map(), liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null, aiProvider: null, aiProviderTab: 'local', aiProviderSaving: false, scribeGuidance: null, scribeGuidanceSaving: false };
@@ -655,13 +659,14 @@ import { createSessionTimer } from './ui/session-timer.mjs';
     const settings = state.aiProvider;
     if (!settings) return;
     const local = settings.mode === 'local' ? settings : { provider: 'ollama', endpoint: 'http://127.0.0.1:11434/api/generate', model: 'llama3.2:3b' };
-    const external = settings.mode === 'external' ? settings : { provider: 'openai-compatible', endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini' };
+    const external = settings.mode === 'external' ? settings : { provider: 'openai-compatible', endpoint: OPENAI_DEFAULT_ENDPOINT, model: OPENAI_DEFAULT_MODEL };
     els.localProviderSelect.value = local.provider;
     els.localEndpointInput.value = local.endpoint;
     els.localModelInput.value = local.model;
     els.externalProviderSelect.value = external.provider;
     els.externalEndpointInput.value = external.endpoint;
     els.externalModelInput.value = external.model;
+    updateExternalEndpointPlaceholder();
     // Never hydrate the password control. A saved credential is represented only by a boolean.
     els.externalApiKeyInput.value = '';
     els.externalApiKeyInput.placeholder = settings.credential_configured ? 'Saved on host · enter to replace' : 'Enter API key';
@@ -675,6 +680,10 @@ import { createSessionTimer } from './ui/session-timer.mjs';
 
   function providerLabel(provider) {
     return provider === 'ollama' ? 'Ollama' : provider === 'lm-studio' ? 'LM Studio' : 'OpenAI-compatible';
+  }
+
+  function updateExternalEndpointPlaceholder() {
+    els.externalEndpointInput.placeholder = els.externalProviderSelect.value === 'lm-studio' ? EXTERNAL_LM_STUDIO_ENDPOINT_PLACEHOLDER : '';
   }
 
   function updateProviderTabVisibility() {
@@ -1144,6 +1153,17 @@ import { createSessionTimer } from './ui/session-timer.mjs';
       els.localEndpointInput.value = 'http://127.0.0.1:1234/v1/chat/completions';
       if (!els.localModelInput.value || els.localModelInput.value === 'llama3.2:3b') els.localModelInput.value = 'local-model';
     }
+  });
+  els.externalProviderSelect.addEventListener('change', () => {
+    // Only the OpenAI defaults Argus filled in are swapped; a value the user typed survives a provider switch.
+    if (els.externalProviderSelect.value === 'lm-studio') {
+      if (els.externalEndpointInput.value.trim() === OPENAI_DEFAULT_ENDPOINT) els.externalEndpointInput.value = '';
+      if (els.externalModelInput.value.trim() === OPENAI_DEFAULT_MODEL) els.externalModelInput.value = '';
+    } else if (els.externalProviderSelect.value === 'openai-compatible') {
+      if (!els.externalEndpointInput.value.trim()) els.externalEndpointInput.value = OPENAI_DEFAULT_ENDPOINT;
+      if (!els.externalModelInput.value.trim()) els.externalModelInput.value = OPENAI_DEFAULT_MODEL;
+    }
+    updateExternalEndpointPlaceholder();
   });
   els.testLocalConnectionButton.addEventListener('click', () => { void testAiProvider('local', els.testLocalConnectionButton, els.localConnectionStatus); });
   els.testExternalConnectionButton.addEventListener('click', () => { void testAiProvider('external', els.testExternalConnectionButton, els.externalConnectionStatus); });
