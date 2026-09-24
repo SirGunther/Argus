@@ -583,6 +583,18 @@ unreachable runtime, or failed connection test produces an unavailable/degraded 
 - Provider switching is a host configuration operation and cannot create a renderer-to-model route or bypass the governed AI lane.
 - Credential persistence is transactional at the host boundary: if a credential mutation fails, the previous non-secret provider configuration is restored.
 
+### Amendment — 2026-09-24
+
+External providers are now OpenAI-compatible or LM Studio. External LM Studio reaches a private
+server over HTTPS (for example `https://<device>.<tailnet>.ts.net`, published through Tailscale
+Serve) and must be configured with the full `/chat/completions` URL, because the serial lane posts to
+the configured endpoint verbatim and a base URL would pass the connection test and fail every real
+request. The lane adds `reasoning_effort: "none"` to request bodies only for external LM Studio: a
+remote LM Studio host otherwise applies its own saved per-model thinking setting, and OpenAI rejects
+the field. Credentials stay scoped to the exact provider and endpoint, so an LM Studio token is never
+reused for an OpenAI-compatible endpoint or the reverse. Local LM Studio remains loopback-only and
+credential-free.
+
 ## ADR-021 — Logged-item extraction uses three-row batches and Argus-owned context
 
 **Status:** Accepted as the next logged-item extraction target

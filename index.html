@@ -283,7 +283,10 @@
         </section>
         <section class="provider-panel" id="externalServicePanel" role="tabpanel" aria-labelledby="externalServiceTab" hidden>
           <label class="settings-field" for="externalProviderSelect">External provider
-            <select id="externalProviderSelect"><option value="openai-compatible">OpenAI-compatible / custom HTTPS</option></select>
+            <select id="externalProviderSelect">
+              <option value="openai-compatible">OpenAI-compatible / custom HTTPS</option>
+              <option value="lm-studio">LM Studio (private HTTPS, e.g. Tailscale)</option>
+            </select>
           </label>
           <label class="settings-field" for="externalEndpointInput">Endpoint
             <input id="externalEndpointInput" type="url" spellcheck="false" autocomplete="off" />
