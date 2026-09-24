@@ -38,21 +38,47 @@ test('external LM Studio normalizes to one exact HTTPS chat completions configur
   assert.equal(normalizeModelProviderSettings({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/lm/v1/chat/completions` }).endpoint, `${REMOTE_ORIGIN}/lm/v1/chat/completions`);
 });
 
-test('external LM Studio rejects plain HTTP, non-chat-completions paths, non-OpenAI protocols, and URL credentials', () => {
+test('external LM Studio completes the server /v1 base URL to its full chat completions URL', () => {
+  const expected = normalizeModelProviderSettings(externalLmStudio);
+  // The /v1 base URL other OpenAI-compatible clients store, with or without one trailing slash.
+  assert.deepEqual(normalizeModelProviderSettings({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1` }), expected);
+  assert.deepEqual(normalizeModelProviderSettings({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1/` }), expected);
+  // A reverse-proxy sub-path keeps its prefix.
+  assert.equal(normalizeModelProviderSettings({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/lm/v1` }).endpoint, `${REMOTE_ORIGIN}/lm/v1/chat/completions`);
+  assert.equal(normalizeModelProviderSettings({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/lm/v1/` }).endpoint, `${REMOTE_ORIGIN}/lm/v1/chat/completions`);
+  // The full chat completions URL is kept exactly.
+  assert.equal(expected.endpoint, REMOTE_ENDPOINT);
+
+  // Normalizing an already-normalized configuration returns an identical configuration.
+  for (const endpoint of [`${REMOTE_ORIGIN}/v1`, `${REMOTE_ORIGIN}/v1/`, `${REMOTE_ORIGIN}/lm/v1`, REMOTE_ENDPOINT]) {
+    const once = normalizeModelProviderSettings({ ...externalLmStudio, endpoint });
+    const twice = normalizeModelProviderSettings(once);
+    assert.deepEqual(twice, once, `${endpoint} must normalize idempotently`);
+    assert.ok(Object.isFrozen(twice));
+  }
+});
+
+test('external LM Studio rejects plain HTTP, paths that are neither a /v1 base URL nor a chat completions URL, non-OpenAI protocols, and URL credentials', () => {
   const invalid = (overrides, pattern) => assert.throws(
     () => normalizeModelProviderSettings({ ...externalLmStudio, ...overrides }),
     (error) => error.code === 'INVALID_MODEL_PROVIDER_CONFIGURATION' && pattern.test(error.message)
   );
   invalid({ endpoint: 'http://lm-studio.example.ts.net/v1/chat/completions' }, /^External model endpoints must use HTTPS$/);
-  const expectedForm = /full chat completions URL, for example https:\/\/<host>\/v1\/chat\/completions/;
-  invalid({ endpoint: `${REMOTE_ORIGIN}/v1` }, expectedForm);
-  invalid({ endpoint: `${REMOTE_ORIGIN}/v1/` }, expectedForm);
+  invalid({ endpoint: 'http://lm-studio.example.ts.net/v1' }, /^External model endpoints must use HTTPS$/);
+  const expectedForm = /^External LM Studio endpoint must be the server's \/v1 base URL or its full \/v1\/chat\/completions URL, for example https:\/\/<host>\/v1$/;
+  invalid({ endpoint: REMOTE_ORIGIN }, expectedForm);
+  invalid({ endpoint: `${REMOTE_ORIGIN}/` }, expectedForm);
   invalid({ endpoint: `${REMOTE_ORIGIN}/v1/models` }, expectedForm);
   invalid({ endpoint: `${REMOTE_ORIGIN}/v1/chat/completions/` }, expectedForm);
-  invalid({ endpoint: REMOTE_ORIGIN }, expectedForm);
+  invalid({ endpoint: `${REMOTE_ORIGIN}/api` }, expectedForm);
+  // Only one trailing slash is removed before the /v1 check.
+  invalid({ endpoint: `${REMOTE_ORIGIN}/v1//` }, expectedForm);
+  invalid({ endpoint: `${REMOTE_ORIGIN}/v2` }, expectedForm);
   invalid({ protocol: 'provider-neutral-json' }, /^External LM Studio must use the OpenAI-compatible protocol$/);
   invalid({ protocol: 'ollama' }, /^External LM Studio must use the OpenAI-compatible protocol$/);
   invalid({ endpoint: 'https://user:secret@lm-studio.example.ts.net/v1/chat/completions' }, /^AI provider endpoint must not contain credentials$/);
+  invalid({ endpoint: 'https://user:secret@lm-studio.example.ts.net/v1' }, /^AI provider endpoint must not contain credentials$/);
+  invalid({ endpoint: `${REMOTE_ORIGIN}/v1`, protocol: 'provider-neutral-json' }, /^External LM Studio must use the OpenAI-compatible protocol$/);
   invalid({ provider: 'ollama' }, /^External provider must be OpenAI-compatible or LM Studio$/);
 });
 
@@ -67,6 +93,13 @@ test('the external LM Studio rules leave local providers and external OpenAI-com
   assert.deepEqual(normalizeModelProviderSettings({ mode: 'external', provider: 'openai-compatible', endpoint: 'https://provider.example/v1', model: 'remote-model', protocol: 'provider-neutral-json', timeout_ms: 1000 }), {
     version: 1, mode: 'external', provider: 'openai-compatible', endpoint: 'https://provider.example/v1', model: 'remote-model', protocol: 'provider-neutral-json', timeout_ms: 1000
   });
+  // Only external LM Studio completes a /v1 base URL; external OpenAI-compatible keeps it verbatim.
+  for (const endpoint of ['https://provider.example/v1', 'https://provider.example/v1/', `${REMOTE_ORIGIN}/v1`]) {
+    assert.equal(normalizeModelProviderSettings({ mode: 'external', provider: 'openai-compatible', endpoint, model: 'remote-model', protocol: 'openai-compatible', timeout_ms: 1000 }).endpoint, endpoint);
+  }
+  // Local LM Studio and local Ollama keep their loopback paths verbatim, /v1 included.
+  assert.equal(normalizeModelProviderSettings({ mode: 'local', provider: 'lm-studio', endpoint: 'http://127.0.0.1:1234/v1', model: 'local-model', timeout_ms: 1000 }).endpoint, 'http://127.0.0.1:1234/v1');
+  assert.equal(normalizeModelProviderSettings({ mode: 'local', provider: 'ollama', endpoint: 'http://127.0.0.1:11434/api/generate', model: 'llama3.2:3b', protocol: 'ollama', timeout_ms: 1000 }).endpoint, 'http://127.0.0.1:11434/api/generate');
   assert.throws(() => normalizeModelProviderSettings({ mode: 'external', provider: 'openai-compatible', endpoint: 'https://provider.example/v1/chat/completions', model: 'x', protocol: 'ollama', timeout_ms: 1000 }), /LM Studio and external providers must use an approved JSON protocol/);
 });
 
@@ -79,6 +112,9 @@ test('external LM Studio credentials are scoped apart from OpenAI-compatible on 
   assert.equal(openAiScope, `v1:openai-compatible:${REMOTE_ENDPOINT}`);
   assert.notEqual(lmStudioScope, openAiScope);
   assert.equal(modelProviderCredentialScope({ mode: 'local', provider: 'lm-studio', endpoint: 'http://127.0.0.1:1234/v1/chat/completions', model: 'local-model', timeout_ms: 1000 }), undefined);
+  // A /v1 base URL is the same credential scope as its full chat completions URL.
+  assert.equal(modelProviderCredentialScope({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1` }), lmStudioScope);
+  assert.equal(modelProviderCredentialScope({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1/` }), lmStudioScope);
 
   const directory = await mkdtemp(path.join(os.tmpdir(), 'argus-remote-lm-studio-scope-'));
   const safeStorage = {
@@ -186,27 +222,54 @@ test('external LM Studio without a credential fails work with MODEL_CREDENTIAL_M
   }
 });
 
-test('the serial lane still refuses a credential for local LM Studio and an external LM Studio base URL', async () => {
+test('the serial lane accepts an external LM Studio /v1 base URL and posts work to its chat completions URL', async () => {
+  const endpoint = await startScribeBatchModelEndpoint({
+    reply: () => ({ response: { protocol_version: '1.0.0', purpose: 'logged-item-extraction', text: 'Neutral extracted text.' } })
+  });
+  try {
+    const request = buildExtractionRequest(contextWindow(), { workId: `logged-item-extraction:${session}:base-url`, modelName: MODEL });
+    const result = await runService(laneManifest, [
+      providerConfiguration({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1` }, { provided: true, value: CREDENTIAL }, 'external-base-url'),
+      legacyWorkRequest(request, 'logged-item-extraction')
+    ], 3, 5000, { env: redirectRemoteFetchTo(endpoint.url) });
+
+    assert.equal(result.outputs.filter((message) => message.message_type === 'service.failure').length, 0, JSON.stringify(result.outputs));
+    assert.ok(result.outputs.some((message) => message.message_type === 'operation.completed' && message.payload.operation === 'configure-model-provider'));
+    const completion = result.outputs.find((message) => message.message_type === 'ai.work-completed');
+    assert.equal(completion.payload.result.status, 'succeeded', JSON.stringify(completion.payload.result.error));
+    // The redirect forwards only the exact normalized chat completions URL, so this call proves the POST target.
+    assert.equal(endpoint.calls.length, 1);
+    assert.equal(endpoint.calls[0].authorization, `Bearer ${CREDENTIAL}`);
+    assert.equal(endpoint.calls[0].envelope.reasoning_effort, 'none');
+    assert.doesNotMatch(JSON.stringify(result.outputs), new RegExp(CREDENTIAL));
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('the serial lane still refuses a credential for local LM Studio and an external LM Studio path that is neither /v1 nor chat completions', async () => {
   const result = await runService(laneManifest, [
     providerConfiguration({ mode: 'local', provider: 'lm-studio', endpoint: 'http://127.0.0.1:1234/v1/chat/completions', model: MODEL, protocol: 'openai-compatible', timeout_ms: 2000 }, { provided: true, value: CREDENTIAL }, 'local-with-credential'),
-    providerConfiguration({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1` }, { provided: true, value: CREDENTIAL }, 'external-base-url')
+    providerConfiguration({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/api` }, { provided: true, value: CREDENTIAL }, 'external-other-path')
   ], 2, 5000);
   const failures = result.outputs.filter((message) => message.message_type === 'service.failure');
   assert.equal(failures.length, 2);
   assert.ok(failures.every((message) => message.payload.operation === 'configure-model-provider'));
   assert.ok(failures.every((message) => message.payload.error.code === 'INVALID_MODEL_PROVIDER_CONFIGURATION'));
   assert.match(failures[0].payload.error.message, /local providers may not receive a credential/);
-  assert.match(failures[1].payload.error.message, /https:\/\/<host>\/v1\/chat\/completions/);
+  assert.match(failures[1].payload.error.message, /\/v1 base URL or its full \/v1\/chat\/completions URL, for example https:\/\/<host>\/v1$/);
   assert.doesNotMatch(JSON.stringify(result.outputs), new RegExp(CREDENTIAL));
 });
 
 /**
  * External mode requires HTTPS, so the lane child gets a preloaded `fetch` wrapper that sends
- * requests for the placeholder remote origin to the loopback test endpoint instead. Method,
- * headers, and body pass through unchanged, so the endpoint observes exactly what the lane sent.
+ * requests for exactly `remoteUrl` to the loopback test endpoint instead and rejects any other URL
+ * on the placeholder remote origin, so a recorded call also proves the exact URL the lane posted
+ * to. Method, headers, and body pass through unchanged, so the endpoint observes exactly what the
+ * lane sent.
  */
-function redirectRemoteFetchTo(localUrl) {
-  const source = `const target=${JSON.stringify(localUrl)};const prefix=${JSON.stringify(`${REMOTE_ORIGIN}/`)};const original=globalThis.fetch;globalThis.fetch=(input,init)=>original(String(input).startsWith(prefix)?target:input,init);`;
+function redirectRemoteFetchTo(localUrl, remoteUrl = REMOTE_ENDPOINT) {
+  const source = `const target=${JSON.stringify(localUrl)};const remote=${JSON.stringify(remoteUrl)};const prefix=${JSON.stringify(`${REMOTE_ORIGIN}/`)};const original=globalThis.fetch;globalThis.fetch=(input,init)=>{const url=String(input);if(url===remote)return original(target,init);if(url.startsWith(prefix))return Promise.reject(new TypeError(${JSON.stringify('unexpected remote URL ')}+url));return original(input,init);};`;
   return { NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import=data:text/javascript,${encodeURIComponent(source)}`.trim() };
 }
 

@@ -587,11 +587,14 @@ unreachable runtime, or failed connection test produces an unavailable/degraded 
 
 External providers are now OpenAI-compatible or LM Studio. External LM Studio reaches a private
 server over HTTPS (for example `https://<device>.<tailnet>.ts.net`, published through Tailscale
-Serve) and must be configured with the full `/chat/completions` URL, because the serial lane posts to
-the configured endpoint verbatim and a base URL would pass the connection test and fail every real
-request. The lane adds `reasoning_effort: "none"` to request bodies only for external LM Studio: a
-remote LM Studio host otherwise applies its own saved per-model thinking setting, and OpenAI rejects
-the field. Credentials stay scoped to the exact provider and endpoint, so an LM Studio token is never
+Serve). Its endpoint accepts either the server's `/v1` base URL (the form SaySlate and other
+OpenAI-compatible clients store, at most one trailing slash, optionally under a reverse-proxy
+sub-path) or the full `/v1/chat/completions` URL, and is always stored as the full URL: the serial
+lane posts to the stored endpoint verbatim, and the settings file, the credential scope, and the
+connection test all use that one canonical URL. Any other path is rejected, and no other provider's
+path is rewritten. The lane adds `reasoning_effort: "none"` to request bodies only for external LM
+Studio: a remote LM Studio host otherwise applies its own saved per-model thinking setting, and
+OpenAI rejects the field. Credentials stay scoped to the exact provider and endpoint, so an LM Studio token is never
 reused for an OpenAI-compatible endpoint or the reverse. Local LM Studio remains loopback-only and
 credential-free.
 

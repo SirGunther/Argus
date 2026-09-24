@@ -13,8 +13,8 @@ import { createSessionTimer } from './ui/session-timer.mjs';
   const AUDIO_INPUT_STORAGE_KEY = 'argus.selected-audio-input-device';
   const OPENAI_DEFAULT_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
   const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini';
-  // A remote LM Studio server has no default address; the placeholder shows the full-URL shape the host requires.
-  const EXTERNAL_LM_STUDIO_ENDPOINT_PLACEHOLDER = 'https://your-device.your-tailnet.ts.net/v1/chat/completions';
+  // A remote LM Studio server has no default address; the placeholder shows the /v1 base URL shape, which the host completes to the chat completions URL.
+  const EXTERNAL_LM_STUDIO_ENDPOINT_PLACEHOLDER = 'https://your-device.your-tailnet.ts.net/v1';
   const ui = createUiState();
   const desktop = window.argus || null;
   const state = { session: null, transcript: [], derived: [], derivedOrder: new Map(), liveProvisional: createLiveTranscriptState(), services: new Map(), pending: new Set(), handledCommands: new Set(), ready: false, newSession: false, starting: false, startingTimer: null, sessionAction: null, pendingCaptureSessionId: null, captureStartPromise: null, aiProvider: null, aiProviderTab: 'local', aiProviderSaving: false, scribeGuidance: null, scribeGuidanceSaving: false };

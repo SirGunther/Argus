@@ -66,7 +66,7 @@ export function normalizeModelProviderSettings(input = {}) {
     throw providerConfigurationError('External model endpoints must use HTTPS');
   }
   if (!model || model.length > 256) throw providerConfigurationError('AI provider model is required and must be at most 256 characters');
-  if (mode === 'external' && provider === 'lm-studio') assertExternalLmStudioEndpoint(url, protocol);
+  const normalizedEndpoint = mode === 'external' && provider === 'lm-studio' ? externalLmStudioEndpoint(url, protocol) : url.href;
   if (provider === 'ollama' && protocol !== 'ollama') throw providerConfigurationError('Ollama must use the Ollama protocol');
   if (provider !== 'ollama' && !['openai-compatible', 'provider-neutral-json'].includes(protocol)) {
     throw providerConfigurationError('LM Studio and external providers must use an approved JSON protocol');
@@ -78,7 +78,7 @@ export function normalizeModelProviderSettings(input = {}) {
     version: MODEL_PROVIDER_SETTINGS_VERSION,
     mode,
     provider,
-    endpoint: url.href,
+    endpoint: normalizedEndpoint,
     model,
     protocol,
     timeout_ms: Number(timeout)
@@ -86,15 +86,22 @@ export function normalizeModelProviderSettings(input = {}) {
 }
 
 /**
- * The serial lane POSTs to the configured endpoint verbatim, so a remote LM Studio endpoint must
- * be the full chat completions URL; a base URL such as `.../v1` would still pass the `/models`
- * connection test and then fail every real request.
+ * The serial lane POSTs to the configured endpoint verbatim, so a remote LM Studio endpoint is
+ * always returned as the full chat completions URL. A path ending in `/chat/completions` is kept
+ * as is; the server's `/v1` base URL (at most one trailing slash, optionally under a reverse-proxy
+ * sub-path) is completed with `/chat/completions`; every other path is refused, because it would
+ * fail every real request.
  */
-function assertExternalLmStudioEndpoint(url, protocol) {
+function externalLmStudioEndpoint(url, protocol) {
   if (protocol !== 'openai-compatible') throw providerConfigurationError('External LM Studio must use the OpenAI-compatible protocol');
-  if (!url.pathname.endsWith('/chat/completions')) {
-    throw providerConfigurationError('External LM Studio endpoint must be the full chat completions URL, for example https://<host>/v1/chat/completions');
+  if (url.pathname.endsWith('/chat/completions')) return url.href;
+  const basePath = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
+  if (!basePath.endsWith('/v1')) {
+    throw providerConfigurationError("External LM Studio endpoint must be the server's /v1 base URL or its full /v1/chat/completions URL, for example https://<host>/v1");
   }
+  const completions = new URL(url.href);
+  completions.pathname = `${basePath}/chat/completions`;
+  return completions.href;
 }
 
 export function settingsFromLegacyEnvironment(env = process.env) {
