@@ -27,4 +27,19 @@ export function readRuntimeModelConfig(env = process.env) {
 
 export { normalizeModelProviderSettings };
 
+const EXTERNAL_LM_STUDIO_REQUEST_EXTENSIONS = Object.freeze({ reasoning_effort: 'none' });
+const NO_REQUEST_EXTENSIONS = Object.freeze({});
+
+/**
+ * Extra OpenAI-compatible body fields for the active provider configuration. A remote LM Studio
+ * host applies its own saved per-model thinking setting unless the request overrides it, and
+ * `reasoning_effort: 'none'` is the per-request override it honors. OpenAI rejects that field for
+ * non-reasoning models, so every other configuration adds nothing.
+ */
+export function providerRequestExtensions(configuration) {
+  return configuration?.mode === 'external' && configuration.provider === 'lm-studio' && configuration.protocol === 'openai-compatible'
+    ? EXTERNAL_LM_STUDIO_REQUEST_EXTENSIONS
+    : NO_REQUEST_EXTENSIONS;
+}
+
 function configurationError(message) { return new Error(message, { cause: { code: 'INVALID_MODEL_CONFIGURATION', category: 'validation' } }); }
