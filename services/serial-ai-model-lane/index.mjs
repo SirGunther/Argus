@@ -176,8 +176,9 @@ async function requestConfiguredModel(runtime, request) {
       messages: [{ role: 'system', content: modelInstruction(request) }, { role: 'user', content: JSON.stringify(request) }],
       // Only the Scribe batch protocol asks the provider to enforce its governed JSON shape.
       // Every other OpenAI-compatible workload (legacy extraction, classification enrichment)
-      // keeps exactly the body it already sent; `validateScribeBatchModelResponse` remains the
-      // authority on the parsed response either way (SCRIBE-07A).
+      // sends no `response_format`; `validateScribeBatchModelResponse` remains the authority on
+      // the parsed response either way (SCRIBE-07A). Provider-specific fields come only from
+      // `providerRequestExtensions`, which adds nothing unless the provider is external LM Studio.
       ...(isScribeBatchRequest(request) ? { response_format: scribeBatchResponseFormat() } : {}),
       ...providerRequestExtensions(config)
     } : request;
