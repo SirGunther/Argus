@@ -49,15 +49,55 @@ test('saving external LM Studio with an API key returns and persists only redact
   });
 });
 
-test('saving an external LM Studio base URL is rejected and leaves the saved settings unchanged', async () => {
+test('saving an external LM Studio /v1 base URL persists the full chat completions URL and scopes the key to it', async () => {
+  await withApplication(async ({ application, settingsFile, credentialStore }) => {
+    const baseUrl = { ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1` };
+    const saved = await application.saveAiProviderSettings({ ...baseUrl, api_key: SAVED_KEY });
+    assert.equal(saved.endpoint, REMOTE_ENDPOINT);
+    assert.equal(saved.credential_configured, true);
+
+    const onDisk = JSON.parse(await readFile(settingsFile, 'utf8'));
+    assert.equal(onDisk.endpoint, REMOTE_ENDPOINT);
+    assert.deepEqual(onDisk, normalizeModelProviderSettings(externalLmStudio));
+    assert.equal(application.providerConfiguration.endpoint, REMOTE_ENDPOINT);
+
+    const fullUrlScope = `v1:lm-studio:${REMOTE_ENDPOINT}`;
+    assert.equal(modelProviderCredentialScope(baseUrl), fullUrlScope);
+    assert.equal(await credentialStore.get(fullUrlScope), SAVED_KEY);
+    assert.equal(await application.readCredential(externalLmStudio), SAVED_KEY);
+    assert.equal(await application.readCredential(baseUrl), SAVED_KEY);
+  });
+});
+
+test('the external LM Studio connection test for a /v1 base URL lists models once at /v1/models', async () => {
+  await withApplication(async ({ application }) => {
+    const baseUrl = { ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1` };
+    await application.saveAiProviderSettings({ ...baseUrl, api_key: SAVED_KEY });
+    await withStubbedFetch(() => jsonResponse({ data: [{ id: MODEL }] }), async (calls) => {
+      const result = await application.testAiProviderSettings(baseUrl);
+      assert.deepEqual(result, { status: 'available', message: `LM Studio connection is available for model ${MODEL}.` });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, REMOTE_MODELS_URL);
+      assert.equal(calls[0].method, 'GET');
+      assert.equal(calls[0].headers.authorization, `Bearer ${SAVED_KEY}`);
+    });
+    // The base URL and the saved full URL are one configuration, so the test result is the active status.
+    assert.equal((await application.aiProviderSettings()).status.status, 'available');
+  });
+});
+
+test('saving an external LM Studio path that is neither /v1 nor chat completions is rejected and leaves the saved settings unchanged', async () => {
   await withApplication(async ({ application, settingsStore }) => {
     await application.saveAiProviderSettings({ ...externalLmStudio, api_key: SAVED_KEY });
     const before = await settingsStore.load();
 
-    await assert.rejects(
-      application.saveAiProviderSettings({ ...externalLmStudio, endpoint: `${REMOTE_ORIGIN}/v1`, api_key: REPLACEMENT_KEY }),
-      /External LM Studio endpoint must be the full chat completions URL/
-    );
+    for (const endpoint of [REMOTE_ORIGIN, `${REMOTE_ORIGIN}/v1/models`, `${REMOTE_ORIGIN}/api`]) {
+      await assert.rejects(
+        application.saveAiProviderSettings({ ...externalLmStudio, endpoint, api_key: REPLACEMENT_KEY }),
+        (error) => error.code === 'INVALID_MODEL_PROVIDER_CONFIGURATION'
+          && error.message === "External LM Studio endpoint must be the server's /v1 base URL or its full /v1/chat/completions URL, for example https://<host>/v1"
+      );
+    }
     assert.deepEqual(await settingsStore.load(), before);
     assert.deepEqual(application.providerConfiguration, before);
     assert.equal((await application.aiProviderSettings()).endpoint, REMOTE_ENDPOINT);
@@ -181,7 +221,9 @@ test('the settings drawer offers LM Studio as an external provider and reacts to
   assert.ok(select, 'index.html must declare #externalProviderSelect');
   assert.deepEqual([...select[1].matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]), ['openai-compatible', 'lm-studio']);
   assert.match(source, /els\.externalProviderSelect\.addEventListener\(\s*'change'/);
-  assert.ok(source.includes("'https://your-device.your-tailnet.ts.net/v1/chat/completions'"), 'the LM Studio endpoint placeholder must be a placeholder host');
+  assert.ok(source.includes("EXTERNAL_LM_STUDIO_ENDPOINT_PLACEHOLDER = 'https://your-device.your-tailnet.ts.net/v1'"), 'the LM Studio endpoint placeholder must be a placeholder host in the /v1 base URL form');
+  const placeholder = normalizeModelProviderSettings({ ...externalLmStudio, endpoint: 'https://your-device.your-tailnet.ts.net/v1' });
+  assert.equal(placeholder.endpoint, 'https://your-device.your-tailnet.ts.net/v1/chat/completions', 'the placeholder shape must be an accepted external LM Studio endpoint');
 });
 
 async function withApplication(run) {
