@@ -2,7 +2,7 @@ import { SerialAiScheduler } from '../../runtime/serial-ai-scheduler.mjs';
 import { runLineService, ServiceOperationError } from '../../runtime/service-protocol.mjs';
 import { SCRIBE_BATCH_PROTOCOL_VERSION, SCRIBE_BATCH_RESPONSE_JSON_SCHEMA, assertPurposeMatchesWorkload, fingerprintModelRequest, validateModelRequest, validateModelResponse, validateScribeBatchModelRequest, validateScribeBatchModelResponse } from '../../contracts/model-protocol.mjs';
 import { scribeBatchInstruction } from '../../contracts/scribe-instruction.mjs';
-import { normalizeModelProviderSettings, readRuntimeModelConfig } from './model-config.mjs';
+import { normalizeModelProviderSettings, providerRequestExtensions, readRuntimeModelConfig } from './model-config.mjs';
 
 const SERVICE = 'serial-ai-model-lane';
 /** Admitted work whose governed completion has not been emitted yet, keyed by work id. */
@@ -176,9 +176,11 @@ async function requestConfiguredModel(runtime, request) {
       messages: [{ role: 'system', content: modelInstruction(request) }, { role: 'user', content: JSON.stringify(request) }],
       // Only the Scribe batch protocol asks the provider to enforce its governed JSON shape.
       // Every other OpenAI-compatible workload (legacy extraction, classification enrichment)
-      // keeps exactly the body it already sent; `validateScribeBatchModelResponse` remains the
-      // authority on the parsed response either way (SCRIBE-07A).
-      ...(isScribeBatchRequest(request) ? { response_format: scribeBatchResponseFormat() } : {})
+      // sends no `response_format`; `validateScribeBatchModelResponse` remains the authority on
+      // the parsed response either way (SCRIBE-07A). Provider-specific fields come only from
+      // `providerRequestExtensions`, which adds nothing unless the provider is external LM Studio.
+      ...(isScribeBatchRequest(request) ? { response_format: scribeBatchResponseFormat() } : {}),
+      ...providerRequestExtensions(config)
     } : request;
     const headers = { 'content-type': 'application/json' };
     if (runtime.credential) headers.authorization = `Bearer ${runtime.credential}`;

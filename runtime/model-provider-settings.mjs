@@ -3,7 +3,7 @@ import path from 'node:path';
 
 export const MODEL_PROVIDER_SETTINGS_VERSION = 1;
 export const LOCAL_MODEL_PROVIDERS = Object.freeze(['ollama', 'lm-studio']);
-export const EXTERNAL_MODEL_PROVIDERS = Object.freeze(['openai-compatible']);
+export const EXTERNAL_MODEL_PROVIDERS = Object.freeze(['openai-compatible', 'lm-studio']);
 export const MODEL_PROVIDER_MODES = Object.freeze(['local', 'external']);
 
 export const DEFAULT_MODEL_PROVIDER_SETTINGS = Object.freeze({
@@ -54,7 +54,7 @@ export function normalizeModelProviderSettings(input = {}) {
 
   if (!MODEL_PROVIDER_MODES.includes(mode)) throw providerConfigurationError('AI provider mode must be local or external');
   if (mode === 'local' && !LOCAL_MODEL_PROVIDERS.includes(provider)) throw providerConfigurationError('Local provider must be Ollama or LM Studio');
-  if (mode === 'external' && !EXTERNAL_MODEL_PROVIDERS.includes(provider)) throw providerConfigurationError('External provider must be OpenAI-compatible');
+  if (mode === 'external' && !EXTERNAL_MODEL_PROVIDERS.includes(provider)) throw providerConfigurationError('External provider must be OpenAI-compatible or LM Studio');
   if (!endpoint) throw providerConfigurationError('AI provider endpoint is required');
   let url;
   try { url = new URL(endpoint); }
@@ -66,6 +66,7 @@ export function normalizeModelProviderSettings(input = {}) {
     throw providerConfigurationError('External model endpoints must use HTTPS');
   }
   if (!model || model.length > 256) throw providerConfigurationError('AI provider model is required and must be at most 256 characters');
+  if (mode === 'external' && provider === 'lm-studio') assertExternalLmStudioEndpoint(url, protocol);
   if (provider === 'ollama' && protocol !== 'ollama') throw providerConfigurationError('Ollama must use the Ollama protocol');
   if (provider !== 'ollama' && !['openai-compatible', 'provider-neutral-json'].includes(protocol)) {
     throw providerConfigurationError('LM Studio and external providers must use an approved JSON protocol');
@@ -82,6 +83,18 @@ export function normalizeModelProviderSettings(input = {}) {
     protocol,
     timeout_ms: Number(timeout)
   });
+}
+
+/**
+ * The serial lane POSTs to the configured endpoint verbatim, so a remote LM Studio endpoint must
+ * be the full chat completions URL; a base URL such as `.../v1` would still pass the `/models`
+ * connection test and then fail every real request.
+ */
+function assertExternalLmStudioEndpoint(url, protocol) {
+  if (protocol !== 'openai-compatible') throw providerConfigurationError('External LM Studio must use the OpenAI-compatible protocol');
+  if (!url.pathname.endsWith('/chat/completions')) {
+    throw providerConfigurationError('External LM Studio endpoint must be the full chat completions URL, for example https://<host>/v1/chat/completions');
+  }
 }
 
 export function settingsFromLegacyEnvironment(env = process.env) {
